@@ -1,12 +1,14 @@
 # Status
 
-Last updated: 2026-09-03, after the "Phase 14" master-build-prompt gap-fill session and a follow-up Resend wiring pass.
+Last updated: 2026-09-03, after the "Phase 14" master-build-prompt gap-fill session and follow-up Resend and Sentry wiring passes.
 
 ## Done
 
 Everything through the product skill's MVP priority list (auth → orgs → locations → NFC cards → public landing page → feedback submission → inbox → statuses/resolution → negative-feedback notifications → basic analytics → Google Review CTA → production deployment) was built and browser-verified in earlier sessions, then deployed to Vercel production (https://veleminytap.vercel.app).
 
 **Resend is now live.** `RESEND_API_KEY`/`RESEND_FROM_EMAIL` are set in both `.env.local` and Vercel production, and the full `submitFeedbackAction` → `after()` → `sendNegativeFeedbackAlert` code path was exercised end-to-end (real signup, real org/location/card, a real 1-star submission through `/r/{publicId}`) with no error logged. **Known limitation:** the account has no verified sending domain yet, so it's on Resend's shared `onboarding@resend.dev` sender, which only delivers to the email address that owns the API key (confirmed via direct API calls — sends to any other address are rejected with `403 validation_error`). Negative-feedback alerts will silently fail to deliver (Resend rejects the send; the app logs it via `console.error` per its "never throws" design, but the customer-facing response is unaffected) for any real business's `notification_email` or member email until a domain is verified at resend.com/domains and `RESEND_FROM_EMAIL` is updated to use it. This is a hard blocker for the notification feature actually working for a real customer, not just a nice-to-have.
+
+**Sentry is now live.** `@sentry/nextjs` is wired up for client, server, and edge runtimes (`instrumentation.ts`, `instrumentation-client.ts`, `sentry.server.config.ts`, `sentry.edge.config.ts`), plus `app/global-error.tsx` to catch root-layout rendering errors. `NEXT_PUBLIC_SENTRY_DSN` is set in both `.env.local` and Vercel production (as a `config`-type var — a DSN is meant to be public, not a secret; Vercel's credential-detection prompt was overridden deliberately, not by accident). A deliberately-thrown test error was triggered locally through a temporary route (removed afterward) and confirmed reaching Next.js's error handling correctly. **Redaction is enforced**: `lib/sentry-redact.ts`'s `beforeSend` hook strips `feedback_text`/`internal_note` (and their camelCase equivalents) from request data, extra context, and breadcrumbs on every event before it leaves the app — covered by 6 Vitest unit tests including a circular-reference case. Source map upload (via `authToken`/`org`/`project` in `withSentryConfig`) was deliberately skipped for now — see `DECISIONS.md`.
 
 This session closed the gap between that MVP and the master build prompt's fuller spec:
 
@@ -23,7 +25,7 @@ Everything above was typechecked, linted, and — for the UI-facing pieces — m
 
 ## Not done / explicitly deferred
 
-- **Sentry.** Not started. Needs a redaction rule for `feedback_text` before it ships (see `SECURITY.md` § Error handling / logging) — that's the reason it wasn't rushed in alongside everything else this session.
+- **Sentry source map upload.** Error capture is fully live; source maps (readable stack traces in the dashboard instead of minified ones) need a `SENTRY_AUTH_TOKEN` plus org/project slugs, deliberately skipped for now — see `DECISIONS.md`.
 - **Playwright/e2e automation.** The review-gating check was performed manually and is documented as a standing checklist in `TEST_PLAN.md`, but isn't yet a repeatable automated test. No CI pipeline exists yet either, and an e2e suite with nothing to run it in has limited ongoing value — see `TEST_PLAN.md` § Known gaps for the reasoning on sequencing this with CI.
 - **Tenant-isolation automated test.** Verified manually in earlier phases; not codified as a repeatable test.
 - **QR code generation for NFC cards.** Explicitly lower priority per the product skill ("do not allow QR work to delay core functionality") — not started, and nothing currently blocks a business from printing/encoding the public URL onto a physical NFC tag by other means in the meantime.
@@ -34,8 +36,9 @@ Everything above was typechecked, linted, and — for the UI-facing pieces — m
 
 - ~~Confirmation that the Supabase Auth Site URL/Redirect URLs were added for production.~~ **Confirmed done.**
 - **Verify a sending domain in Resend** (resend.com/domains) so alert emails can actually reach real recipients, then update `RESEND_FROM_EMAIL` (locally and in Vercel) to an address on that domain. Until then, alerts only deliver to the Resend account's own verified email.
-- A decision on whether/when to prioritize Sentry vs. Playwright/CI vs. further product features, since all three are real remaining gaps and none is strictly higher priority than the others from the code alone.
+- ~~A decision on whether/when to prioritize Sentry vs. Playwright/CI vs. further product features.~~ **Sentry was chosen and is done.** Playwright/CI remains open.
+- Optional: a `SENTRY_AUTH_TOKEN` + org/project slugs, if/when readable (non-minified) stack traces in the Sentry dashboard become worth the extra setup.
 
 ## Deployed
 
-Phase 14 (feat/test/docs, commits `47ec557`/`b9baf5f`/`1daf267`) and the Resend wiring above are both committed, pushed to GitHub, and live on Vercel production.
+Phase 14 (feat/test/docs, commits `47ec557`/`b9baf5f`/`1daf267`), the Resend wiring (`6b859e0`), and Sentry wiring are all committed, pushed to GitHub, and live on Vercel production.

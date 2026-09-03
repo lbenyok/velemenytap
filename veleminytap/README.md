@@ -6,7 +6,7 @@ See also: [PRODUCT_SPEC.md](./PRODUCT_SPEC.md) (what it does and why), [ARCHITEC
 
 ## Stack
 
-Next.js 16 (App Router, Turbopack) · TypeScript · React 19 · Tailwind v4 · shadcn/ui (Base UI primitives) · Supabase (Postgres, Auth, RLS) · Resend · Vercel.
+Next.js 16 (App Router, Turbopack) · TypeScript · React 19 · Tailwind v4 · shadcn/ui (Base UI primitives) · Supabase (Postgres, Auth, RLS) · Resend · Sentry · Vercel.
 
 ## Local setup
 
@@ -23,6 +23,7 @@ Required env vars (see `.env.example`):
 - `SUPABASE_DB_URL` — used locally to push migrations (`supabase db push --db-url`). Never commit.
 - `NEXT_PUBLIC_SITE_URL` — the deployed origin, used to build links in emails.
 - `RESEND_API_KEY`, `RESEND_FROM_EMAIL` — optional. Negative-feedback alert emails are skipped (with a console warning) if unset, so the app runs fully without a Resend account.
+- `NEXT_PUBLIC_SENTRY_DSN` — optional. Error monitoring across client/server/edge; `Sentry.init()` with no DSN is a documented no-op, so the app runs fine without one. Public by design (see `SECURITY.md`), not a secret.
 
 ## Scripts
 

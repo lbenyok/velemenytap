@@ -47,6 +47,18 @@ Overview stats' `today`/`thisWeek` use UTC calendar-day boundaries (matching the
 **Why:** the schema has no per-organization timezone field, and adding one purely to shift a dashboard stat by a few hours is disproportionate for MVP. A single-timezone small business won't notice the skew; this was already the established convention elsewhere in `features/analytics/aggregate.ts` before this decision, so it's consistency, not a new tradeoff.
 **Revisit if:** a business spans multiple timezones or complains about the boundary being visibly wrong for their location.
 
+## Sentry source map upload skipped for now
+
+`withSentryConfig` in `next.config.ts` runs with only `{ silent: true }` — no `org`, `project`, or `authToken`. Error capture (client/server/edge) is fully live; stack traces in the Sentry dashboard will show minified production code instead of your original source.
+**Why:** wiring up source maps needs a `SENTRY_AUTH_TOKEN`, which is a credential — per the working-style agreement, that's a "stop and ask" item, not an autonomous one, and the DSN alone (no token needed) already delivers the actual point of this round: knowing when something breaks in production.
+**Revisit when:** minified stack traces become a real debugging obstacle — at that point, generate a Sentry auth token and add `org`/`project`/`authToken` to the `withSentryConfig` call.
+
+## No Sentry Session Replay or user feedback widget
+
+Only core error monitoring was wired up — not `Sentry.replayIntegration()` or `Sentry.feedbackIntegration()`, both mentioned in Sentry's own quickstart.
+**Why:** Session Replay records DOM/screen activity, which is a materially bigger privacy surface than error capture alone (see `SECURITY.md` § Data minimization) and wasn't what was actually asked for — the task was closing the "no error monitoring" gap tracked in `STATUS.md`, not building out a full observability suite. Adding integrations nothing asked for is the kind of speculative scope the product skill warns against.
+**Revisit if:** debugging a hard-to-reproduce customer-facing bug genuinely needs session context beyond what an error's stack trace and breadcrumbs already provide.
+
 ## Documentation suite lives in `veleminytap/`, not the outer repo root
 
 The git repository root (`.../Biznisz`) also contains unrelated files (design assets, `.claude/` skill config). All product/engineering docs (`README.md`, `PRODUCT_SPEC.md`, etc.) live inside `veleminytap/`, alongside the app they describe and its pre-existing `README.md`/`AGENTS.md`.

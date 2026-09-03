@@ -10,6 +10,7 @@
 | Auth | Supabase Auth via `@supabase/ssr`, cookie-based sessions, `getClaims()` for server-side identity |
 | Authorization | Postgres Row Level Security (RLS) — the actual tenant boundary, not app code |
 | Email | Resend (optional — degrades to a console warning if unconfigured) |
+| Error monitoring | Sentry (`@sentry/nextjs`, optional — no-op if unconfigured), with a `beforeSend` redaction hook stripping feedback content — see `SECURITY.md` |
 | Hosting | Vercel |
 
 ## Multi-tenant hierarchy

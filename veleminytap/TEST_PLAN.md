@@ -6,6 +6,7 @@
 
 - **`features/analytics/aggregate.test.ts`** — `ratingDistribution`, `dailySeries`, `resolvedStats`, `byLocation`, `byCard`. Zero-row/zero-division edge cases, UTC day bucketing, unknown-id fallbacks.
 - **`features/feedback/schema.test.ts`** — the public submission zod schema (`features/feedback/schema.ts`, extracted from `actions.ts` specifically so it's importable without pulling in `server-only`/`next/server`). Includes the **review-gating regression test at the schema level**: `it.each([1, 2, 3, 4, 5])("accepts rating %i", ...)` asserts the validator itself has no rating-dependent branching — every rating is equally valid input, which is the ground floor the CTA-visibility guarantee below is built on.
+- **`lib/sentry-redact.test.ts`** — the `beforeSend` hook that strips `feedback_text`/`internal_note` from every Sentry event before it's sent (`SECURITY.md` § Error handling / logging). Covers request-body/extra-context/breadcrumb redaction, non-sensitive fields passing through untouched, and a circular-reference case that must not hang.
 
 `npm run typecheck` and `npm run lint` run clean on every change (not test suites, but part of the same verification gate — see `Definition of Done` in the product skill).
 

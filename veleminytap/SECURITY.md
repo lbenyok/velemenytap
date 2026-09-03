@@ -45,7 +45,9 @@ The public feedback flow collects no personal data — no email, no name, no dev
 
 ## Error handling / logging
 
-Customer-facing errors on the public page are simple and non-technical ("Could not send your feedback. Please try again."). Server-side errors (failed inserts, failed email sends) are logged via `console.error`/`console.warn` server-side only — feedback content is not deliberately excluded from these logs today (see `STATUS.md` for the Sentry integration, which will need a redaction rule for `feedback_text` before it ships, per the product skill's "avoid logging raw sensitive feedback unnecessarily").
+Customer-facing errors on the public page are simple and non-technical ("Could not send your feedback. Please try again."). Server-side errors (failed inserts, failed email sends) are still logged via `console.error`/`console.warn` (not deliberately redacted — Vercel's own log retention is short-lived and access is already restricted to the project's team).
+
+**Sentry** (`@sentry/nextjs`) captures errors across client, server, and edge runtimes (`instrumentation.ts`, `instrumentation-client.ts`, `sentry.server.config.ts`, `sentry.edge.config.ts`), plus root-layout rendering errors via `app/global-error.tsx`. Every event passes through `lib/sentry-redact.ts`'s `beforeSend` hook first, which recursively strips `feedback_text`/`internal_note` (and their camelCase equivalents) from request data, extra context, and breadcrumbs before the event ever leaves the app — per the product skill's "avoid logging raw sensitive feedback unnecessarily". Covered by unit tests in `lib/sentry-redact.test.ts`, including a circular-reference case (an event graph with a self-reference must not hang the redaction pass). The Sentry DSN (`NEXT_PUBLIC_SENTRY_DSN`) is intentionally public — a DSN only lets a client *report* events, not read them, which is why Sentry's own docs embed it directly in client-side code.
 
 ## Dependency hygiene
 
