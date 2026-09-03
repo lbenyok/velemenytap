@@ -36,9 +36,12 @@ jobs:
     steps:
       - id: check
         run: |
-          if [ -n "${{ secrets.SUPABASE_SECRET_KEY }}" ]; then
+          if [ -n "${{ secrets.SUPABASE_SECRET_KEY }}" ] && \
+             [ -n "${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}" ] && \
+             [ -n "${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}" ]; then
             echo "configured=true" >> "$GITHUB_OUTPUT"
           else
+            echo "::warning::One or more e2e secrets are missing (need all three: SUPABASE_SECRET_KEY, NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY) -- e2e job will be skipped."
             echo "configured=false" >> "$GITHUB_OUTPUT"
           fi
 
