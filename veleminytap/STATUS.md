@@ -1,10 +1,12 @@
 # Status
 
-Last updated: 2026-09-03, end of the "Phase 14" master-build-prompt gap-fill session.
+Last updated: 2026-09-03, after the "Phase 14" master-build-prompt gap-fill session and a follow-up Resend wiring pass.
 
 ## Done
 
 Everything through the product skill's MVP priority list (auth → orgs → locations → NFC cards → public landing page → feedback submission → inbox → statuses/resolution → negative-feedback notifications → basic analytics → Google Review CTA → production deployment) was built and browser-verified in earlier sessions, then deployed to Vercel production (https://veleminytap.vercel.app).
+
+**Resend is now live.** `RESEND_API_KEY`/`RESEND_FROM_EMAIL` are set in both `.env.local` and Vercel production, and the full `submitFeedbackAction` → `after()` → `sendNegativeFeedbackAlert` code path was exercised end-to-end (real signup, real org/location/card, a real 1-star submission through `/r/{publicId}`) with no error logged. **Known limitation:** the account has no verified sending domain yet, so it's on Resend's shared `onboarding@resend.dev` sender, which only delivers to the email address that owns the API key (confirmed via direct API calls — sends to any other address are rejected with `403 validation_error`). Negative-feedback alerts will silently fail to deliver (Resend rejects the send; the app logs it via `console.error` per its "never throws" design, but the customer-facing response is unaffected) for any real business's `notification_email` or member email until a domain is verified at resend.com/domains and `RESEND_FROM_EMAIL` is updated to use it. This is a hard blocker for the notification feature actually working for a real customer, not just a nice-to-have.
 
 This session closed the gap between that MVP and the master build prompt's fuller spec:
 
@@ -30,10 +32,10 @@ Everything above was typechecked, linted, and — for the UI-facing pieces — m
 
 ## What's needed from the user before the next round
 
-- Confirmation that the Supabase Auth **Site URL** and **Redirect URLs** were actually added for the production domain (https://veleminytap.vercel.app) in the Supabase dashboard — this was flagged at the end of the deployment phase with "I'll do it now," but no confirmation of completion has been received since. Auth flows on production can't be trusted to work correctly until this is confirmed.
-- A Resend account/API key, whenever ready — the app runs fully without one today (negative-feedback alert emails are skipped with a console warning), so this isn't blocking, just needed for that feature to actually deliver emails in production.
+- ~~Confirmation that the Supabase Auth Site URL/Redirect URLs were added for production.~~ **Confirmed done.**
+- **Verify a sending domain in Resend** (resend.com/domains) so alert emails can actually reach real recipients, then update `RESEND_FROM_EMAIL` (locally and in Vercel) to an address on that domain. Until then, alerts only deliver to the Resend account's own verified email.
 - A decision on whether/when to prioritize Sentry vs. Playwright/CI vs. further product features, since all three are real remaining gaps and none is strictly higher priority than the others from the code alone.
 
-## Not yet committed / pushed / deployed as of this writing
+## Deployed
 
-All Phase 14 work described above exists in the local working tree only. The next actions are: commit (conventional-commit-style, split by type), push to GitHub, and redeploy to Vercel production — see `REVIEW_REQUEST.md` for the itemized diff this covers.
+Phase 14 (feat/test/docs, commits `47ec557`/`b9baf5f`/`1daf267`) and the Resend wiring above are both committed, pushed to GitHub, and live on Vercel production.
