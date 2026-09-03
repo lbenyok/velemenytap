@@ -178,6 +178,7 @@ export interface Database {
           nfc_card_id: number;
           rating: number;
           feedback_text: string | null;
+          internal_note: string | null;
           status: FeedbackStatus;
           created_at: string;
           updated_at: string;
@@ -189,6 +190,7 @@ export interface Database {
           nfc_card_id: number;
           rating: number;
           feedback_text?: string | null;
+          internal_note?: string | null;
           status?: FeedbackStatus;
           created_at?: string;
           updated_at?: string;
@@ -200,6 +202,7 @@ export interface Database {
           nfc_card_id?: number;
           rating?: number;
           feedback_text?: string | null;
+          internal_note?: string | null;
           status?: FeedbackStatus;
           created_at?: string;
           updated_at?: string;

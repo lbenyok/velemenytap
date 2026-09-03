@@ -40,6 +40,9 @@ export default async function DashboardLayout({
             <Link href="/dashboard/nfc-cards" className="hover:text-foreground">
               NFC Cards
             </Link>
+            <Link href="/dashboard/feedback" className="hover:text-foreground">
+              Feedback
+            </Link>
           </nav>
         </div>
         <div className="flex items-center gap-3">
