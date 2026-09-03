@@ -79,7 +79,7 @@ export async function sendNegativeFeedbackAlert(params: {
     const fromAddress = process.env.RESEND_FROM_EMAIL ?? "onboarding@resend.dev";
 
     const { error: sendError } = await resend.emails.send({
-      from: `VéleményTap <${fromAddress}>`,
+      from: `Velemenytap <${fromAddress}>`,
       to: recipients,
       subject: `${stars} New feedback for ${params.locationName}`,
       html: `
