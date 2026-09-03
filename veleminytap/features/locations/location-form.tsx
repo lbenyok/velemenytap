@@ -21,7 +21,6 @@ export type LocationFormValues = {
   name: string;
   address: string | null;
   google_review_url: string | null;
-  updated_at: string;
 };
 
 const initialState: LocationActionState = {};

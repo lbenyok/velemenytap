@@ -8,25 +8,29 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { LocationForm, type LocationFormValues } from "./location-form";
+import {
+  NfcCardForm,
+  type NfcCardFormValues,
+  type LocationOption,
+} from "./nfc-card-form";
 
-export function LocationDialog({
+export function NfcCardDialog({
   trigger,
-  location,
+  card,
+  locations,
 }: {
   trigger: ReactElement;
-  location?: LocationFormValues;
+  card?: NfcCardFormValues;
+  locations: LocationOption[];
 }) {
   const [open, setOpen] = useState(false);
   // Bumped only when the dialog opens, so the form remounts with fresh
   // defaultValues each time it's opened for editing. Deliberately NOT
-  // keyed on location.updated_at: a successful save's revalidatePath
-  // delivers new props in the same response as the action result, so
-  // keying on updated_at would remount (and reset) the form the instant
-  // it succeeds -- before its useActionState success state could ever be
-  // observed, silently breaking the "close dialog on success" effect
-  // below. (Confirmed this actually happens, not just theoretical, while
-  // building the near-identical NFC card dialog.)
+  // keyed on card.updated_at: a successful save's revalidatePath delivers
+  // new props in the same response as the action result, so keying on
+  // updated_at would remount (and reset) the form the instant it succeeds
+  // -- before its useActionState success state could ever be observed,
+  // silently breaking the "close dialog on success" effect below.
   const [session, setSession] = useState(0);
 
   return (
@@ -40,13 +44,12 @@ export function LocationDialog({
       <DialogTrigger render={trigger} />
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>
-            {location ? "Edit location" : "Add location"}
-          </DialogTitle>
+          <DialogTitle>{card ? "Edit card" : "Add NFC card"}</DialogTitle>
         </DialogHeader>
-        <LocationForm
+        <NfcCardForm
           key={session}
-          location={location}
+          card={card}
+          locations={locations}
           onSuccess={() => setOpen(false)}
         />
       </DialogContent>

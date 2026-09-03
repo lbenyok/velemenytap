@@ -37,6 +37,9 @@ export default async function DashboardLayout({
             <Link href="/dashboard/locations" className="hover:text-foreground">
               Locations
             </Link>
+            <Link href="/dashboard/nfc-cards" className="hover:text-foreground">
+              NFC Cards
+            </Link>
           </nav>
         </div>
         <div className="flex items-center gap-3">

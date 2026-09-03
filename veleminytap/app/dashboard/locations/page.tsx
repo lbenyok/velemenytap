@@ -13,7 +13,7 @@ export default async function LocationsPage() {
 
   const { data: locations } = await supabase
     .from("locations")
-    .select("id, name, address, google_review_url, status, updated_at")
+    .select("id, name, address, google_review_url, status")
     .eq("organization_id", organization?.id ?? 0)
     .order("name", { ascending: true });
 
