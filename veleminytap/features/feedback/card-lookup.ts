@@ -8,6 +8,7 @@ export type PublicCardInfo = {
   locationId: number;
   organizationName: string;
   locationName: string;
+  cardName: string | null;
   googleReviewUrl: string | null;
   isActive: boolean;
 };
@@ -33,7 +34,7 @@ export async function lookupPublicCard(
   const { data } = await admin
     .from("nfc_cards")
     .select(
-      "id, organization_id, location_id, status, organizations(name), locations(name, status, google_review_url)",
+      "id, organization_id, location_id, status, display_name, organizations(name), locations(name, status, google_review_url)",
     )
     .eq("public_id", publicId)
     .maybeSingle();
@@ -48,6 +49,7 @@ export async function lookupPublicCard(
     locationId: data.location_id,
     organizationName: data.organizations.name,
     locationName: data.locations.name,
+    cardName: data.display_name,
     googleReviewUrl: data.locations.google_review_url,
     isActive: data.status === "active" && data.locations.status === "active",
   };

@@ -1,8 +1,13 @@
 "use server";
 
+import { after } from "next/server";
 import { z } from "zod";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { lookupPublicCard } from "./card-lookup";
+import {
+  isNegativeRating,
+  sendNegativeFeedbackAlert,
+} from "@/features/notifications/negative-feedback-alert";
 
 export type FeedbackActionState =
   | { status: "idle" }
@@ -64,6 +69,25 @@ export async function submitFeedbackAction(
       status: "error",
       error: "Could not send your feedback. Please try again.",
     };
+  }
+
+  // Negative-feedback alerts are a side effect of a successful submission,
+  // never a condition of one: this must never affect the customer-facing
+  // response (success/failure, timing, or the Google Review CTA below),
+  // which is exactly why it's deferred to after() -- it runs once the
+  // response has already been sent, so email latency or a Resend outage
+  // can't slow down or break the submission.
+  if (isNegativeRating(parsed.data.rating)) {
+    after(() =>
+      sendNegativeFeedbackAlert({
+        organizationId: card.organizationId,
+        organizationName: card.organizationName,
+        locationName: card.locationName,
+        cardName: card.cardName,
+        rating: parsed.data.rating,
+        feedbackText: parsed.data.feedback_text,
+      }),
+    );
   }
 
   return {
