@@ -69,7 +69,15 @@ export function NfcCardForm({
             <SelectTrigger id="location_id" className="w-full">
               <SelectValue placeholder="Choose a location" />
             </SelectTrigger>
-            <SelectContent>
+            {/* alignItemWithTrigger (the default) positions the matching
+                item exactly over the trigger. With exactly one option --
+                the common case for a brand-new org with one location --
+                that positioning breaks (the option lands at (0,0) and
+                can't be clicked), because there's no other item to force
+                the popup into its normal below-trigger layout. Disabling
+                it makes the list render the same way regardless of how
+                many options there are. */}
+            <SelectContent alignItemWithTrigger={false}>
               {locations.map((location) => (
                 <SelectItem key={location.value} value={location.value}>
                   {location.label}

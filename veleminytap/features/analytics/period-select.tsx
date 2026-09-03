@@ -33,7 +33,11 @@ export function PeriodSelect({ value }: { value: string }) {
       <SelectTrigger size="sm">
         <SelectValue />
       </SelectTrigger>
-      <SelectContent>
+      {/* See nfc-card-form.tsx for why: alignItemWithTrigger breaks when a
+          Select has exactly one option. This list is fixed at 3, but kept
+          consistent with every other Select in the app rather than relying
+          on that. */}
+      <SelectContent alignItemWithTrigger={false}>
         {PERIOD_ITEMS.map((item) => (
           <SelectItem key={item.value} value={item.value}>
             {item.label}

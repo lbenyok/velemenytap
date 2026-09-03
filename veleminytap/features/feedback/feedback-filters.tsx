@@ -54,6 +54,12 @@ export function FeedbackFilters({ locations }: { locations: LocationOption[] }) 
     router.push(qs ? `${pathname}?${qs}` : pathname);
   }
 
+  // Every SelectContent below disables alignItemWithTrigger: it breaks when
+  // a Select has exactly one option (the matching item lands at (0,0) and
+  // can't be clicked) -- see nfc-card-form.tsx. Only the location filter can
+  // actually hit that (an org with zero locations leaves just "All
+  // locations"), but all four are kept consistent rather than relying on
+  // the other three always having a fixed item count.
   return (
     <div className="flex flex-wrap gap-2">
       <Select
@@ -64,7 +70,7 @@ export function FeedbackFilters({ locations }: { locations: LocationOption[] }) 
         <SelectTrigger size="sm">
           <SelectValue />
         </SelectTrigger>
-        <SelectContent>
+        <SelectContent alignItemWithTrigger={false}>
           {STATUS_ITEMS.map((item) => (
             <SelectItem key={item.value} value={item.value}>
               {item.label}
@@ -81,7 +87,7 @@ export function FeedbackFilters({ locations }: { locations: LocationOption[] }) 
         <SelectTrigger size="sm">
           <SelectValue />
         </SelectTrigger>
-        <SelectContent>
+        <SelectContent alignItemWithTrigger={false}>
           {RATING_ITEMS.map((item) => (
             <SelectItem key={item.value} value={item.value}>
               {item.label}
@@ -98,7 +104,7 @@ export function FeedbackFilters({ locations }: { locations: LocationOption[] }) 
         <SelectTrigger size="sm">
           <SelectValue />
         </SelectTrigger>
-        <SelectContent>
+        <SelectContent alignItemWithTrigger={false}>
           {locationItems.map((item) => (
             <SelectItem key={item.value} value={item.value}>
               {item.label}
@@ -115,7 +121,7 @@ export function FeedbackFilters({ locations }: { locations: LocationOption[] }) 
         <SelectTrigger size="sm">
           <SelectValue />
         </SelectTrigger>
-        <SelectContent>
+        <SelectContent alignItemWithTrigger={false}>
           {DAYS_ITEMS.map((item) => (
             <SelectItem key={item.value} value={item.value}>
               {item.label}
