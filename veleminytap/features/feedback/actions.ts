@@ -1,9 +1,10 @@
 "use server";
 
 import { after } from "next/server";
-import { z } from "zod";
+import { cookies } from "next/headers";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { lookupPublicCard } from "./card-lookup";
+import { feedbackSchema } from "./schema";
 import {
   isNegativeRating,
   sendNegativeFeedbackAlert,
@@ -14,15 +15,21 @@ export type FeedbackActionState =
   | { status: "error"; error: string }
   | { status: "success"; organizationName: string; googleReviewUrl: string | null };
 
-const feedbackSchema = z.object({
-  public_id: z.string().uuid(),
-  rating: z.coerce.number().int().min(1).max(5),
-  feedback_text: z
-    .string()
-    .trim()
-    .max(1000, "Please keep feedback under 1000 characters.")
-    .transform((v) => (v === "" ? null : v)),
-});
+// Anti-spam posture for this endpoint (documented in SECURITY.md): no IP-
+// based or Redis-backed rate limiting, deliberately. Vercel's serverless
+// functions don't share memory across instances, so an in-process limiter
+// would be unreliable without adding real infrastructure -- not justified
+// for MVP per "avoid unnecessary infrastructure." What's implemented
+// instead is the practical, no-infra case that actually matters for NFC
+// use: an accidental double-tap or a customer re-submitting the same card
+// a few times in a row. A short-lived, HttpOnly, card-scoped cookie (no
+// personal data, just an opaque marker) blocks that without touching
+// legitimate customers on other cards or other visits.
+const DUPLICATE_WINDOW_SECONDS = 5 * 60;
+
+function duplicateCookieName(publicId: string): string {
+  return `fb_sent_${publicId}`;
+}
 
 /**
  * The only write path into the feedback table (see the schema migration --
@@ -50,6 +57,15 @@ export async function submitFeedbackAction(
     };
   }
 
+  const cookieStore = await cookies();
+  const cookieName = duplicateCookieName(parsed.data.public_id);
+  if (cookieStore.get(cookieName)) {
+    return {
+      status: "error",
+      error: "You've already sent feedback for this visit. Thank you!",
+    };
+  }
+
   const card = await lookupPublicCard(parsed.data.public_id);
   if (!card || !card.isActive) {
     return { status: "error", error: "This feedback link is no longer active." };
@@ -70,6 +86,14 @@ export async function submitFeedbackAction(
       error: "Could not send your feedback. Please try again.",
     };
   }
+
+  cookieStore.set(cookieName, "1", {
+    httpOnly: true,
+    secure: true,
+    sameSite: "lax",
+    maxAge: DUPLICATE_WINDOW_SECONDS,
+    path: `/r/${parsed.data.public_id}`,
+  });
 
   // Negative-feedback alerts are a side effect of a successful submission,
   // never a condition of one: this must never affect the customer-facing

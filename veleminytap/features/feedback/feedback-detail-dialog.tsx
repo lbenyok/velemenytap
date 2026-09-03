@@ -11,12 +11,14 @@ import {
 } from "@/components/ui/dialog";
 import { RatingStars } from "./rating-stars";
 import { FeedbackDetailForm } from "./feedback-detail-form";
+import { PriorityBadge } from "./priority-badge";
 
 export type FeedbackDetailRow = {
   id: number;
   rating: number;
   feedback_text: string | null;
   status: string;
+  priority: string;
   internal_note: string | null;
   created_at: string;
   location_name: string;
@@ -48,6 +50,7 @@ export function FeedbackDetailDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <RatingStars rating={feedback.rating} />
+            <PriorityBadge priority={feedback.priority} />
           </DialogTitle>
           <DialogDescription>
             {feedback.location_name}

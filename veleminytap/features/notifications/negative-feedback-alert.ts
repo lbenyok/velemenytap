@@ -45,18 +45,32 @@ export async function sendNegativeFeedbackAlert(params: {
 
   try {
     const admin = createAdminClient();
-    const { data: members } = await admin
-      .from("organization_memberships")
-      .select("user_id")
-      .eq("organization_id", params.organizationId)
-      .in("role", ALERT_ROLES);
 
-    if (!members || members.length === 0) return;
+    // A configured notification_email is an explicit override of the
+    // default "email every owner/admin/manager" behavior -- it's how an
+    // org routes alerts to a shared inbox instead of individual accounts.
+    const { data: org } = await admin
+      .from("organizations")
+      .select("notification_email")
+      .eq("id", params.organizationId)
+      .single();
 
-    const recipients: string[] = [];
-    for (const member of members) {
-      const { data } = await admin.auth.admin.getUserById(member.user_id);
-      if (data.user?.email) recipients.push(data.user.email);
+    let recipients: string[] = [];
+    if (org?.notification_email) {
+      recipients = [org.notification_email];
+    } else {
+      const { data: members } = await admin
+        .from("organization_memberships")
+        .select("user_id")
+        .eq("organization_id", params.organizationId)
+        .in("role", ALERT_ROLES);
+
+      if (!members || members.length === 0) return;
+
+      for (const member of members) {
+        const { data } = await admin.auth.admin.getUserById(member.user_id);
+        if (data.user?.email) recipients.push(data.user.email);
+      }
     }
     if (recipients.length === 0) return;
 

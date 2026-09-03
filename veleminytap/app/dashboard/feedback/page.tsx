@@ -3,7 +3,11 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentOrganization } from "@/features/organizations/current";
-import { FeedbackFilters, type LocationOption } from "@/features/feedback/feedback-filters";
+import {
+  FeedbackFilters,
+  type LocationOption,
+  type CardOption,
+} from "@/features/feedback/feedback-filters";
 import { FeedbackTable } from "@/features/feedback/feedback-table";
 import type { FeedbackDetailRow } from "@/features/feedback/feedback-detail-dialog";
 
@@ -15,6 +19,7 @@ type SearchParams = {
   status?: string;
   rating?: string;
   location?: string;
+  card?: string;
   days?: string;
   cursor?: string;
 };
@@ -33,12 +38,13 @@ export default async function FeedbackPage({
   const status = VALID_STATUSES.find((s) => s === sp.status) ?? "all";
   const rating = sp.rating ?? "all";
   const locationId = sp.location ?? "all";
+  const cardId = sp.card ?? "all";
   const days = sp.days ?? "all";
 
   let query = supabase
     .from("feedback")
     .select(
-      "id, rating, feedback_text, status, internal_note, created_at, locations(name), nfc_cards(display_name)",
+      "id, rating, feedback_text, status, priority, internal_note, created_at, locations(name), nfc_cards(display_name)",
     )
     .eq("organization_id", orgId)
     .order("created_at", { ascending: false })
@@ -47,6 +53,7 @@ export default async function FeedbackPage({
   if (status !== "all") query = query.eq("status", status);
   if (rating !== "all") query = query.eq("rating", Number(rating));
   if (locationId !== "all") query = query.eq("location_id", Number(locationId));
+  if (cardId !== "all") query = query.eq("nfc_card_id", Number(cardId));
   if (days !== "all") {
     // This is a plain async Server Component running once per request, not
     // something the React Compiler memoizes or double-invokes -- reading
@@ -58,13 +65,18 @@ export default async function FeedbackPage({
   }
   if (sp.cursor) query = query.lt("created_at", sp.cursor);
 
-  const [{ data: feedback }, { data: locations }] = await Promise.all([
+  const [{ data: feedback }, { data: locations }, { data: cards }] = await Promise.all([
     query,
     supabase
       .from("locations")
       .select("id, name")
       .eq("organization_id", orgId)
       .order("name", { ascending: true }),
+    supabase
+      .from("nfc_cards")
+      .select("id, display_name, locations(name)")
+      .eq("organization_id", orgId)
+      .order("created_at", { ascending: true }),
   ]);
 
   const rows = feedback ?? [];
@@ -76,6 +88,7 @@ export default async function FeedbackPage({
     rating: f.rating,
     feedback_text: f.feedback_text,
     status: f.status,
+    priority: f.priority,
     internal_note: f.internal_note,
     created_at: f.created_at,
     location_name: f.locations?.name ?? "—",
@@ -87,13 +100,25 @@ export default async function FeedbackPage({
     label: l.name,
   }));
 
+  const cardOptions: CardOption[] = (cards ?? []).map((c) => ({
+    value: String(c.id),
+    label: c.display_name
+      ? `${c.display_name} (${c.locations?.name ?? "—"})`
+      : `Untitled card (${c.locations?.name ?? "—"})`,
+  }));
+
   const hasActiveFilters =
-    status !== "all" || rating !== "all" || locationId !== "all" || days !== "all";
+    status !== "all" ||
+    rating !== "all" ||
+    locationId !== "all" ||
+    cardId !== "all" ||
+    days !== "all";
 
   const nextParams = new URLSearchParams();
   if (status !== "all") nextParams.set("status", status);
   if (rating !== "all") nextParams.set("rating", rating);
   if (locationId !== "all") nextParams.set("location", locationId);
+  if (cardId !== "all") nextParams.set("card", cardId);
   if (days !== "all") nextParams.set("days", days);
   if (hasMore) {
     nextParams.set("cursor", pageRows[pageRows.length - 1].created_at);
@@ -108,7 +133,7 @@ export default async function FeedbackPage({
         </p>
       </div>
       <Suspense>
-        <FeedbackFilters locations={locationOptions} />
+        <FeedbackFilters locations={locationOptions} cards={cardOptions} />
       </Suspense>
       <FeedbackTable rows={detailRows} hasActiveFilters={hasActiveFilters} />
       {hasMore ? (

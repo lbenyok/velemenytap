@@ -51,7 +51,7 @@ export function dailySeries(rows: FeedbackRow[], days: number): DailyPoint[] {
 
 export type RatingBucket = { rating: number; count: number };
 
-export function ratingDistribution(rows: FeedbackRow[]): RatingBucket[] {
+export function ratingDistribution(rows: { rating: number }[]): RatingBucket[] {
   const counts = [0, 0, 0, 0, 0];
   for (const row of rows) {
     if (row.rating >= 1 && row.rating <= 5) counts[row.rating - 1] += 1;

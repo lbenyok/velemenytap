@@ -15,6 +15,7 @@ export type MembershipRole = "owner" | "admin" | "manager" | "staff";
 export type LocationStatus = "active" | "inactive";
 export type NfcCardStatus = "active" | "inactive";
 export type FeedbackStatus = "new" | "in_progress" | "resolved";
+export type FeedbackPriority = "high" | "medium" | "normal";
 
 export interface Database {
   public: {
@@ -25,6 +26,8 @@ export interface Database {
           name: string;
           slug: string;
           settings: Json;
+          notification_email: string | null;
+          logo_url: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -33,6 +36,8 @@ export interface Database {
           name: string;
           slug: string;
           settings?: Json;
+          notification_email?: string | null;
+          logo_url?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -41,6 +46,29 @@ export interface Database {
           name?: string;
           slug?: string;
           settings?: Json;
+          notification_email?: string | null;
+          logo_url?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      profiles: {
+        Row: {
+          id: string;
+          full_name: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id: string;
+          full_name?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          full_name?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -180,6 +208,7 @@ export interface Database {
           feedback_text: string | null;
           internal_note: string | null;
           status: FeedbackStatus;
+          priority: FeedbackPriority;
           created_at: string;
           updated_at: string;
         };

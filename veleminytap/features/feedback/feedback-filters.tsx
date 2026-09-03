@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/select";
 
 export type LocationOption = { value: string; label: string };
+export type CardOption = { value: string; label: string };
 
 const STATUS_ITEMS = [
   { value: "all", label: "All statuses" },
@@ -34,12 +35,19 @@ const DAYS_ITEMS = [
   { value: "90", label: "Last 90 days" },
 ];
 
-export function FeedbackFilters({ locations }: { locations: LocationOption[] }) {
+export function FeedbackFilters({
+  locations,
+  cards,
+}: {
+  locations: LocationOption[];
+  cards: CardOption[];
+}) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
   const locationItems = [{ value: "all", label: "All locations" }, ...locations];
+  const cardItems = [{ value: "all", label: "All NFC cards" }, ...cards];
 
   function setParam(key: string, value: string) {
     const params = new URLSearchParams(searchParams);
@@ -106,6 +114,23 @@ export function FeedbackFilters({ locations }: { locations: LocationOption[] }) 
         </SelectTrigger>
         <SelectContent alignItemWithTrigger={false}>
           {locationItems.map((item) => (
+            <SelectItem key={item.value} value={item.value}>
+              {item.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+
+      <Select
+        items={cardItems}
+        value={searchParams.get("card") ?? "all"}
+        onValueChange={(v) => setParam("card", v as string)}
+      >
+        <SelectTrigger size="sm">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent alignItemWithTrigger={false}>
+          {cardItems.map((item) => (
             <SelectItem key={item.value} value={item.value}>
               {item.label}
             </SelectItem>

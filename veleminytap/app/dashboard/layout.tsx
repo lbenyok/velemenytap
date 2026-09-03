@@ -46,6 +46,9 @@ export default async function DashboardLayout({
             <Link href="/dashboard/analytics" className="hover:text-foreground">
               Analytics
             </Link>
+            <Link href="/dashboard/settings" className="hover:text-foreground">
+              Settings
+            </Link>
           </nav>
         </div>
         <div className="flex items-center gap-3">

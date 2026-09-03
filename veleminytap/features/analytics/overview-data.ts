@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createClient } from "@/lib/supabase/server";
+import { ratingDistribution, type RatingBucket } from "./aggregate";
 
 export type RecentFeedbackItem = {
   id: number;
@@ -14,7 +15,10 @@ export type RecentFeedbackItem = {
 export type OverviewStats = {
   total: number;
   averageRating: number | null;
-  unresolved: number;
+  today: number;
+  thisWeek: number;
+  unresolvedNegative: number;
+  distribution: RatingBucket[];
   recent: RecentFeedbackItem[];
 };
 
@@ -38,7 +42,23 @@ export async function getOverviewStats(organizationId: number): Promise<Overview
   const total = rows.length;
   const averageRating =
     total > 0 ? Number((rows.reduce((sum, r) => sum + r.rating, 0) / total).toFixed(1)) : null;
-  const unresolved = rows.filter((r) => r.status !== "resolved").length;
+
+  // "Today" and "this week" are UTC-day-based and rolling-7-day
+  // respectively, same semantics as the Analytics period selector (not a
+  // calendar week starting Monday) -- kept consistent rather than
+  // introducing a second definition of "week" elsewhere in the app.
+  const now = new Date();
+  const todayStart = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+  );
+  const weekStart = new Date(todayStart.getTime() - 6 * 24 * 60 * 60 * 1000);
+
+  const today = rows.filter((r) => new Date(r.created_at) >= todayStart).length;
+  const thisWeek = rows.filter((r) => new Date(r.created_at) >= weekStart).length;
+  const unresolvedNegative = rows.filter(
+    (r) => r.rating <= 2 && r.status !== "resolved",
+  ).length;
+
   const recent: RecentFeedbackItem[] = rows.slice(0, 5).map((r) => ({
     id: r.id,
     rating: r.rating,
@@ -48,5 +68,13 @@ export async function getOverviewStats(organizationId: number): Promise<Overview
     location_name: r.locations?.name ?? "—",
   }));
 
-  return { total, averageRating, unresolved, recent };
+  return {
+    total,
+    averageRating,
+    today,
+    thisWeek,
+    unresolvedNegative,
+    distribution: ratingDistribution(rows),
+    recent,
+  };
 }
