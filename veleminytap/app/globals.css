@@ -127,3 +127,16 @@
     @apply font-sans;
     }
 }
+/* Public NFC feedback page: a deliberately distinct, warm, light-only
+   customer-facing palette, separate from the dashboard's shadcn theme.
+   Scoped so it never bleeds into the operator dashboard. */
+.public-feedback {
+  --pf-bg: #f7f4ef;
+  --pf-surface: #ffffff;
+  --pf-ink: #241b16;
+  --pf-ink-muted: #6b5d52;
+  --pf-wine: #5b2338;
+  --pf-wine-hover: #4a1c2d;
+  --pf-gold: #d89b2e;
+  --pf-line: #e8ddd0;
+}

@@ -2,9 +2,10 @@ import { createServerClient } from "@supabase/ssr";
 import { type NextRequest, NextResponse } from "next/server";
 
 // Protect-by-default: everything requires auth except this explicit
-// allowlist. Update this when new public routes are added (e.g. the
-// public NFC landing page in a later step, and the marketing home page).
-const PUBLIC_PATHS = ["/", "/login", "/signup", "/auth"];
+// allowlist. /r is the public NFC landing page — customers reach it by
+// tapping a physical card, never signed in. Update this when new public
+// routes are added (e.g. a marketing home page).
+const PUBLIC_PATHS = ["/", "/login", "/signup", "/auth", "/r"];
 
 function isPublicPath(pathname: string): boolean {
   return PUBLIC_PATHS.some(
