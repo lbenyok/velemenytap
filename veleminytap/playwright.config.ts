@@ -13,9 +13,18 @@ export default defineConfig({
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
-    command: "npm run dev",
+    // In CI, run against a production build (npm run build is a separate
+    // workflow step) -- next start comes up in a second or two, versus
+    // next dev's Turbopack cold-start which timed out against Playwright's
+    // webServer wait on a GitHub-hosted runner (see the run this replaced:
+    // https://github.com/lbenyok/velemenytap/actions/runs/33796244231).
+    // Piping stdout/stderr means a future startup failure is visible in
+    // the CI log instead of just "timed out waiting".
+    command: process.env.CI ? "npm run start" : "npm run dev",
     url: "http://localhost:3000",
     reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
+    timeout: 60_000,
+    stdout: "pipe",
+    stderr: "pipe",
   },
 });
