@@ -1,7 +1,18 @@
 import { createServerClient } from "@supabase/ssr";
 import { type NextRequest, NextResponse } from "next/server";
 
-export async function middleware(request: NextRequest) {
+// Protect-by-default: everything requires auth except this explicit
+// allowlist. Update this when new public routes are added (e.g. the
+// public NFC landing page in a later step, and the marketing home page).
+const PUBLIC_PATHS = ["/", "/login", "/signup", "/auth"];
+
+function isPublicPath(pathname: string): boolean {
+  return PUBLIC_PATHS.some(
+    (path) => pathname === path || pathname.startsWith(`${path}/`),
+  );
+}
+
+export async function proxy(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
 
   const supabase = createServerClient(
@@ -27,7 +38,13 @@ export async function middleware(request: NextRequest) {
 
   // Refreshes the session cookie; also protects against reading a stale
   // session from a Server Component (auth cannot be trusted without this).
-  await supabase.auth.getClaims();
+  const { data } = await supabase.auth.getClaims();
+
+  if (!data?.claims.sub && !isPublicPath(request.nextUrl.pathname)) {
+    const loginUrl = new URL("/login", request.url);
+    loginUrl.searchParams.set("next", request.nextUrl.pathname);
+    return NextResponse.redirect(loginUrl);
+  }
 
   return supabaseResponse;
 }
