@@ -13,26 +13,26 @@ export type LocationOption = { value: string; label: string };
 export type CardOption = { value: string; label: string };
 
 const STATUS_ITEMS = [
-  { value: "all", label: "All statuses" },
-  { value: "new", label: "New" },
-  { value: "in_progress", label: "In progress" },
-  { value: "resolved", label: "Resolved" },
+  { value: "all", label: "Minden állapot" },
+  { value: "new", label: "Új" },
+  { value: "in_progress", label: "Folyamatban" },
+  { value: "resolved", label: "Megoldva" },
 ];
 
 const RATING_ITEMS = [
-  { value: "all", label: "All ratings" },
-  { value: "5", label: "5 stars" },
-  { value: "4", label: "4 stars" },
-  { value: "3", label: "3 stars" },
-  { value: "2", label: "2 stars" },
-  { value: "1", label: "1 star" },
+  { value: "all", label: "Minden értékelés" },
+  { value: "5", label: "5 csillag" },
+  { value: "4", label: "4 csillag" },
+  { value: "3", label: "3 csillag" },
+  { value: "2", label: "2 csillag" },
+  { value: "1", label: "1 csillag" },
 ];
 
 const DAYS_ITEMS = [
-  { value: "all", label: "All time" },
-  { value: "7", label: "Last 7 days" },
-  { value: "30", label: "Last 30 days" },
-  { value: "90", label: "Last 90 days" },
+  { value: "all", label: "Minden időszak" },
+  { value: "7", label: "Elmúlt 7 nap" },
+  { value: "30", label: "Elmúlt 30 nap" },
+  { value: "90", label: "Elmúlt 90 nap" },
 ];
 
 export function FeedbackFilters({
@@ -46,8 +46,8 @@ export function FeedbackFilters({
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
-  const locationItems = [{ value: "all", label: "All locations" }, ...locations];
-  const cardItems = [{ value: "all", label: "All NFC cards" }, ...cards];
+  const locationItems = [{ value: "all", label: "Minden helyszín" }, ...locations];
+  const cardItems = [{ value: "all", label: "Minden NFC kártya" }, ...cards];
 
   function setParam(key: string, value: string) {
     const params = new URLSearchParams(searchParams);

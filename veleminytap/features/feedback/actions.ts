@@ -53,7 +53,7 @@ export async function submitFeedbackAction(
   if (!parsed.success) {
     return {
       status: "error",
-      error: parsed.error.issues[0]?.message ?? "Something went wrong. Please try again.",
+      error: parsed.error.issues[0]?.message ?? "Hiba történt. Kérjük, próbáld újra.",
     };
   }
 
@@ -62,13 +62,13 @@ export async function submitFeedbackAction(
   if (cookieStore.get(cookieName)) {
     return {
       status: "error",
-      error: "You've already sent feedback for this visit. Thank you!",
+      error: "Ehhez a látogatáshoz már küldtél véleményt. Köszönjük!",
     };
   }
 
   const card = await lookupPublicCard(parsed.data.public_id);
   if (!card || !card.isActive) {
-    return { status: "error", error: "This feedback link is no longer active." };
+    return { status: "error", error: "Ez a link már nem aktív." };
   }
 
   const admin = createAdminClient();
@@ -83,7 +83,7 @@ export async function submitFeedbackAction(
   if (error) {
     return {
       status: "error",
-      error: "Could not send your feedback. Please try again.",
+      error: "Nem sikerült elküldeni a véleményedet. Kérjük, próbáld újra.",
     };
   }
 

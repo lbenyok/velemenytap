@@ -14,12 +14,12 @@ const nfcCardSchema = z.object({
   display_name: z
     .string()
     .trim()
-    .max(100, "Name is too long.")
+    .max(100, "A név túl hosszú.")
     .transform((v) => (v === "" ? null : v)),
   location_id: z.coerce
     .number()
     .int()
-    .positive("Choose a location."),
+    .positive("Válassz egy helyszínt."),
 });
 
 function parseNfcCardForm(formData: FormData) {
@@ -53,16 +53,16 @@ export async function createNfcCardAction(
 ): Promise<NfcCardActionState> {
   const organization = await getCurrentOrganization();
   if (!organization) {
-    return { error: "No organization found for your account." };
+    return { error: "Nem található szervezet a fiókodhoz." };
   }
 
   const parsed = parseNfcCardForm(formData);
   if (!parsed.success) {
-    return { error: parsed.error.issues[0]?.message ?? "Invalid input." };
+    return { error: parsed.error.issues[0]?.message ?? "Érvénytelen adat." };
   }
 
   if (!(await locationBelongsToOrg(parsed.data.location_id, organization.id))) {
-    return { error: "Choose a valid location." };
+    return { error: "Válassz egy érvényes helyszínt." };
   }
 
   const supabase = await createClient();
@@ -73,7 +73,7 @@ export async function createNfcCardAction(
   });
 
   if (error) {
-    return { error: "Could not create the card. Please try again." };
+    return { error: "Nem sikerült létrehozni a kártyát. Kérjük, próbáld újra." };
   }
 
   revalidatePath("/dashboard/nfc-cards");
@@ -86,21 +86,21 @@ export async function updateNfcCardAction(
 ): Promise<NfcCardActionState> {
   const organization = await getCurrentOrganization();
   if (!organization) {
-    return { error: "No organization found for your account." };
+    return { error: "Nem található szervezet a fiókodhoz." };
   }
 
   const cardId = Number(formData.get("id"));
   if (!Number.isInteger(cardId) || cardId <= 0) {
-    return { error: "Invalid card." };
+    return { error: "Érvénytelen kártya." };
   }
 
   const parsed = parseNfcCardForm(formData);
   if (!parsed.success) {
-    return { error: parsed.error.issues[0]?.message ?? "Invalid input." };
+    return { error: parsed.error.issues[0]?.message ?? "Érvénytelen adat." };
   }
 
   if (!(await locationBelongsToOrg(parsed.data.location_id, organization.id))) {
-    return { error: "Choose a valid location." };
+    return { error: "Válassz egy érvényes helyszínt." };
   }
 
   const supabase = await createClient();
@@ -116,7 +116,7 @@ export async function updateNfcCardAction(
     .single();
 
   if (error) {
-    return { error: "Could not update the card. Please try again." };
+    return { error: "Nem sikerült frissíteni a kártyát. Kérjük, próbáld újra." };
   }
 
   revalidatePath("/dashboard/nfc-cards");

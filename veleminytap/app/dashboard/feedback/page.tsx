@@ -11,7 +11,7 @@ import {
 import { FeedbackTable } from "@/features/feedback/feedback-table";
 import type { FeedbackDetailRow } from "@/features/feedback/feedback-detail-dialog";
 
-export const metadata: Metadata = { title: "Feedback — VéleményTap" };
+export const metadata: Metadata = { title: "Vélemények — VéleményTap" };
 
 const PAGE_SIZE = 20;
 
@@ -104,7 +104,7 @@ export default async function FeedbackPage({
     value: String(c.id),
     label: c.display_name
       ? `${c.display_name} (${c.locations?.name ?? "—"})`
-      : `Untitled card (${c.locations?.name ?? "—"})`,
+      : `Névtelen kártya (${c.locations?.name ?? "—"})`,
   }));
 
   const hasActiveFilters =
@@ -127,9 +127,9 @@ export default async function FeedbackPage({
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">Feedback</h1>
+        <h1 className="text-xl font-semibold tracking-tight">Vélemények</h1>
         <p className="text-sm text-muted-foreground">
-          Everything customers have submitted, newest first.
+          Minden, amit a vásárlók beküldtek, legújabb elöl.
         </p>
       </div>
       <Suspense>
@@ -142,7 +142,7 @@ export default async function FeedbackPage({
             href={`/dashboard/feedback?${nextParams.toString()}`}
             className="text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground"
           >
-            Load older feedback
+            Régebbi vélemények betöltése
           </Link>
         </div>
       ) : null}

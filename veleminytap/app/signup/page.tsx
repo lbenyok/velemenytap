@@ -2,13 +2,13 @@ import type { Metadata } from "next";
 import { AuthShell } from "@/features/auth/auth-shell";
 import { SignupForm } from "@/features/auth/signup-form";
 
-export const metadata: Metadata = { title: "Create account — VéleményTap" };
+export const metadata: Metadata = { title: "Fiók létrehozása — VéleményTap" };
 
 export default function SignupPage() {
   return (
     <AuthShell
-      title="Create your account"
-      description="Start collecting customer feedback with VéleményTap."
+      title="Hozd létre a fiókodat"
+      description="Kezdj el vásárlói véleményeket gyűjteni a VéleményTap segítségével."
     >
       <SignupForm />
     </AuthShell>

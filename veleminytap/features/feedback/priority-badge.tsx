@@ -1,9 +1,9 @@
 import { Badge } from "@/components/ui/badge";
 
 const LABEL: Record<string, string> = {
-  high: "High priority",
-  medium: "Medium priority",
-  normal: "Normal",
+  high: "Magas prioritás",
+  medium: "Közepes prioritás",
+  normal: "Normál",
 };
 
 export function PriorityBadge({ priority }: { priority: string }) {

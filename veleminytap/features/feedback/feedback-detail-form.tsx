@@ -14,9 +14,9 @@ import {
 } from "@/components/ui/select";
 
 const STATUS_ITEMS = [
-  { value: "new", label: "New" },
-  { value: "in_progress", label: "In progress" },
-  { value: "resolved", label: "Resolved" },
+  { value: "new", label: "Új" },
+  { value: "in_progress", label: "Folyamatban" },
+  { value: "resolved", label: "Megoldva" },
 ];
 
 const initialState: UpdateFeedbackState = {};
@@ -49,7 +49,7 @@ export function FeedbackDetailForm({
       <input type="hidden" name="id" value={id} />
       <FieldGroup>
         <Field>
-          <FieldLabel htmlFor="status">Status</FieldLabel>
+          <FieldLabel htmlFor="status">Állapot</FieldLabel>
           <Select items={STATUS_ITEMS} name="status" defaultValue={status} required>
             <SelectTrigger id="status" className="w-full">
               <SelectValue />
@@ -68,22 +68,22 @@ export function FeedbackDetailForm({
           </Select>
         </Field>
         <Field data-invalid={!!state.error}>
-          <FieldLabel htmlFor="internal_note">Internal note</FieldLabel>
+          <FieldLabel htmlFor="internal_note">Belső megjegyzés</FieldLabel>
           <Textarea
             id="internal_note"
             name="internal_note"
             defaultValue={internalNote ?? ""}
             rows={4}
-            placeholder="Not visible to the customer"
+            placeholder="A vásárló nem látja"
             aria-invalid={!!state.error}
           />
           <FieldDescription className={state.error ? "text-destructive" : undefined}>
-            {state.error ?? "Visible only to your team."}
+            {state.error ?? "Csak a csapatod látja."}
           </FieldDescription>
         </Field>
         <Field>
           <Button type="submit" disabled={isPending}>
-            {isPending ? "Saving..." : "Save"}
+            {isPending ? "Mentés..." : "Mentés"}
           </Button>
         </Field>
       </FieldGroup>

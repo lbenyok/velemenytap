@@ -8,7 +8,7 @@ import { RatingStars } from "@/features/feedback/rating-stars";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyHeader, EmptyTitle, EmptyDescription } from "@/components/ui/empty";
 
-export const metadata: Metadata = { title: "Dashboard — VéleményTap" };
+export const metadata: Metadata = { title: "Áttekintés — VéleményTap" };
 
 export default async function DashboardPage() {
   const organization = await getCurrentOrganization();
@@ -18,28 +18,28 @@ export default async function DashboardPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-xl font-semibold tracking-tight">
-          Welcome to {organization?.name ?? "your business"}
+          Üdvözlünk, {organization?.name ?? "nálunk"}!
         </h1>
         <p className="text-sm text-muted-foreground">
-          Here&apos;s how things are going.
+          Íme, hogyan alakulnak mostanában a dolgok.
         </p>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-3 lg:grid-cols-5">
-        <StatTile label="Total feedback" value={String(stats.total)} />
+        <StatTile label="Összes vélemény" value={String(stats.total)} />
         <StatTile
-          label="Average rating"
+          label="Átlagos értékelés"
           value={stats.averageRating !== null ? stats.averageRating.toFixed(1) : "—"}
         />
-        <StatTile label="Today" value={String(stats.today)} />
-        <StatTile label="This week" value={String(stats.thisWeek)} />
-        <StatTile label="Unresolved negative" value={String(stats.unresolvedNegative)} />
+        <StatTile label="Ma" value={String(stats.today)} />
+        <StatTile label="Ezen a héten" value={String(stats.thisWeek)} />
+        <StatTile label="Megoldatlan negatív" value={String(stats.unresolvedNegative)} />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>Rating distribution</CardTitle>
+            <CardTitle>Értékelések megoszlása</CardTitle>
           </CardHeader>
           <CardContent>
             <CompactDistribution buckets={stats.distribution} />
@@ -48,16 +48,16 @@ export default async function DashboardPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Recent feedback</CardTitle>
+            <CardTitle>Legutóbbi vélemények</CardTitle>
           </CardHeader>
           <CardContent>
             {stats.recent.length === 0 ? (
               <Empty>
                 <EmptyHeader>
-                  <EmptyTitle>No feedback yet</EmptyTitle>
+                  <EmptyTitle>Még nincs vélemény</EmptyTitle>
                   <EmptyDescription>
-                    Once customers tap an NFC card and rate their visit, it&apos;ll show
-                    up here.
+                    Amint egy vásárló megkoppint egy NFC-kártyát és értékeli a
+                    látogatását, itt fog megjelenni.
                   </EmptyDescription>
                 </EmptyHeader>
               </Empty>
@@ -79,7 +79,7 @@ export default async function DashboardPage() {
                       ) : null}
                     </div>
                     <span className="shrink-0 text-sm text-muted-foreground">
-                      {new Date(item.created_at).toLocaleDateString()}
+                      {new Date(item.created_at).toLocaleDateString("hu-HU")}
                     </span>
                   </li>
                 ))}
@@ -91,11 +91,11 @@ export default async function DashboardPage() {
 
       <p className="text-sm text-muted-foreground">
         <Link href="/dashboard/feedback" className="underline underline-offset-4 hover:text-foreground">
-          View all feedback
+          Összes vélemény megtekintése
         </Link>
         {" · "}
         <Link href="/dashboard/analytics" className="underline underline-offset-4 hover:text-foreground">
-          View analytics
+          Elemzés megtekintése
         </Link>
       </p>
     </div>

@@ -28,7 +28,7 @@ export function LoginForm() {
       <input type="hidden" name="next" value={next} />
       <FieldGroup>
         <Field data-invalid={!!state.error}>
-          <FieldLabel htmlFor="email">Email</FieldLabel>
+          <FieldLabel htmlFor="email">E-mail cím</FieldLabel>
           <Input
             id="email"
             name="email"
@@ -39,7 +39,7 @@ export function LoginForm() {
           />
         </Field>
         <Field data-invalid={!!state.error}>
-          <FieldLabel htmlFor="password">Password</FieldLabel>
+          <FieldLabel htmlFor="password">Jelszó</FieldLabel>
           <Input
             id="password"
             name="password"
@@ -56,12 +56,12 @@ export function LoginForm() {
         </Field>
         <Field>
           <Button type="submit" disabled={isPending}>
-            {isPending ? "Signing in..." : "Sign in"}
+            {isPending ? "Bejelentkezés..." : "Bejelentkezés"}
           </Button>
           <FieldDescription>
-            Don&apos;t have an account?{" "}
+            Nincs még fiókod?{" "}
             <Link href="/signup" className="underline underline-offset-4">
-              Sign up
+              Regisztrálj
             </Link>
           </FieldDescription>
         </Field>

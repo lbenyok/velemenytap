@@ -40,9 +40,10 @@ export function NfcCardsTable({
     return (
       <Empty>
         <EmptyHeader>
-          <EmptyTitle>Add a location first</EmptyTitle>
+          <EmptyTitle>Adj hozzá először egy helyszínt</EmptyTitle>
           <EmptyDescription>
-            NFC cards belong to a location. Create one, then come back here.
+            Az NFC kártyák egy helyszínhez tartoznak. Hozz létre egyet, majd
+            gyere vissza ide.
           </EmptyDescription>
         </EmptyHeader>
         <EmptyContent>
@@ -50,7 +51,7 @@ export function NfcCardsTable({
             render={<Link href="/dashboard/locations" />}
             nativeButton={false}
           >
-            Go to locations
+            Ugrás a helyszínekhez
           </Button>
         </EmptyContent>
       </Empty>
@@ -61,15 +62,16 @@ export function NfcCardsTable({
     return (
       <Empty>
         <EmptyHeader>
-          <EmptyTitle>No NFC cards yet</EmptyTitle>
+          <EmptyTitle>Még nincs NFC kártya</EmptyTitle>
           <EmptyDescription>
-            Add a card for a location and print its link to an NFC tag.
+            Adj hozzá egy kártyát egy helyszínhez, majd nyomtasd ki a linkjét
+            egy NFC címkére.
           </EmptyDescription>
         </EmptyHeader>
         <EmptyContent>
           <NfcCardDialog
             locations={locations}
-            trigger={<Button size="sm">Add NFC card</Button>}
+            trigger={<Button size="sm">NFC kártya hozzáadása</Button>}
           />
         </EmptyContent>
       </Empty>
@@ -80,11 +82,11 @@ export function NfcCardsTable({
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead>Card</TableHead>
-          <TableHead>Location</TableHead>
-          <TableHead>Public link</TableHead>
-          <TableHead>Status</TableHead>
-          <TableHead className="text-right">Actions</TableHead>
+          <TableHead>Kártya</TableHead>
+          <TableHead>Helyszín</TableHead>
+          <TableHead>Nyilvános link</TableHead>
+          <TableHead>Állapot</TableHead>
+          <TableHead className="text-right">Műveletek</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -93,7 +95,7 @@ export function NfcCardsTable({
           return (
             <TableRow key={card.id}>
               <TableCell className="font-medium">
-                {card.display_name ?? "Untitled card"}
+                {card.display_name ?? "Névtelen kártya"}
               </TableCell>
               <TableCell className="text-muted-foreground">
                 {card.location_name}
@@ -103,7 +105,7 @@ export function NfcCardsTable({
               </TableCell>
               <TableCell>
                 <Badge variant={card.status === "active" ? "secondary" : "outline"}>
-                  {card.status === "active" ? "Active" : "Inactive"}
+                  {card.status === "active" ? "Aktív" : "Inaktív"}
                 </Badge>
               </TableCell>
               <TableCell className="flex justify-end gap-2">
@@ -112,7 +114,7 @@ export function NfcCardsTable({
                   locations={locations}
                   trigger={
                     <Button variant="outline" size="sm">
-                      Edit
+                      Szerkesztés
                     </Button>
                   }
                 />
@@ -124,7 +126,7 @@ export function NfcCardsTable({
                     value={card.status === "active" ? "inactive" : "active"}
                   />
                   <Button type="submit" variant="ghost" size="sm">
-                    {card.status === "active" ? "Deactivate" : "Activate"}
+                    {card.status === "active" ? "Deaktiválás" : "Aktiválás"}
                   </Button>
                 </form>
               </TableCell>

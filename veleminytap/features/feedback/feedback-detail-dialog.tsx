@@ -55,12 +55,12 @@ export function FeedbackDetailDialog({
           <DialogDescription>
             {feedback.location_name}
             {feedback.card_name ? ` · ${feedback.card_name}` : ""} ·{" "}
-            {new Date(feedback.created_at).toLocaleString()}
+            {new Date(feedback.created_at).toLocaleString("hu-HU")}
           </DialogDescription>
         </DialogHeader>
         <p className="rounded-lg border bg-muted/30 p-3 text-sm">
           {feedback.feedback_text ?? (
-            <span className="text-muted-foreground">No written feedback.</span>
+            <span className="text-muted-foreground">Nincs írásos vélemény.</span>
           )}
         </p>
         <FeedbackDetailForm

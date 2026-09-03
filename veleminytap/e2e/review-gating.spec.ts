@@ -24,14 +24,13 @@ for (const rating of [1, 2, 3, 4, 5] as const) {
     const card = seeded.cards.find((c) => c.rating === rating)!;
     await page.goto(`/r/${card.publicId}`);
 
-    const starLabel = rating === 1 ? "1 star" : `${rating} stars`;
-    await page.getByRole("radio", { name: new RegExp(`^${starLabel} —`) }).click();
+    await page.getByRole("radio", { name: new RegExp(`^${rating} csillag —`) }).click();
 
-    await page.getByRole("button", { name: "Send feedback" }).click();
+    await page.getByRole("button", { name: "Vélemény küldése" }).click();
 
-    await expect(page.getByRole("heading", { name: "Thank you!" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Köszönjük!" })).toBeVisible();
 
-    const cta = page.getByRole("link", { name: "Leave a Google review" });
+    const cta = page.getByRole("link", { name: "Google-értékelés írása" });
     await expect(cta).toBeVisible();
     await expect(cta).toHaveAttribute("href", "https://g.page/r/e2e-test-review-link");
   });
@@ -42,14 +41,14 @@ test("duplicate submission on the same card is rejected, not silently double-cou
 }) => {
   const card = seeded.cards.find((c) => c.rating === 5)!;
   await page.goto(`/r/${card.publicId}`);
-  await page.getByRole("radio", { name: /^5 stars —/ }).click();
-  await page.getByRole("button", { name: "Send feedback" }).click();
-  await expect(page.getByRole("heading", { name: "Thank you!" })).toBeVisible();
+  await page.getByRole("radio", { name: /^5 csillag —/ }).click();
+  await page.getByRole("button", { name: "Vélemény küldése" }).click();
+  await expect(page.getByRole("heading", { name: "Köszönjük!" })).toBeVisible();
 
   // Same browser context/cookies, same card, a second tap.
   await page.goto(`/r/${card.publicId}`);
-  await page.getByRole("radio", { name: /^5 stars —/ }).click();
-  await page.getByRole("button", { name: "Send feedback" }).click();
+  await page.getByRole("radio", { name: /^5 csillag —/ }).click();
+  await page.getByRole("button", { name: "Vélemény küldése" }).click();
 
-  await expect(page.getByText("You've already sent feedback for this visit.")).toBeVisible();
+  await expect(page.getByText("Ehhez a látogatáshoz már küldtél véleményt.")).toBeVisible();
 });

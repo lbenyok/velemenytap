@@ -23,7 +23,7 @@ export function CopyUrlButton({ url }: { url: string }) {
         }
       }}
     >
-      {copied ? "Copied" : "Copy link"}
+      {copied ? "Másolva" : "Link másolása"}
     </Button>
   );
 }

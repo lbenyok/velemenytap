@@ -58,7 +58,7 @@ export function NfcCardForm({
       {card ? <input type="hidden" name="id" value={card.id} /> : null}
       <FieldGroup>
         <Field data-invalid={!!state.error}>
-          <FieldLabel htmlFor="location_id">Location</FieldLabel>
+          <FieldLabel htmlFor="location_id">Helyszín</FieldLabel>
           <Select
             items={locations}
             name="location_id"
@@ -67,7 +67,7 @@ export function NfcCardForm({
             disabled={!hasLocations}
           >
             <SelectTrigger id="location_id" className="w-full">
-              <SelectValue placeholder="Choose a location" />
+              <SelectValue placeholder="Válassz egy helyszínt" />
             </SelectTrigger>
             {/* alignItemWithTrigger (the default) positions the matching
                 item exactly over the trigger. With exactly one option --
@@ -87,29 +87,29 @@ export function NfcCardForm({
           </Select>
           {!hasLocations ? (
             <FieldDescription className="text-destructive">
-              Add a location first before creating NFC cards.
+              Adj hozzá egy helyszínt, mielőtt NFC-kártyát hoznál létre.
             </FieldDescription>
           ) : null}
         </Field>
         <Field data-invalid={!!state.error}>
-          <FieldLabel htmlFor="display_name">Card name</FieldLabel>
+          <FieldLabel htmlFor="display_name">Kártya neve</FieldLabel>
           <Input
             id="display_name"
             name="display_name"
             defaultValue={card?.display_name ?? ""}
-            placeholder="e.g. Table 4, Front counter"
+            placeholder="pl. 4-es asztal, Front pult"
             aria-invalid={!!state.error}
           />
           <FieldDescription
             className={state.error ? "text-destructive" : undefined}
           >
             {state.error ??
-              "Optional. Helps you tell cards at the same location apart."}
+              "Nem kötelező. Segít megkülönböztetni az ugyanazon a helyszínen lévő kártyákat."}
           </FieldDescription>
         </Field>
         <Field>
           <Button type="submit" disabled={isPending || !hasLocations}>
-            {isPending ? "Saving..." : card ? "Save changes" : "Add card"}
+            {isPending ? "Mentés..." : card ? "Változtatások mentése" : "Kártya hozzáadása"}
           </Button>
         </Field>
       </FieldGroup>

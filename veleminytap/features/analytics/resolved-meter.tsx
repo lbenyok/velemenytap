@@ -12,7 +12,7 @@ export function ResolvedMeter({
       <div className="flex items-baseline justify-between">
         <span className="text-2xl font-semibold tabular-nums">{pct}%</span>
         <span className="text-sm text-muted-foreground">
-          {resolved} of {total} resolved
+          {resolved}/{total} megoldva
         </span>
       </div>
       <div className="h-2 w-full overflow-hidden rounded-full bg-muted">

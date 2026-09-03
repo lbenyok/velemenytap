@@ -15,9 +15,9 @@ import { PriorityBadge } from "./priority-badge";
 import { FeedbackDetailDialog, type FeedbackDetailRow } from "./feedback-detail-dialog";
 
 const STATUS_LABEL: Record<string, string> = {
-  new: "New",
-  in_progress: "In progress",
-  resolved: "Resolved",
+  new: "Új",
+  in_progress: "Folyamatban",
+  resolved: "Megoldva",
 };
 
 function statusVariant(status: string): "default" | "secondary" | "outline" {
@@ -38,12 +38,14 @@ export function FeedbackTable({
       <Empty>
         <EmptyHeader>
           <EmptyTitle>
-            {hasActiveFilters ? "No feedback matches these filters" : "No feedback yet"}
+            {hasActiveFilters
+              ? "Nincs a szűrésnek megfelelő vélemény"
+              : "Még nincs vélemény"}
           </EmptyTitle>
           <EmptyDescription>
             {hasActiveFilters
-              ? "Try widening your filters."
-              : "Feedback submitted through your NFC cards will show up here."}
+              ? "Próbáld meg tágítani a szűrőket."
+              : "Az NFC kártyáidon keresztül beküldött vélemények itt fognak megjelenni."}
           </EmptyDescription>
         </EmptyHeader>
       </Empty>
@@ -54,13 +56,13 @@ export function FeedbackTable({
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead>Rating</TableHead>
-          <TableHead>Feedback</TableHead>
-          <TableHead>Location</TableHead>
-          <TableHead>Card</TableHead>
-          <TableHead>Date</TableHead>
-          <TableHead>Status</TableHead>
-          <TableHead className="text-right">Actions</TableHead>
+          <TableHead>Értékelés</TableHead>
+          <TableHead>Vélemény</TableHead>
+          <TableHead>Helyszín</TableHead>
+          <TableHead>Kártya</TableHead>
+          <TableHead>Dátum</TableHead>
+          <TableHead>Állapot</TableHead>
+          <TableHead className="text-right">Műveletek</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -87,7 +89,7 @@ export function FeedbackTable({
                 {row.card_name ?? "—"}
               </TableCell>
               <TableCell className="text-muted-foreground">
-                {new Date(row.created_at).toLocaleDateString()}
+                {new Date(row.created_at).toLocaleDateString("hu-HU")}
               </TableCell>
               <TableCell>
                 <Badge variant={statusVariant(row.status)}>
@@ -99,7 +101,7 @@ export function FeedbackTable({
                   feedback={row}
                   trigger={
                     <Button variant="outline" size="sm">
-                      View
+                      Megtekintés
                     </Button>
                   }
                 />

@@ -26,12 +26,12 @@ export function CreateOrganizationForm() {
     <form action={formAction} noValidate>
       <FieldGroup>
         <Field data-invalid={!!state.error}>
-          <FieldLabel htmlFor="name">Business name</FieldLabel>
+          <FieldLabel htmlFor="name">Vállalkozás neve</FieldLabel>
           <Input
             id="name"
             name="name"
             autoComplete="organization"
-            placeholder="e.g. Kávézó Ízlelő"
+            placeholder="pl. Kávézó Ízlelő"
             required
             aria-invalid={!!state.error}
           />
@@ -43,7 +43,7 @@ export function CreateOrganizationForm() {
         </Field>
         <Field>
           <Button type="submit" disabled={isPending}>
-            {isPending ? "Creating..." : "Continue"}
+            {isPending ? "Létrehozás..." : "Tovább"}
           </Button>
         </Field>
       </FieldGroup>

@@ -44,7 +44,7 @@ export function NfcCardDialog({
       <DialogTrigger render={trigger} />
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{card ? "Edit card" : "Add NFC card"}</DialogTitle>
+          <DialogTitle>{card ? "Kártya szerkesztése" : "NFC kártya hozzáadása"}</DialogTitle>
         </DialogHeader>
         <NfcCardForm
           key={session}

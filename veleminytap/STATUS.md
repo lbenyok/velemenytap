@@ -1,8 +1,16 @@
 # Status
 
-Last updated: 2026-09-03, after the "Phase 14" master-build-prompt gap-fill session and follow-up Resend, Sentry, and Playwright/CI wiring passes.
+Last updated: 2026-09-03, after the "Phase 14" master-build-prompt gap-fill session, follow-up Resend/Sentry/Playwright-CI wiring passes, a homepage build, and a full Hungarian localization + brand rebrand.
 
 ## Done
+
+**The entire product is now in Hungarian, and rebranded to match the real logo.** Every user-facing surface — the new homepage, the public feedback flow (`/r/[publicId]`), auth (login/signup/check-email/link-expired), onboarding, the full dashboard (nav, Overview, Locations, NFC Cards, Feedback inbox, Analytics, Settings), the 404 page, the global error boundary, and the negative-feedback alert email — was translated in place (see `DECISIONS.md` for why in-place rather than an i18n framework). `<html lang="hu">`. Supabase Auth's own English error messages get a small translation lookup (`translateAuthError` in `features/auth/actions.ts`) rather than leaking English on an otherwise-Hungarian sign-in form. Verified for real: logged into a real QA account, walked the Hungarian dashboard nav, and re-ran the 1-star public submission — the Google Review CTA ("Google-értékelés írása") still fires correctly, proving the core no-gating invariant survived the relocalization. `e2e/review-gating.spec.ts` was updated to assert on the new Hungarian button/link text and passes 6/6 against the real app.
+
+The shared `--pf-*` color system (used by both the public feedback page and the homepage) was rebranded from an invented wine/gold palette to navy ink + a blue-to-cyan gradient, matching the user-supplied logo and app icon exactly — variables renamed `--pf-accent`/`--pf-accent-hover`/`--pf-accent-2` (previously `--pf-wine`/`--pf-wine-hover`/`--pf-gold`) since the old names became misleading once they held blue/cyan values.
+
+**A real public homepage now exists at `/`**, replacing the unbuilt Next.js scaffold placeholder — see the homepage-build entry below for what it contains (all copy is now Hungarian as of this pass, superseding the "English, matching the dashboard" choice made when it was first built).
+
+## Done (earlier in this session)
 
 Everything through the product skill's MVP priority list (auth → orgs → locations → NFC cards → public landing page → feedback submission → inbox → statuses/resolution → negative-feedback notifications → basic analytics → Google Review CTA → production deployment) was built and browser-verified in earlier sessions, then deployed to Vercel production (https://veleminytap.vercel.app).
 

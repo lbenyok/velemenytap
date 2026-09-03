@@ -11,7 +11,7 @@ export const feedbackSchema = z.object({
   feedback_text: z
     .string()
     .trim()
-    .max(1000, "Please keep feedback under 1000 characters.")
+    .max(1000, "A vélemény legfeljebb 1000 karakter lehet.")
     .transform((v) => (v === "" ? null : v)),
 });
 

@@ -3,7 +3,7 @@ import { lookupPublicCard } from "@/features/feedback/card-lookup";
 import { FeedbackFlow } from "@/features/feedback/feedback-flow";
 import { PublicMessageScreen } from "@/features/feedback/public-message-screen";
 
-export const metadata: Metadata = { title: "Share your feedback" };
+export const metadata: Metadata = { title: "Oszd meg a véleményed" };
 
 export default async function PublicFeedbackPage({
   params,
@@ -16,8 +16,8 @@ export default async function PublicFeedbackPage({
   if (!card) {
     return (
       <PublicMessageScreen
-        title="This link doesn't work"
-        description="We couldn't find this feedback card. Ask a staff member to check it."
+        title="Ez a link nem működik"
+        description="Nem találjuk ezt a véleménykártyát. Kérj segítséget a személyzettől."
       />
     );
   }
@@ -25,8 +25,8 @@ export default async function PublicFeedbackPage({
   if (!card.isActive) {
     return (
       <PublicMessageScreen
-        title="This card is inactive"
-        description={`${card.organizationName} isn't using this feedback card right now.`}
+        title="Ez a kártya inaktív"
+        description={`${card.organizationName} jelenleg nem használja ezt a véleménykártyát.`}
       />
     );
   }

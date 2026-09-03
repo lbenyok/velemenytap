@@ -6,7 +6,7 @@ import { NfcCardsTable, type NfcCardRow } from "@/features/nfc-cards/nfc-cards-t
 import type { LocationOption } from "@/features/nfc-cards/nfc-card-form";
 import { Button } from "@/components/ui/button";
 
-export const metadata: Metadata = { title: "NFC Cards — VéleményTap" };
+export const metadata: Metadata = { title: "NFC kártyák — VéleményTap" };
 
 export default async function NfcCardsPage() {
   const organization = await getCurrentOrganization();
@@ -46,15 +46,16 @@ export default async function NfcCardsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">NFC Cards</h1>
+          <h1 className="text-xl font-semibold tracking-tight">NFC kártyák</h1>
           <p className="text-sm text-muted-foreground">
-            Each card gets a unique link customers tap into to leave feedback.
+            Minden kártyához egyedi link tartozik, amelyre koppintva a
+            vásárlók véleményt hagyhatnak.
           </p>
         </div>
         {rows.length > 0 ? (
           <NfcCardDialog
             locations={locationOptions}
-            trigger={<Button>Add NFC card</Button>}
+            trigger={<Button>NFC kártya hozzáadása</Button>}
           />
         ) : null}
       </div>

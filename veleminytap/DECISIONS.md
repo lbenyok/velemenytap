@@ -2,6 +2,27 @@
 
 Assumptions and judgment calls made without a synchronous check-in, per the working-style agreement: proceed autonomously through reasonable implementation decisions, document them here, and only stop and ask when credentials, external account setup, a business/legal choice, or a fundamentally product-changing decision is genuinely required.
 
+## Hungarian localization: in-place translation, not an i18n framework
+
+The full UI (public feedback flow, auth, dashboard, email alerts) is Hungarian by directly replacing English strings, not via `next-intl` or similar with language files and a switchable locale.
+**Why:** the explicit request was "make the whole system Hungarian," not "support both languages" — no toggle or English fallback was asked for. Adding an i18n framework for a single fixed language would be exactly the premature abstraction the product skill warns against; it's straightforward to introduce later if English support is ever actually needed, since nothing about in-place strings blocks that migration.
+**Revisit if:** the product needs to serve non-Hungarian-speaking businesses too.
+
+## Supabase Auth's own error messages get a translation lookup, not raw passthrough
+
+`features/auth/actions.ts`'s `translateAuthError()` maps the handful of Supabase SDK error strings the app actually surfaces (invalid credentials, already-registered, etc.) to Hungarian, falling back to a generic message for anything unmapped.
+**Why:** Supabase Auth returns error messages in English with no localization option; showing that raw text on an otherwise fully-Hungarian sign-in form would be a jarring, obviously-untranslated seam. A small lookup table for the errors users actually hit is cheap and covers the real cases; the generic fallback means an unmapped Supabase error still degrades to Hungarian rather than leaking English.
+
+## Developer-facing log messages (`console.warn`/`console.error`) stay in English
+
+Server-side log lines like "Failed to send negative feedback alert email" were not translated, even though everything a business owner or customer actually sees was.
+**Why:** these are read by whoever maintains the code (server logs, Vercel dashboard), not by end users — translating them would add no value for a Hungarian business owner (who never sees a server log) and would work against future maintainers/AI assistants who default to English technical conventions.
+
+## Rebrand: navy/blue/cyan from the actual logo, replacing the invented wine/gold palette
+
+The `--pf-*` CSS custom properties (shared by the public feedback page and the homepage) were repointed from an invented "wine and gold, warm hospitality" palette to navy ink + a blue-to-cyan gradient, matching the user-supplied logo and app icon exactly. Renamed `--pf-wine`/`--pf-wine-hover`/`--pf-gold` to `--pf-accent`/`--pf-accent-hover`/`--pf-accent-2` throughout, since the old names became actively misleading once they held blue/cyan values.
+**Why:** the original wine/gold direction was a reasonable choice when no brand assets existed yet, but a real logo/icon was later provided — matching it exactly is strictly better than an invented palette once one exists, and using it is what was explicitly asked for.
+
 ## Single organization per signed-in user
 
 `getCurrentOrganization()` resolves the earliest-joined membership and the dashboard has no org switcher, even though the schema (`organization_memberships`) supports a user belonging to more than one organization.

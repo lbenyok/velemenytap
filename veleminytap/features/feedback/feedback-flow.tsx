@@ -5,11 +5,11 @@ import { submitFeedbackAction, type FeedbackActionState } from "./actions";
 import { StarPicker } from "./star-picker";
 
 const REFLECTIONS: Record<number, string> = {
-  1: "We're sorry it wasn't great.",
-  2: "Thanks for letting us know.",
-  3: "Good to know, thank you.",
-  4: "Glad you enjoyed it!",
-  5: "Wonderful — thank you!",
+  1: "Sajnáljuk, hogy nem voltál elégedett.",
+  2: "Köszönjük, hogy jelezted.",
+  3: "Jó tudni, köszönjük.",
+  4: "Örülünk, hogy élvezted!",
+  5: "Csodálatos — köszönjük!",
 };
 
 const initialState: FeedbackActionState = { status: "idle" };
@@ -44,7 +44,7 @@ export function FeedbackFlow({
         <div className="space-y-1 text-center">
           <p className="text-sm text-[var(--pf-ink-muted)]">{organizationName}</p>
           <h1 className="text-xl font-semibold tracking-tight text-balance">
-            How was your visit to {locationName}?
+            Milyen volt a látogatásod itt: {locationName}?
           </h1>
         </div>
 
@@ -61,10 +61,10 @@ export function FeedbackFlow({
               </p>
               <textarea
                 name="feedback_text"
-                placeholder="Anything you'd like to add? (optional)"
+                placeholder="Van még valami, amit hozzátennél? (nem kötelező)"
                 rows={4}
                 maxLength={1000}
-                className="w-full resize-none rounded-lg border border-[var(--pf-line)] bg-[var(--pf-surface)] p-3 text-sm text-[var(--pf-ink)] outline-none placeholder:text-[var(--pf-ink-muted)] focus-visible:ring-2 focus-visible:ring-[var(--pf-wine)]"
+                className="w-full resize-none rounded-lg border border-[var(--pf-line)] bg-[var(--pf-surface)] p-3 text-sm text-[var(--pf-ink)] outline-none placeholder:text-[var(--pf-ink-muted)] focus-visible:ring-2 focus-visible:ring-[var(--pf-accent)]"
               />
               {state.status === "error" ? (
                 <p className="text-center text-sm text-red-700" role="alert">
@@ -74,9 +74,9 @@ export function FeedbackFlow({
               <button
                 type="submit"
                 disabled={isPending}
-                className="w-full rounded-lg bg-[var(--pf-wine)] px-4 py-3 text-sm font-medium text-white transition-colors hover:bg-[var(--pf-wine-hover)] disabled:opacity-60"
+                className="w-full rounded-lg bg-[var(--pf-accent)] px-4 py-3 text-sm font-medium text-white transition-colors hover:bg-[var(--pf-accent-hover)] disabled:opacity-60"
               >
-                {isPending ? "Sending…" : "Send feedback"}
+                {isPending ? "Küldés…" : "Vélemény küldése"}
               </button>
             </div>
           ) : null}
@@ -96,7 +96,7 @@ function ConfirmationScreen({
   return (
     <div className="public-feedback flex min-h-svh flex-col items-center justify-center gap-8 bg-[var(--pf-bg)] px-5 py-12 text-center text-[var(--pf-ink)]">
       <div className="space-y-2">
-        <div className="mx-auto flex size-12 items-center justify-center rounded-full bg-[var(--pf-wine)] text-white">
+        <div className="mx-auto flex size-12 items-center justify-center rounded-full bg-[var(--pf-accent)] text-white">
           <svg viewBox="0 0 24 24" fill="none" className="size-6" aria-hidden="true">
             <path
               d="M5 13l4 4L19 7"
@@ -107,23 +107,23 @@ function ConfirmationScreen({
             />
           </svg>
         </div>
-        <h1 className="text-xl font-semibold tracking-tight">Thank you!</h1>
+        <h1 className="text-xl font-semibold tracking-tight">Köszönjük!</h1>
         <p className="text-sm text-[var(--pf-ink-muted)]">
-          Your feedback for {organizationName} has been sent.
+          A véleményedet elküldtük ide: {organizationName}.
         </p>
       </div>
       {googleReviewUrl ? (
         <div className="w-full max-w-sm space-y-3">
           <p className="text-sm text-[var(--pf-ink-muted)]">
-            Would you like to share it on Google too?
+            Megosztanád a Google-ön is?
           </p>
           <a
             href={googleReviewUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="block w-full rounded-lg bg-[var(--pf-wine)] px-4 py-3 text-sm font-medium text-white transition-colors hover:bg-[var(--pf-wine-hover)]"
+            className="block w-full rounded-lg bg-[var(--pf-accent)] px-4 py-3 text-sm font-medium text-white transition-colors hover:bg-[var(--pf-accent-hover)]"
           >
-            Leave a Google review
+            Google-értékelés írása
           </a>
         </div>
       ) : null}

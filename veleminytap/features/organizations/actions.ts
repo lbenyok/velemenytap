@@ -11,8 +11,8 @@ const createOrganizationSchema = z.object({
   name: z
     .string()
     .trim()
-    .min(2, "Organization name must be at least 2 characters.")
-    .max(100, "Organization name must be at most 100 characters."),
+    .min(2, "A szervezet nevének legalább 2 karakter hosszúnak kell lennie.")
+    .max(100, "A szervezet neve legfeljebb 100 karakter lehet."),
 });
 
 function slugify(name: string): string {
@@ -52,7 +52,7 @@ export async function createOrganizationAction(
     name: formData.get("name"),
   });
   if (!parsed.success) {
-    return { error: parsed.error.issues[0]?.message ?? "Invalid input." };
+    return { error: parsed.error.issues[0]?.message ?? "Érvénytelen adat." };
   }
 
   const baseSlug = slugify(parsed.data.name) || "organization";
@@ -80,11 +80,11 @@ export async function createOrganizationAction(
       continue;
     }
 
-    return { error: "Could not create your organization. Please try again." };
+    return { error: "Nem sikerült létrehozni a szervezetet. Kérjük, próbáld újra." };
   }
 
   if (organizationId === null) {
-    return { error: "Could not create your organization. Please try again." };
+    return { error: "Nem sikerült létrehozni a szervezetet. Kérjük, próbáld újra." };
   }
 
   const { error: membershipError } = await admin
@@ -95,7 +95,7 @@ export async function createOrganizationAction(
     // Don't leave an ownerless, inaccessible organization behind.
     await admin.from("organizations").delete().eq("id", organizationId);
     return {
-      error: "Could not finish setting up your organization. Please try again.",
+      error: "Nem sikerült befejezni a szervezet beállítását. Kérjük, próbáld újra.",
     };
   }
 

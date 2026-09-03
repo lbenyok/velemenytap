@@ -41,7 +41,7 @@ export function LocationDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>
-            {location ? "Edit location" : "Add location"}
+            {location ? "Helyszín szerkesztése" : "Helyszín hozzáadása"}
           </DialogTitle>
         </DialogHeader>
         <LocationForm

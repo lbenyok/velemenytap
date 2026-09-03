@@ -20,7 +20,7 @@ import {
 } from "@/features/analytics/comparison-tables";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
-export const metadata: Metadata = { title: "Analytics — VéleményTap" };
+export const metadata: Metadata = { title: "Elemzés — VéleményTap" };
 
 const VALID_PERIODS = ["7", "30", "90"] as const;
 
@@ -48,9 +48,9 @@ export default async function AnalyticsPage({
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Analytics</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Elemzés</h1>
           <p className="text-sm text-muted-foreground">
-            {feedback.length} feedback submissions in this period.
+            {feedback.length} beküldött vélemény ebben az időszakban.
           </p>
         </div>
         <Suspense>
@@ -61,7 +61,7 @@ export default async function AnalyticsPage({
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>Feedback volume</CardTitle>
+            <CardTitle>Vélemények száma</CardTitle>
           </CardHeader>
           <CardContent>
             <VolumeChart data={volume} />
@@ -69,7 +69,7 @@ export default async function AnalyticsPage({
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle>Average rating trend</CardTitle>
+            <CardTitle>Átlagos értékelés trendje</CardTitle>
           </CardHeader>
           <CardContent>
             <RatingTrendChart data={volume} />
@@ -80,7 +80,7 @@ export default async function AnalyticsPage({
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>Rating distribution</CardTitle>
+            <CardTitle>Értékelések megoszlása</CardTitle>
           </CardHeader>
           <CardContent>
             <RatingDistributionChart data={distribution} />
@@ -88,7 +88,7 @@ export default async function AnalyticsPage({
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle>Resolved vs unresolved</CardTitle>
+            <CardTitle>Megoldva / megoldatlan</CardTitle>
           </CardHeader>
           <CardContent>
             <ResolvedMeter resolved={resolved.resolved} total={resolved.total} pct={resolved.pct} />
@@ -99,7 +99,7 @@ export default async function AnalyticsPage({
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>Locations</CardTitle>
+            <CardTitle>Helyszínek</CardTitle>
           </CardHeader>
           <CardContent>
             <LocationComparisonTable rows={locations} />
@@ -107,7 +107,7 @@ export default async function AnalyticsPage({
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle>NFC cards</CardTitle>
+            <CardTitle>NFC kártyák</CardTitle>
           </CardHeader>
           <CardContent>
             <CardPerformanceTable rows={cards} />

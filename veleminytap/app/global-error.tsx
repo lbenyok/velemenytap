@@ -16,14 +16,14 @@ export default function GlobalError({
   }, [error]);
 
   return (
-    <html lang="en">
+    <html lang="hu">
       <body>
         <div className="flex min-h-svh flex-col items-center justify-center gap-4 p-6 text-center">
-          <h1 className="text-lg font-semibold tracking-tight">Something went wrong.</h1>
+          <h1 className="text-lg font-semibold tracking-tight">Hiba történt.</h1>
           <p className="max-w-sm text-sm text-muted-foreground">
-            We&apos;ve been notified and are looking into it. Please try again.
+            Értesítést kaptunk róla, és már vizsgáljuk. Kérjük, próbáld újra.
           </p>
-          <Button onClick={reset}>Try again</Button>
+          <Button onClick={reset}>Újrapróbálkozás</Button>
         </div>
       </body>
     </html>

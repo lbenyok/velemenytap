@@ -11,21 +11,21 @@ export type SettingsActionState =
   | { error?: undefined; success?: undefined };
 
 const settingsSchema = z.object({
-  name: z.string().trim().min(2, "Business name must be at least 2 characters.").max(100),
+  name: z.string().trim().min(2, "A vállalkozás nevének legalább 2 karakter hosszúnak kell lennie.").max(100),
   notification_email: z
     .string()
     .trim()
     .max(255)
     .refine(
       (v) => v === "" || /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v),
-      "Enter a valid email address.",
+      "Adj meg egy érvényes e-mail címet.",
     )
     .transform((v) => (v === "" ? null : v)),
   logo_url: z
     .string()
     .trim()
     .max(2000)
-    .refine((v) => v === "" || /^https?:\/\//i.test(v), "Enter a valid URL starting with http:// or https://")
+    .refine((v) => v === "" || /^https?:\/\//i.test(v), "Adj meg egy érvényes URL-t, amely http://-vel vagy https://-vel kezdődik.")
     .transform((v) => (v === "" ? null : v)),
 });
 
@@ -35,7 +35,7 @@ export async function updateOrganizationSettingsAction(
 ): Promise<SettingsActionState> {
   const organization = await getCurrentOrganization();
   if (!organization) {
-    return { error: "No organization found for your account." };
+    return { error: "Nem található szervezet a fiókodhoz." };
   }
 
   const parsed = settingsSchema.safeParse({
@@ -44,7 +44,7 @@ export async function updateOrganizationSettingsAction(
     logo_url: formData.get("logo_url") ?? "",
   });
   if (!parsed.success) {
-    return { error: parsed.error.issues[0]?.message ?? "Invalid input." };
+    return { error: parsed.error.issues[0]?.message ?? "Érvénytelen adat." };
   }
 
   const supabase = await createClient();
@@ -58,7 +58,7 @@ export async function updateOrganizationSettingsAction(
     .eq("id", organization.id);
 
   if (error) {
-    return { error: "Could not save settings. Please try again." };
+    return { error: "Nem sikerült menteni a beállításokat. Kérjük, próbáld újra." };
   }
 
   revalidatePath("/dashboard/settings");

@@ -10,7 +10,7 @@ import {
 import type { RatingBucket } from "./aggregate";
 
 const config = {
-  count: { label: "Feedback", color: "var(--foreground)" },
+  count: { label: "Vélemények", color: "var(--foreground)" },
 } satisfies ChartConfig;
 
 export function RatingDistributionChart({ data }: { data: RatingBucket[] }) {

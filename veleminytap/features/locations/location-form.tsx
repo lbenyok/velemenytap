@@ -48,30 +48,30 @@ export function LocationForm({
       {location ? <input type="hidden" name="id" value={location.id} /> : null}
       <FieldGroup>
         <Field data-invalid={!!state.error}>
-          <FieldLabel htmlFor="name">Location name</FieldLabel>
+          <FieldLabel htmlFor="name">Helyszín neve</FieldLabel>
           <Input
             id="name"
             name="name"
             defaultValue={location?.name}
-            placeholder="e.g. Belváros"
+            placeholder="pl. Belváros"
             required
             aria-invalid={!!state.error}
           />
         </Field>
         <Field>
-          <FieldLabel htmlFor="address">Address</FieldLabel>
+          <FieldLabel htmlFor="address">Cím</FieldLabel>
           <Textarea
             id="address"
             name="address"
             defaultValue={location?.address ?? ""}
-            placeholder="Street, city"
+            placeholder="Utca, város"
             rows={2}
           />
-          <FieldDescription>Optional.</FieldDescription>
+          <FieldDescription>Nem kötelező.</FieldDescription>
         </Field>
         <Field data-invalid={!!state.error}>
           <FieldLabel htmlFor="google_review_url">
-            Google Review link
+            Google-értékelés link
           </FieldLabel>
           <Input
             id="google_review_url"
@@ -85,16 +85,16 @@ export function LocationForm({
             className={state.error ? "text-destructive" : undefined}
           >
             {state.error ??
-              "Where customers land when they choose to leave a Google review. Optional, can be added later."}
+              "Ide jutnak a vásárlók, ha Google-értékelést szeretnének írni. Nem kötelező, később is megadható."}
           </FieldDescription>
         </Field>
         <Field>
           <Button type="submit" disabled={isPending}>
             {isPending
-              ? "Saving..."
+              ? "Mentés..."
               : location
-                ? "Save changes"
-                : "Add location"}
+                ? "Változtatások mentése"
+                : "Helyszín hozzáadása"}
           </Button>
         </Field>
       </FieldGroup>

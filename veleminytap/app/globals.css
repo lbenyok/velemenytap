@@ -127,16 +127,17 @@
     @apply font-sans;
     }
 }
-/* Public NFC feedback page: a deliberately distinct, warm, light-only
-   customer-facing palette, separate from the dashboard's shadcn theme.
-   Scoped so it never bleeds into the operator dashboard. */
+/* Public NFC feedback page: the brand palette from the logo/icon (navy ink,
+   blue-to-cyan gradient, white), light-only, separate from the dashboard's
+   shadcn theme. Scoped so it never bleeds into the operator dashboard. */
 .public-feedback {
-  --pf-bg: #f7f4ef;
+  --pf-bg: #f8fafc;
   --pf-surface: #ffffff;
-  --pf-ink: #241b16;
-  --pf-ink-muted: #6b5d52;
-  --pf-wine: #5b2338;
-  --pf-wine-hover: #4a1c2d;
-  --pf-gold: #d89b2e;
-  --pf-line: #e8ddd0;
+  --pf-ink: #131722;
+  --pf-ink-muted: #5b6472;
+  --pf-accent: #2154eb;
+  --pf-accent-hover: #1a41c2;
+  --pf-accent-2: #22d3ee;
+  --pf-accent-gradient: linear-gradient(135deg, #2154eb 0%, #22d3ee 100%);
+  --pf-line: #e2e8f0;
 }

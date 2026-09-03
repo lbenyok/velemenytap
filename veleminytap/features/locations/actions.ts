@@ -14,20 +14,20 @@ const locationSchema = z.object({
   name: z
     .string()
     .trim()
-    .min(1, "Location name is required.")
-    .max(200, "Location name is too long."),
+    .min(1, "A helyszín neve kötelező.")
+    .max(200, "A helyszín neve túl hosszú."),
   address: z
     .string()
     .trim()
-    .max(500, "Address is too long.")
+    .max(500, "A cím túl hosszú.")
     .transform((v) => (v === "" ? null : v)),
   google_review_url: z
     .string()
     .trim()
-    .max(2000, "URL is too long.")
+    .max(2000, "Az URL túl hosszú.")
     .refine(
       (v) => v === "" || /^https?:\/\//i.test(v),
-      "Enter a valid URL starting with http:// or https://",
+      "Adj meg egy érvényes URL-t, amely http://-vel vagy https://-vel kezdődik.",
     )
     .transform((v) => (v === "" ? null : v)),
 });
@@ -46,12 +46,12 @@ export async function createLocationAction(
 ): Promise<LocationActionState> {
   const organization = await getCurrentOrganization();
   if (!organization) {
-    return { error: "No organization found for your account." };
+    return { error: "Nem található szervezet a fiókodhoz." };
   }
 
   const parsed = parseLocationForm(formData);
   if (!parsed.success) {
-    return { error: parsed.error.issues[0]?.message ?? "Invalid input." };
+    return { error: parsed.error.issues[0]?.message ?? "Érvénytelen adat." };
   }
 
   const supabase = await createClient();
@@ -63,7 +63,7 @@ export async function createLocationAction(
   });
 
   if (error) {
-    return { error: "Could not create the location. Please try again." };
+    return { error: "Nem sikerült létrehozni a helyszínt. Kérjük, próbáld újra." };
   }
 
   revalidatePath("/dashboard/locations");
@@ -76,17 +76,17 @@ export async function updateLocationAction(
 ): Promise<LocationActionState> {
   const organization = await getCurrentOrganization();
   if (!organization) {
-    return { error: "No organization found for your account." };
+    return { error: "Nem található szervezet a fiókodhoz." };
   }
 
   const locationId = Number(formData.get("id"));
   if (!Number.isInteger(locationId) || locationId <= 0) {
-    return { error: "Invalid location." };
+    return { error: "Érvénytelen helyszín." };
   }
 
   const parsed = parseLocationForm(formData);
   if (!parsed.success) {
-    return { error: parsed.error.issues[0]?.message ?? "Invalid input." };
+    return { error: parsed.error.issues[0]?.message ?? "Érvénytelen adat." };
   }
 
   const supabase = await createClient();
@@ -103,7 +103,7 @@ export async function updateLocationAction(
     .single();
 
   if (error) {
-    return { error: "Could not update the location. Please try again." };
+    return { error: "Nem sikerült frissíteni a helyszínt. Kérjük, próbáld újra." };
   }
 
   revalidatePath("/dashboard/locations");

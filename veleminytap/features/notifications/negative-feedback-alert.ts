@@ -81,15 +81,15 @@ export async function sendNegativeFeedbackAlert(params: {
     const { error: sendError } = await resend.emails.send({
       from: `Velemenytap <${fromAddress}>`,
       to: recipients,
-      subject: `${stars} New feedback for ${params.locationName}`,
+      subject: `${stars} Új vélemény itt: ${params.locationName}`,
       html: `
-        <p>${escapeHtml(params.organizationName)} just received ${params.rating}-star feedback at <strong>${escapeHtml(params.locationName)}</strong>${params.cardName ? ` (${escapeHtml(params.cardName)})` : ""}.</p>
+        <p>${escapeHtml(params.organizationName)} most kapott egy ${params.rating} csillagos véleményt itt: <strong>${escapeHtml(params.locationName)}</strong>${params.cardName ? ` (${escapeHtml(params.cardName)})` : ""}.</p>
         ${
           params.feedbackText
             ? `<blockquote style="margin:0;padding-left:12px;border-left:3px solid #ddd;color:#333;">${escapeHtml(params.feedbackText)}</blockquote>`
-            : "<p>No written feedback was left.</p>"
+            : "<p>Nem érkezett írásos vélemény.</p>"
         }
-        <p><a href="${dashboardUrl}">View in your feedback inbox</a></p>
+        <p><a href="${dashboardUrl}">Megtekintés a vélemény-postaládában</a></p>
       `,
     });
 

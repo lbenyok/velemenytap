@@ -3,13 +3,13 @@ import { Suspense } from "react";
 import { AuthShell } from "@/features/auth/auth-shell";
 import { LoginForm } from "@/features/auth/login-form";
 
-export const metadata: Metadata = { title: "Sign in — VéleményTap" };
+export const metadata: Metadata = { title: "Bejelentkezés — VéleményTap" };
 
 export default function LoginPage() {
   return (
     <AuthShell
-      title="Sign in"
-      description="Sign in to your VéleményTap dashboard."
+      title="Bejelentkezés"
+      description="Jelentkezz be a VéleményTap irányítópultodra."
     >
       <Suspense>
         <LoginForm />

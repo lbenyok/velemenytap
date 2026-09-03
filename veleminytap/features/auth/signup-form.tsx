@@ -24,7 +24,7 @@ export function SignupForm() {
     <form action={formAction} noValidate>
       <FieldGroup>
         <Field data-invalid={!!state.error}>
-          <FieldLabel htmlFor="email">Email</FieldLabel>
+          <FieldLabel htmlFor="email">E-mail cím</FieldLabel>
           <Input
             id="email"
             name="email"
@@ -35,7 +35,7 @@ export function SignupForm() {
           />
         </Field>
         <Field data-invalid={!!state.error}>
-          <FieldLabel htmlFor="password">Password</FieldLabel>
+          <FieldLabel htmlFor="password">Jelszó</FieldLabel>
           <Input
             id="password"
             name="password"
@@ -48,17 +48,17 @@ export function SignupForm() {
           <FieldDescription
             className={state.error ? "text-destructive" : undefined}
           >
-            {state.error ?? "At least 8 characters."}
+            {state.error ?? "Legalább 8 karakter hosszú legyen."}
           </FieldDescription>
         </Field>
         <Field>
           <Button type="submit" disabled={isPending}>
-            {isPending ? "Creating account..." : "Create account"}
+            {isPending ? "Fiók létrehozása..." : "Fiók létrehozása"}
           </Button>
           <FieldDescription>
-            Already have an account?{" "}
+            Van már fiókod?{" "}
             <Link href="/login" className="underline underline-offset-4">
-              Sign in
+              Jelentkezz be
             </Link>
           </FieldDescription>
         </Field>

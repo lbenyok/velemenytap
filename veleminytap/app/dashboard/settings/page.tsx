@@ -5,7 +5,7 @@ import { getCurrentOrganization } from "@/features/organizations/current";
 import { SettingsForm } from "@/features/organizations/settings-form";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 
-export const metadata: Metadata = { title: "Settings — VéleményTap" };
+export const metadata: Metadata = { title: "Beállítások — VéleményTap" };
 
 export default async function SettingsPage() {
   const organization = await getCurrentOrganization();
@@ -23,17 +23,18 @@ export default async function SettingsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
+        <h1 className="text-xl font-semibold tracking-tight">Beállítások</h1>
         <p className="text-sm text-muted-foreground">
-          Manage your business profile and notification preferences.
+          Kezeld a vállalkozásod profilját és az értesítési beállításokat.
         </p>
       </div>
 
       <Card className="max-w-xl">
         <CardHeader>
-          <CardTitle>Business profile</CardTitle>
+          <CardTitle>Vállalkozás profilja</CardTitle>
           <CardDescription>
-            This information is used across your dashboard and public feedback pages.
+            Ezek az adatok az irányítópultodon és a nyilvános vélemény
+            oldalakon is megjelennek.
           </CardDescription>
         </CardHeader>
         <CardContent>

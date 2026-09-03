@@ -6,9 +6,9 @@ import { RatingDemo } from "@/features/marketing/rating-demo";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = {
-  title: "VéleményTap — NFC feedback that never hides a bad rating",
+  title: "VéleményTap — NFC visszajelzés, ami sosem rejt el egy rossz értékelést",
   description:
-    "Put an NFC card at the counter. Customers rate their visit in five seconds and get the same Google review link either way — no gating, ever.",
+    "Helyezz ki egy NFC-kártyát a pultra. A vásárlók öt másodperc alatt értékelik a látogatást, és ugyanazt a Google-értékelési linket kapják — válogatás nélkül.",
 };
 
 const fraunces = Fraunces({
@@ -18,53 +18,53 @@ const fraunces = Fraunces({
   variable: "--font-display",
 });
 
-const FOCUS_RING =
-  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--pf-wine)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--pf-bg)]";
-
 const VERTICALS = [
-  "Cafés & restaurants",
-  "Salons & spas",
-  "Clinics & practices",
-  "Gyms & studios",
-  "Retail shops",
-  "Service businesses",
+  "Kávézók és éttermek",
+  "Szalonok és wellness",
+  "Rendelők és klinikák",
+  "Edzőtermek és stúdiók",
+  "Üzletek",
+  "Szolgáltató vállalkozások",
 ];
 
 const STEPS = [
   {
     n: "01",
-    title: "Tap",
-    body: "A customer taps the card with their phone. No app, no login, no typing a URL.",
+    title: "Koppintás",
+    body: "A vásárló a telefonjával megérinti a kártyát. Nincs alkalmazás, nincs bejelentkezés, nem kell URL-t beírni.",
   },
   {
     n: "02",
-    title: "Rate",
-    body: "They pick 1 to 5 stars and can add a note if they want. Takes about five seconds.",
+    title: "Értékelés",
+    body: "1-től 5 csillagig értékel, és írhat hozzá megjegyzést is, ha szeretne. Mindössze öt másodperc.",
   },
   {
     n: "03",
-    title: "You see everything",
-    body: "It lands in your dashboard instantly. A low rating emails your team the same minute.",
+    title: "Te mindent látsz",
+    body: "Azonnal megjelenik az irányítópultodon. Alacsony értékelésnél e-mail is érkezik a csapatodnak, még ugyanabban a percben.",
   },
 ];
 
 const DASHBOARD_CARDS = [
   {
     icon: Inbox,
-    title: "Feedback inbox",
-    body: "Every rating, filterable by location, card, or status. Nothing sits somewhere you forget to check.",
+    title: "Vélemény-postaláda",
+    body: "Minden értékelés egy helyen, szűrhető helyszín, kártya vagy státusz szerint. Semmi sem vész el egy fiókban, amit elfelejtesz megnézni.",
   },
   {
     icon: Mail,
-    title: "Alerts on the bad ones",
-    body: "A 1 or 2-star rating emails your team the moment it lands — before it becomes a public review.",
+    title: "Azonnali jelzés a rosszakról",
+    body: "Egy 1 vagy 2 csillagos értékelés azonnal e-mailt küld a csapatodnak — mielőtt nyilvános véleménnyé válna.",
   },
   {
     icon: BarChart3,
-    title: "Trends over time",
-    body: "Average rating, volume, and which location or card is struggling — not just today's number.",
+    title: "Trendek időben",
+    body: "Átlagos értékelés, mennyiség, és hogy melyik helyszín vagy kártya teljesít gyengén — nem csak a mai szám.",
   },
 ];
+
+const FOCUS_RING =
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--pf-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--pf-bg)]";
 
 export default function HomePage() {
   return (
@@ -97,7 +97,13 @@ function SiteNav() {
         className="text-lg font-semibold tracking-tight"
         style={{ fontFamily: "var(--font-display)" }}
       >
-        VéleményTap
+        Vélemény
+        <span
+          className="bg-clip-text text-transparent"
+          style={{ backgroundImage: "var(--pf-accent-gradient)" }}
+        >
+          Tap
+        </span>
       </span>
       <nav className="flex items-center gap-3 sm:gap-5">
         <Link
@@ -107,16 +113,16 @@ function SiteNav() {
             FOCUS_RING,
           )}
         >
-          Log in
+          Bejelentkezés
         </Link>
         <Link
           href="/signup"
           className={cn(
-            "rounded-lg bg-[var(--pf-wine)] px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-[var(--pf-wine-hover)]",
+            "rounded-lg bg-[var(--pf-accent)] px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-[var(--pf-accent-hover)]",
             FOCUS_RING,
           )}
         >
-          Get started
+          Regisztráció
         </Link>
       </nav>
     </header>
@@ -125,7 +131,7 @@ function SiteNav() {
 
 function Eyebrow({ children }: { children: React.ReactNode }) {
   return (
-    <p className="font-mono text-xs font-medium tracking-[0.14em] text-[var(--pf-wine)] uppercase">
+    <p className="font-mono text-xs font-medium tracking-[0.14em] text-[var(--pf-accent)] uppercase">
       {children}
     </p>
   );
@@ -136,42 +142,47 @@ function Hero() {
     <section className="mx-auto max-w-6xl px-5 pt-8 pb-20 sm:px-8 sm:pt-14 sm:pb-28">
       <div className="grid items-center gap-12 lg:grid-cols-[1.05fr_0.95fr] lg:gap-10">
         <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-3 motion-safe:duration-700">
-          <Eyebrow>NFC feedback for real places</Eyebrow>
+          <Eyebrow>NFC visszajelzés üzleteknek</Eyebrow>
           <h1
             className="mt-4 text-4xl leading-[1.08] font-medium text-balance sm:text-5xl lg:text-[3.4rem]"
             style={{ fontFamily: "var(--font-display)" }}
           >
-            Tap the card.
+            Koppints a kártyára.
             <br />
-            Hear the{" "}
-            <span className="text-[var(--pf-wine)] italic">truth.</span>
+            Halld az{" "}
+            <span
+              className="bg-clip-text text-transparent italic"
+              style={{ backgroundImage: "var(--pf-accent-gradient)" }}
+            >
+              igazat.
+            </span>
           </h1>
           <p className="mt-5 max-w-lg text-base leading-relaxed text-[var(--pf-ink-muted)] sm:text-lg">
-            An NFC card by the register turns any visit into a rating in
-            under five seconds. Every customer gets the same Google review
-            link — a 1-star visit and a 5-star visit end up in the exact same
-            place. Gating reviews breaks Google&apos;s rules. We just don&apos;t do
-            it.
+            Egy NFC-kártya a pultnál öt másodperc alatt valódi értékeléssé
+            alakít minden látogatást. Minden vásárló ugyanazt a
+            Google-értékelési linket kapja — akár 1, akár 5 csillagot adott.
+            A vélemények szelektálása sérti a Google szabályzatát. Mi nem
+            válogatunk.
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-4">
             <Link
               href="/signup"
               className={cn(
-                "inline-flex items-center gap-2 rounded-lg bg-[var(--pf-wine)] px-5 py-3 text-sm font-medium text-white transition-colors hover:bg-[var(--pf-wine-hover)]",
+                "inline-flex items-center gap-2 rounded-lg bg-[var(--pf-accent)] px-5 py-3 text-sm font-medium text-white transition-colors hover:bg-[var(--pf-accent-hover)]",
                 FOCUS_RING,
               )}
             >
-              Get started free
+              Ingyenes regisztráció
               <ArrowRight className="size-4" strokeWidth={2} />
             </Link>
             <a
               href="#how-it-works"
               className={cn(
-                "rounded-md text-sm font-medium text-[var(--pf-ink)] underline decoration-[var(--pf-line)] decoration-2 underline-offset-4 transition-colors hover:decoration-[var(--pf-wine)]",
+                "rounded-md text-sm font-medium text-[var(--pf-ink)] underline decoration-[var(--pf-line)] decoration-2 underline-offset-4 transition-colors hover:decoration-[var(--pf-accent)]",
                 FOCUS_RING,
               )}
             >
-              See how it works
+              Nézd meg, hogyan működik
             </a>
           </div>
         </div>
@@ -188,12 +199,12 @@ function ProofRow() {
   return (
     <section className="border-y border-[var(--pf-line)] bg-[var(--pf-surface)]">
       <div className="mx-auto max-w-6xl px-5 py-14 sm:px-8 sm:py-16">
-        <Eyebrow>No cherry-picking</Eyebrow>
+        <Eyebrow>Nincs válogatás</Eyebrow>
         <h2
           className="mt-3 max-w-xl text-2xl font-medium sm:text-3xl"
           style={{ fontFamily: "var(--font-display)" }}
         >
-          Every rating ends the same way.
+          Minden értékelés ugyanoda vezet.
         </h2>
         <div className="mt-8 grid grid-cols-2 gap-3 sm:grid-cols-5 sm:gap-4">
           {[1, 2, 3, 4, 5].map((n) => (
@@ -208,7 +219,7 @@ function ProofRow() {
                     className={cn(
                       "size-3.5",
                       i < n
-                        ? "fill-[var(--pf-gold)] text-[var(--pf-gold)]"
+                        ? "fill-[var(--pf-accent-2)] text-[var(--pf-accent-2)]"
                         : "fill-none text-[var(--pf-line)]",
                     )}
                     strokeWidth={1.5}
@@ -216,11 +227,11 @@ function ProofRow() {
                 ))}
               </div>
               <span className="text-xs text-[var(--pf-ink-muted)]">
-                {n} star{n === 1 ? "" : "s"}
+                {n} csillag
               </span>
-              <div className="flex items-center gap-1 rounded-full bg-[var(--pf-wine)]/10 px-2.5 py-1 text-[0.7rem] font-medium text-[var(--pf-wine)]">
+              <div className="flex items-center gap-1 rounded-full bg-[var(--pf-accent)]/10 px-2.5 py-1 text-[0.7rem] font-medium text-[var(--pf-accent)]">
                 <Check className="size-3" strokeWidth={2.5} />
-                Same link
+                Ugyanaz a link
               </div>
             </div>
           ))}
@@ -233,12 +244,12 @@ function ProofRow() {
 function HowItWorks() {
   return (
     <section id="how-it-works" className="mx-auto max-w-6xl px-5 py-20 sm:px-8 sm:py-24">
-      <Eyebrow>How it works</Eyebrow>
+      <Eyebrow>Hogyan működik</Eyebrow>
       <h2
         className="mt-3 max-w-xl text-2xl font-medium sm:text-3xl"
         style={{ fontFamily: "var(--font-display)" }}
       >
-        Three steps, no app required.
+        Három lépés, alkalmazás nélkül.
       </h2>
       <div className="mt-10 grid gap-8 sm:grid-cols-3 sm:gap-6">
         {STEPS.map((step) => (
@@ -264,12 +275,12 @@ function BuiltFor() {
   return (
     <section className="border-y border-[var(--pf-line)] bg-[var(--pf-surface)]">
       <div className="mx-auto max-w-6xl px-5 py-14 sm:px-8 sm:py-16">
-        <Eyebrow>Built for your counter</Eyebrow>
+        <Eyebrow>A pultodhoz tervezve</Eyebrow>
         <h2
           className="mt-3 max-w-xl text-2xl font-medium sm:text-3xl"
           style={{ fontFamily: "var(--font-display)" }}
         >
-          Any place people walk into.
+          Minden helyre, ahova betérnek az emberek.
         </h2>
         <div className="mt-7 flex flex-wrap gap-2.5">
           {VERTICALS.map((v) => (
@@ -289,12 +300,12 @@ function BuiltFor() {
 function DashboardPreview() {
   return (
     <section className="mx-auto max-w-6xl px-5 py-20 sm:px-8 sm:py-24">
-      <Eyebrow>What you get</Eyebrow>
+      <Eyebrow>Mit kapsz</Eyebrow>
       <h2
         className="mt-3 max-w-xl text-2xl font-medium sm:text-3xl"
         style={{ fontFamily: "var(--font-display)" }}
       >
-        One inbox for every tap.
+        Egy felület minden koppintáshoz.
       </h2>
       <div className="mt-10 grid gap-5 sm:grid-cols-3">
         {DASHBOARD_CARDS.map(({ icon: Icon, title, body }) => (
@@ -302,7 +313,7 @@ function DashboardPreview() {
             key={title}
             className="rounded-xl border border-[var(--pf-line)] bg-[var(--pf-surface)] p-6"
           >
-            <div className="flex size-9 items-center justify-center rounded-lg bg-[var(--pf-wine)]/10 text-[var(--pf-wine)]">
+            <div className="flex size-9 items-center justify-center rounded-lg bg-[var(--pf-accent)]/10 text-[var(--pf-accent)]">
               <Icon className="size-4.5" strokeWidth={2} />
             </div>
             <h3 className="mt-4 text-base font-medium">{title}</h3>
@@ -318,23 +329,26 @@ function DashboardPreview() {
 
 function FinalCta() {
   return (
-    <section className="bg-[var(--pf-wine)]">
-      <div className="mx-auto max-w-6xl px-5 py-16 text-center sm:px-8 sm:py-20">
-        <Nfc className="mx-auto size-8 text-[var(--pf-gold)]" strokeWidth={1.5} />
+    <section
+      className="text-center"
+      style={{ backgroundImage: "var(--pf-accent-gradient)" }}
+    >
+      <div className="mx-auto max-w-6xl px-5 py-16 sm:px-8 sm:py-20">
+        <Nfc className="mx-auto size-8 text-white" strokeWidth={1.5} />
         <h2
           className="mt-5 text-3xl font-medium text-white sm:text-4xl"
           style={{ fontFamily: "var(--font-display)" }}
         >
-          Put the first card on your counter.
+          Tedd ki az első kártyát a pultra.
         </h2>
-        <p className="mx-auto mt-3 max-w-md text-sm text-white/70 sm:text-base">
-          Free to start. No credit card, no contract.
+        <p className="mx-auto mt-3 max-w-md text-sm text-white/80 sm:text-base">
+          Ingyenesen indulhatsz. Nincs szükség bankkártyára, nincs szerződés.
         </p>
         <Link
           href="/signup"
-          className="mt-7 inline-flex items-center gap-2 rounded-lg bg-white px-5 py-3 text-sm font-medium text-[var(--pf-wine)] transition-colors hover:bg-white/90 focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--pf-wine)] focus-visible:outline-none"
+          className="mt-7 inline-flex items-center gap-2 rounded-lg bg-white px-5 py-3 text-sm font-medium text-[var(--pf-accent)] transition-colors hover:bg-white/90 focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--pf-accent)] focus-visible:outline-none"
         >
-          Create your account
+          Fiók létrehozása
           <ArrowRight className="size-4" strokeWidth={2} />
         </Link>
       </div>
@@ -348,10 +362,10 @@ function SiteFooter() {
       <span style={{ fontFamily: "var(--font-display)" }}>VéleményTap</span>
       <nav className="flex items-center gap-5">
         <Link href="/login" className={cn("rounded-md transition-colors hover:text-[var(--pf-ink)]", FOCUS_RING)}>
-          Log in
+          Bejelentkezés
         </Link>
         <Link href="/signup" className={cn("rounded-md transition-colors hover:text-[var(--pf-ink)]", FOCUS_RING)}>
-          Sign up
+          Regisztráció
         </Link>
       </nav>
       <span>&copy; {new Date().getFullYear()} VéleményTap</span>

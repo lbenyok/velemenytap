@@ -10,16 +10,16 @@ import type { LocationStats, CardStats } from "./aggregate";
 
 export function LocationComparisonTable({ rows }: { rows: LocationStats[] }) {
   if (rows.length === 0) {
-    return <p className="text-sm text-muted-foreground">No feedback in this period.</p>;
+    return <p className="text-sm text-muted-foreground">Ebben az időszakban nincs vélemény.</p>;
   }
   return (
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead>Location</TableHead>
-          <TableHead className="text-right">Feedback</TableHead>
-          <TableHead className="text-right">Avg rating</TableHead>
-          <TableHead className="text-right">Resolved</TableHead>
+          <TableHead>Helyszín</TableHead>
+          <TableHead className="text-right">Vélemények</TableHead>
+          <TableHead className="text-right">Átlag</TableHead>
+          <TableHead className="text-right">Megoldva</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -38,16 +38,16 @@ export function LocationComparisonTable({ rows }: { rows: LocationStats[] }) {
 
 export function CardPerformanceTable({ rows }: { rows: CardStats[] }) {
   if (rows.length === 0) {
-    return <p className="text-sm text-muted-foreground">No feedback in this period.</p>;
+    return <p className="text-sm text-muted-foreground">Ebben az időszakban nincs vélemény.</p>;
   }
   return (
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead>Card</TableHead>
-          <TableHead>Location</TableHead>
-          <TableHead className="text-right">Feedback</TableHead>
-          <TableHead className="text-right">Avg rating</TableHead>
+          <TableHead>Kártya</TableHead>
+          <TableHead>Helyszín</TableHead>
+          <TableHead className="text-right">Vélemények</TableHead>
+          <TableHead className="text-right">Átlag</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>

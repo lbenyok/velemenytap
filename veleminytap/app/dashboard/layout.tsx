@@ -32,22 +32,22 @@ export default async function DashboardLayout({
           </Link>
           <nav className="flex items-center gap-4 text-sm text-muted-foreground">
             <Link href="/dashboard" className="hover:text-foreground">
-              Overview
+              Áttekintés
             </Link>
             <Link href="/dashboard/locations" className="hover:text-foreground">
-              Locations
+              Helyszínek
             </Link>
             <Link href="/dashboard/nfc-cards" className="hover:text-foreground">
-              NFC Cards
+              NFC kártyák
             </Link>
             <Link href="/dashboard/feedback" className="hover:text-foreground">
-              Feedback
+              Vélemények
             </Link>
             <Link href="/dashboard/analytics" className="hover:text-foreground">
-              Analytics
+              Elemzés
             </Link>
             <Link href="/dashboard/settings" className="hover:text-foreground">
-              Settings
+              Beállítások
             </Link>
           </nav>
         </div>
@@ -55,7 +55,7 @@ export default async function DashboardLayout({
           <span className="text-sm text-muted-foreground">{organization.name}</span>
           <form action={signOutAction}>
             <Button type="submit" variant="ghost" size="sm">
-              Sign out
+              Kijelentkezés
             </Button>
           </form>
         </div>

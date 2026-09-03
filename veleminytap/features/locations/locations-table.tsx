@@ -28,14 +28,14 @@ export function LocationsTable({ locations }: { locations: LocationRow[] }) {
     return (
       <Empty>
         <EmptyHeader>
-          <EmptyTitle>No locations yet</EmptyTitle>
+          <EmptyTitle>Még nincs helyszín</EmptyTitle>
           <EmptyDescription>
-            Add your first location to start issuing NFC cards for it.
+            Add hozzá az első helyszínt, hogy NFC-kártyákat készíthess hozzá.
           </EmptyDescription>
         </EmptyHeader>
         <EmptyContent>
           <LocationDialog
-            trigger={<Button size="sm">Add location</Button>}
+            trigger={<Button size="sm">Helyszín hozzáadása</Button>}
           />
         </EmptyContent>
       </Empty>
@@ -46,11 +46,11 @@ export function LocationsTable({ locations }: { locations: LocationRow[] }) {
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead>Name</TableHead>
-          <TableHead>Address</TableHead>
-          <TableHead>Google review</TableHead>
-          <TableHead>Status</TableHead>
-          <TableHead className="text-right">Actions</TableHead>
+          <TableHead>Név</TableHead>
+          <TableHead>Cím</TableHead>
+          <TableHead>Google-értékelés</TableHead>
+          <TableHead>Állapot</TableHead>
+          <TableHead className="text-right">Műveletek</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -62,14 +62,14 @@ export function LocationsTable({ locations }: { locations: LocationRow[] }) {
             </TableCell>
             <TableCell>
               {location.google_review_url ? (
-                <Badge variant="secondary">Configured</Badge>
+                <Badge variant="secondary">Beállítva</Badge>
               ) : (
-                <span className="text-muted-foreground">Not set</span>
+                <span className="text-muted-foreground">Nincs beállítva</span>
               )}
             </TableCell>
             <TableCell>
               <Badge variant={location.status === "active" ? "secondary" : "outline"}>
-                {location.status === "active" ? "Active" : "Inactive"}
+                {location.status === "active" ? "Aktív" : "Inaktív"}
               </Badge>
             </TableCell>
             <TableCell className="flex justify-end gap-2">
@@ -77,7 +77,7 @@ export function LocationsTable({ locations }: { locations: LocationRow[] }) {
                 location={location}
                 trigger={
                   <Button variant="outline" size="sm">
-                    Edit
+                    Szerkesztés
                   </Button>
                 }
               />
@@ -89,7 +89,7 @@ export function LocationsTable({ locations }: { locations: LocationRow[] }) {
                   value={location.status === "active" ? "inactive" : "active"}
                 />
                 <Button type="submit" variant="ghost" size="sm">
-                  {location.status === "active" ? "Deactivate" : "Activate"}
+                  {location.status === "active" ? "Deaktiválás" : "Aktiválás"}
                 </Button>
               </form>
             </TableCell>

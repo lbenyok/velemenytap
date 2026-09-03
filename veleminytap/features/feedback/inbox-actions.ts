@@ -16,7 +16,7 @@ const updateSchema = z.object({
   internal_note: z
     .string()
     .trim()
-    .max(5000, "Note is too long.")
+    .max(5000, "A megjegyzés túl hosszú.")
     .transform((v) => (v === "" ? null : v)),
 });
 
@@ -26,7 +26,7 @@ export async function updateFeedbackAction(
 ): Promise<UpdateFeedbackState> {
   const organization = await getCurrentOrganization();
   if (!organization) {
-    return { error: "No organization found for your account." };
+    return { error: "Nem található szervezet a fiókodhoz." };
   }
 
   const parsed = updateSchema.safeParse({
@@ -35,7 +35,7 @@ export async function updateFeedbackAction(
     internal_note: formData.get("internal_note") ?? "",
   });
   if (!parsed.success) {
-    return { error: parsed.error.issues[0]?.message ?? "Invalid input." };
+    return { error: parsed.error.issues[0]?.message ?? "Érvénytelen adat." };
   }
 
   const supabase = await createClient();
@@ -48,7 +48,7 @@ export async function updateFeedbackAction(
     .single();
 
   if (error) {
-    return { error: "Could not save. Please try again." };
+    return { error: "Nem sikerült menteni. Kérjük, próbáld újra." };
   }
 
   revalidatePath("/dashboard/feedback");

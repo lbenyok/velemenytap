@@ -32,32 +32,32 @@ export function SettingsForm({ organization }: { organization: SettingsFormValue
     <form action={formAction} noValidate>
       <FieldGroup>
         <Field data-invalid={!!state.error}>
-          <FieldLabel htmlFor="name">Business name</FieldLabel>
+          <FieldLabel htmlFor="name">Vállalkozás neve</FieldLabel>
           <Input
             id="name"
             name="name"
             defaultValue={organization.name}
-            placeholder="e.g. Kávézó Kft."
+            placeholder="pl. Kávézó Kft."
             required
             aria-invalid={!!state.error}
           />
         </Field>
         <Field>
-          <FieldLabel htmlFor="notification_email">Notification email</FieldLabel>
+          <FieldLabel htmlFor="notification_email">Értesítési e-mail cím</FieldLabel>
           <Input
             id="notification_email"
             name="notification_email"
             type="email"
             defaultValue={organization.notification_email ?? ""}
-            placeholder="alerts@yourbusiness.com"
+            placeholder="ertesites@vallalkozasod.hu"
           />
           <FieldDescription>
-            Where negative-feedback alerts are sent. Leave blank to notify all team
-            members instead.
+            Ide érkeznek a negatív véleményekről szóló értesítések. Hagyd
+            üresen, ha inkább minden csapattagot értesíteni szeretnél.
           </FieldDescription>
         </Field>
         <Field>
-          <FieldLabel htmlFor="logo_url">Logo URL</FieldLabel>
+          <FieldLabel htmlFor="logo_url">Logó URL-je</FieldLabel>
           <Input
             id="logo_url"
             name="logo_url"
@@ -66,19 +66,20 @@ export function SettingsForm({ organization }: { organization: SettingsFormValue
             placeholder="https://..."
           />
           <FieldDescription>
-            Link to a hosted image. Shown on your public feedback pages. Optional.
+            Link egy feltöltött képhez. A nyilvános vélemény oldalakon
+            jelenik meg. Nem kötelező.
           </FieldDescription>
         </Field>
         <Field>
           <div className="flex items-center gap-3">
             <Button type="submit" disabled={isPending}>
-              {isPending ? "Saving..." : "Save changes"}
+              {isPending ? "Mentés..." : "Változtatások mentése"}
             </Button>
             {state.error ? (
               <span className="text-sm text-destructive">{state.error}</span>
             ) : null}
             {state.success ? (
-              <span className="text-sm text-muted-foreground">Saved.</span>
+              <span className="text-sm text-muted-foreground">Mentve.</span>
             ) : null}
           </div>
         </Field>

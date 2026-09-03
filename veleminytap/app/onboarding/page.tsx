@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { AuthShell } from "@/features/auth/auth-shell";
 import { CreateOrganizationForm } from "@/features/organizations/create-organization-form";
 
-export const metadata: Metadata = { title: "Set up your business — VéleményTap" };
+export const metadata: Metadata = { title: "Állítsd be a vállalkozásod — VéleményTap" };
 
 export default async function OnboardingPage() {
   const supabase = await createClient();
@@ -24,8 +24,8 @@ export default async function OnboardingPage() {
 
   return (
     <AuthShell
-      title="Set up your business"
-      description="Create your organization to start collecting feedback."
+      title="Állítsd be a vállalkozásod"
+      description="Hozd létre a szervezetedet, hogy elkezdhesd gyűjteni a véleményeket."
     >
       <CreateOrganizationForm />
     </AuthShell>
