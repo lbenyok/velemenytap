@@ -12,7 +12,15 @@
 
 ### What's deliberately not covered by Vitest
 
-Anything that touches Supabase, RLS, Server Actions, cookies, or rendered UI — those need a real database and/or a real browser, which Vitest (running plain Node, no `react-server` condition) can't provide. `features/notifications/negative-feedback-alert.ts`'s `isNegativeRating()` is pure but wasn't extracted like the feedback schema was, since it's a one-line threshold check with low drift risk; it's exercised indirectly by the manual/e2e checks below.
+Anything that touches Supabase, RLS, Server Actions, cookies, or rendered UI — those need a real database and/or a real browser, which Vitest (running plain Node, no `react-server` condition) can't provide; that's what the e2e suite below is for. `features/notifications/negative-feedback-alert.ts`'s `isNegativeRating()` is pure but wasn't extracted like the feedback schema was, since it's a one-line threshold check with low drift risk.
+
+## e2e (Playwright)
+
+`npm run test:e2e`. Full detail in `e2e/README.md`; summary here.
+
+- **`e2e/review-gating.spec.ts`** — the product skill's Review-Gating Regression Test, automated for real: for each rating 1–5, load `/r/{publicId}` in a real browser, submit that rating, and assert the "Leave a Google review" CTA is visible with the correct `href`. Plus a duplicate-submission test (same card, same browser context, rejected on the second attempt).
+- Runs against a real, disposable org/location/five-cards seeded before the suite (`e2e/support/seed.ts`) and deleted after — **against the same Supabase project used for local dev**, not an isolated Docker stack. See `DECISIONS.md` for why, and the note in `e2e/README.md` about manually checking for orphaned `E2E Review Gating %` orgs if a run is killed mid-suite.
+- Runs locally against `npm run dev` (Playwright's `webServer` starts it automatically) and in CI (`.github/workflows/ci.yml`'s `e2e` job) — the CI job needs `NEXT_PUBLIC_SUPABASE_URL`/`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`/`SUPABASE_SECRET_KEY` as repository secrets, and skips (not fails) if they're not yet configured.
 
 ## Manual (performed this session, against a real linked Supabase project and a real browser)
 
@@ -40,9 +48,13 @@ Per the product skill, re-run this whenever the public rating/review flow change
 - [ ] 5 stars → Google Review CTA available
 - [ ] No code path conditions CTA visibility on rating, sentiment, or AI analysis
 - [ ] `features/feedback/schema.test.ts`'s `it.each([1,2,3,4,5])` still passes (schema-level guard)
+- [ ] `npm run test:e2e` (`e2e/review-gating.spec.ts`) still passes (browser-level guard, now automated in CI on every push/PR)
+
+## CI
+
+`.github/workflows/ci.yml` runs on every push/PR to `master`: `typecheck` → `lint` → `npm run test` (Vitest) unconditionally, then `npm run test:e2e` (Playwright) if the required Supabase secrets are configured on the repo (see `e2e/README.md`) — otherwise that job skips rather than failing CI outright.
 
 ## Known gaps (tracked, not silently skipped)
 
-- **No Playwright/e2e automation yet.** The review-gating check above was performed manually this session, not via an automated browser test. Given this repo has no CI pipeline yet either, an e2e suite without CI to run it in has limited ongoing value — the pragmatic next step is standing up both together rather than one without the other. See `STATUS.md`.
 - **No tenant-isolation automated test.** Verified manually in earlier phases (organization A cannot read organization B's data) but not codified as a repeatable test. Would need a second real Supabase test org and either RLS-level SQL tests or an integration test hitting the real database — both meaningfully more setup than the Vitest unit tests above.
 - **No automated notification test.** "Qualifying negative feedback triggers an alert; positive feedback doesn't" is currently verified by reading `features/notifications/negative-feedback-alert.ts` and the `isNegativeRating` threshold, not by a test that actually asserts an email was (or wasn't) sent.

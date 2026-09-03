@@ -2,7 +2,7 @@
 
 NFC-based customer feedback and reputation management for physical businesses. A customer taps an NFC card, rates their visit 1–5 stars, optionally leaves a comment, and is offered a Google Review link — regardless of the rating they gave. The business sees every submission in a dashboard, gets emailed about negative feedback, and can track trends over time.
 
-See also: [PRODUCT_SPEC.md](./PRODUCT_SPEC.md) (what it does and why), [ARCHITECTURE.md](./ARCHITECTURE.md) (how it's built), [DATABASE_SCHEMA.md](./DATABASE_SCHEMA.md) (tables, RLS), [SECURITY.md](./SECURITY.md), [DECISIONS.md](./DECISIONS.md), [TEST_PLAN.md](./TEST_PLAN.md), [STATUS.md](./STATUS.md).
+See also: [PRODUCT_SPEC.md](./PRODUCT_SPEC.md) (what it does and why), [ARCHITECTURE.md](./ARCHITECTURE.md) (how it's built), [DATABASE_SCHEMA.md](./DATABASE_SCHEMA.md) (tables, RLS), [SECURITY.md](./SECURITY.md), [DECISIONS.md](./DECISIONS.md), [TEST_PLAN.md](./TEST_PLAN.md), [STATUS.md](./STATUS.md), [e2e/README.md](./e2e/README.md).
 
 ## Stack
 
@@ -33,6 +33,8 @@ npm run build        # production build
 npm run typecheck    # tsc --noEmit
 npm run lint          # eslint
 npm run format        # prettier --write
+npm run test          # Vitest (pure logic only)
+npm run test:e2e      # Playwright — see e2e/README.md before running
 ```
 
 ## Database migrations
@@ -45,9 +47,13 @@ supabase db push --db-url "$SUPABASE_DB_URL"
 
 Never hand-edit the production schema outside a migration file — see the Database Change Workflow in `DATABASE_SCHEMA.md`.
 
+## CI
+
+`.github/workflows/ci.yml` (at the repo root, one level above this directory — see `ARCHITECTURE.md`) runs typecheck/lint/Vitest on every push and PR to `master`. Playwright e2e also runs there if the repo has `NEXT_PUBLIC_SUPABASE_URL`/`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`/`SUPABASE_SECRET_KEY` configured as Actions secrets (Settings → Secrets and variables → Actions) — skips gracefully otherwise. See `e2e/README.md`.
+
 ## Deployment
 
-Hosted on Vercel (`veleminytap` project), deployed from the `main` branch. Production: https://veleminytap.vercel.app.
+Hosted on Vercel (`veleminytap` project), deployed from the `master` branch. Production: https://veleminytap.vercel.app.
 
 ```bash
 vercel deploy --prod

@@ -59,6 +59,12 @@ Only core error monitoring was wired up — not `Sentry.replayIntegration()` or 
 **Why:** Session Replay records DOM/screen activity, which is a materially bigger privacy surface than error capture alone (see `SECURITY.md` § Data minimization) and wasn't what was actually asked for — the task was closing the "no error monitoring" gap tracked in `STATUS.md`, not building out a full observability suite. Adding integrations nothing asked for is the kind of speculative scope the product skill warns against.
 **Revisit if:** debugging a hard-to-reproduce customer-facing bug genuinely needs session context beyond what an error's stack trace and breadcrumbs already provide.
 
+## e2e tests run against the shared Supabase project, not an isolated local stack
+
+`e2e/review-gating.spec.ts` hits the same Supabase project used for local dev and production — there's no `supabase start` (Docker-based local Postgres/Auth) stack for tests to run against instead.
+**Why:** this project has never had local-Postgres infrastructure at any point (every migration so far was pushed directly via `supabase db push --db-url` against the linked hosted project — see `README.md`), so a Docker-based local stack for e2e would be genuinely new infrastructure, not a variation on an existing pattern. It also couldn't be verified in the environment this was built in (no Docker available there). There are no real customers on the product yet, so the blast radius of test data touching this database is low, and the seed/cleanup helpers (`e2e/support/seed.ts`) namespace everything under an `E2E Review Gating {timestamp}` org name and delete it in `afterAll`.
+**Revisit when:** real customers are using the product — at that point, tests writing to the same database real customers' data lives in stops being acceptable, and a genuinely isolated Supabase project (or a Docker-based local stack in CI, which GitHub Actions runners support natively) should replace this.
+
 ## Documentation suite lives in `veleminytap/`, not the outer repo root
 
 The git repository root (`.../Biznisz`) also contains unrelated files (design assets, `.claude/` skill config). All product/engineering docs (`README.md`, `PRODUCT_SPEC.md`, etc.) live inside `veleminytap/`, alongside the app they describe and its pre-existing `README.md`/`AGENTS.md`.

@@ -55,6 +55,8 @@ supabase/migrations/    imperative SQL migrations, applied in order
 
 `features/` is organized by domain, not by technical layer, per the product skill's suggested structure. Do not reorganize without a clear reason.
 
+`e2e/` — Playwright browser tests, outside `app`/`features`/`lib` since they're not application code. `.github/workflows/ci.yml` lives at the **repo root** (one level above `veleminytap/`), since that's where `.git` actually is — GitHub only reads workflow files from the repo root's `.github/workflows/`, so it couldn't live inside `veleminytap/` even if that were otherwise preferred (see `DECISIONS.md`'s note on doc placement for the same repo-root-vs-`veleminytap/` distinction).
+
 ## Key technical decisions
 
 - **Cursor-based pagination**, not `OFFSET`, for the feedback inbox — stable under concurrent inserts.
