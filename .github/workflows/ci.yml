@@ -57,6 +57,12 @@ jobs:
       NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
       NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      # Optional (round-3 R3-01/verification): direct Postgres connection
+      # string for the isolated project, for e2e/location-deactivation-race.spec.ts's
+      # real two-connection concurrency test. That test skips itself (not a
+      # failure) if this isn't set -- add SUPABASE_DB_URL as a repo secret to
+      # have it actually run in CI instead of always skipping.
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
       NEXT_PUBLIC_SITE_URL: http://localhost:3000
     steps:
       - uses: actions/checkout@v4
