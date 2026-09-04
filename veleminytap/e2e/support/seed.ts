@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import type { Database } from "@/lib/supabase/database.types";
 import { loadEnv } from "./env";
 
 loadEnv();
@@ -11,7 +12,7 @@ export function adminClient() {
       "NEXT_PUBLIC_SUPABASE_URL/SUPABASE_SECRET_KEY are required to run e2e tests -- see e2e/README.md.",
     );
   }
-  return createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
+  return createClient<Database>(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
 }
 
 export type SeededFeedbackFixture = {
@@ -161,6 +162,37 @@ export async function cleanupOrg(orgId: number): Promise<void> {
   await admin.from("organizations").delete().eq("id", orgId);
 }
 
+export type SeededPlainUser = { userId: string; email: string; password: string };
+
+/** A throwaway, pre-confirmed auth user with NO organization -- for onboarding tests. */
+export async function seedPlainUser(namePrefix: string): Promise<SeededPlainUser> {
+  const admin = adminClient();
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const email = `e2e-${namePrefix}-${unique}@example.com`;
+  const password = `E2e-Test-${unique}!`;
+
+  const { data, error } = await admin.auth.admin.createUser({ email, password, email_confirm: true });
+  if (error) throw error;
+
+  return { userId: data.user.id, email, password };
+}
+
+export async function cleanupPlainUser(userId: string): Promise<void> {
+  const admin = adminClient();
+  const { data: memberships } = await admin
+    .from("organization_memberships")
+    .select("organization_id")
+    .eq("user_id", userId);
+  for (const m of memberships ?? []) {
+    await admin.from("feedback").delete().eq("organization_id", m.organization_id);
+    await admin.from("nfc_cards").delete().eq("organization_id", m.organization_id);
+    await admin.from("locations").delete().eq("organization_id", m.organization_id);
+    await admin.from("organization_memberships").delete().eq("organization_id", m.organization_id);
+    await admin.from("organizations").delete().eq("id", m.organization_id);
+  }
+  await admin.auth.admin.deleteUser(userId);
+}
+
 export type SeededOrgMember = {
   userId: string;
   email: string;
@@ -244,7 +276,7 @@ export async function userClient(email: string, password: string) {
       "NEXT_PUBLIC_SUPABASE_URL/NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY are required -- see e2e/README.md.",
     );
   }
-  const client = createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
+  const client = createClient<Database>(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
   const { error } = await client.auth.signInWithPassword({ email, password });
   if (error) throw error;
 

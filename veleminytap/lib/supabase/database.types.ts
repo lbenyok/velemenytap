@@ -284,6 +284,17 @@ export interface Database {
           google_review_url: string | null;
         }[];
       };
+      create_organization_atomic: {
+        Args: {
+          p_name: string;
+        };
+        Returns: {
+          organization_id: number;
+          organization_name: string;
+          organization_slug: string;
+          newly_created: boolean;
+        }[];
+      };
     };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;
