@@ -1,7 +1,8 @@
-// Hand-written to match supabase/migrations/20260903150741_core_schema_and_rls.sql.
-// Regenerate with `supabase gen types typescript --db-url <url> --schema public`
-// once Docker (or an account-level access token) is available, then diff
-// against this file before replacing it.
+// Hand-written to match supabase/migrations/*.sql (see that directory for
+// the current full list). `supabase gen types typescript --db-url <url>
+// --schema public` needs Docker/Podman even with --db-url in this CLI
+// version, which isn't available in this environment either -- once it is,
+// regenerate and diff against this file before replacing it.
 
 export type Json =
   | string
@@ -158,6 +159,7 @@ export interface Database {
           public_id: string;
           display_name: string | null;
           status: NfcCardStatus;
+          last_negative_alert_at: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -168,6 +170,7 @@ export interface Database {
           public_id?: string;
           display_name?: string | null;
           status?: NfcCardStatus;
+          last_negative_alert_at?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -178,6 +181,7 @@ export interface Database {
           public_id?: string;
           display_name?: string | null;
           status?: NfcCardStatus;
+          last_negative_alert_at?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -262,7 +266,25 @@ export interface Database {
       };
     };
     Views: Record<string, never>;
-    Functions: Record<string, never>;
+    Functions: {
+      submit_feedback_atomic: {
+        Args: {
+          p_public_id: string;
+          p_rating: number;
+          p_feedback_text: string | null;
+        };
+        Returns: {
+          feedback_id: number;
+          organization_id: number;
+          organization_name: string;
+          location_id: number;
+          location_name: string;
+          nfc_card_id: number;
+          card_name: string | null;
+          google_review_url: string | null;
+        }[];
+      };
+    };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;
   };

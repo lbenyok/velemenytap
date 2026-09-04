@@ -3,7 +3,6 @@
 import { after } from "next/server";
 import { cookies } from "next/headers";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { lookupPublicCard } from "./card-lookup";
 import { feedbackSchema } from "./schema";
 import {
   isNegativeRating,
@@ -15,14 +14,14 @@ export type FeedbackActionState =
   | { status: "error"; error: string }
   | { status: "success"; organizationName: string; googleReviewUrl: string | null };
 
-// Anti-spam posture for this endpoint (documented in SECURITY.md): no IP-
-// based or Redis-backed rate limiting, deliberately. Vercel's serverless
-// functions don't share memory across instances, so an in-process limiter
-// would be unreliable without adding real infrastructure -- not justified
-// for MVP per "avoid unnecessary infrastructure." What's implemented
-// instead is the practical, no-infra case that actually matters for NFC
-// use: an accidental double-tap or a customer re-submitting the same card
-// a few times in a row. A short-lived, HttpOnly, card-scoped cookie (no
+// Anti-spam posture for this endpoint (documented in SECURITY.md): the
+// database-backed per-card rate limit inside submit_feedback_atomic (see
+// its migration) handles a scripted flood -- it doesn't need in-process
+// state, so it works correctly across Vercel's independent serverless
+// instances, unlike an in-memory limiter would. Layered on top of that is
+// the practical, near-zero-cost case that actually matters for casual NFC
+// use: an accidental double-tap or a customer re-submitting the same card a
+// few times in a row. A short-lived, HttpOnly, card-scoped cookie (no
 // personal data, just an opaque marker) blocks that without touching
 // legitimate customers on other cards or other visits.
 const DUPLICATE_WINDOW_SECONDS = 5 * 60;
@@ -33,12 +32,11 @@ function duplicateCookieName(publicId: string): string {
 
 /**
  * The only write path into the feedback table (see the schema migration --
- * there is no INSERT policy for anon/authenticated on purpose). Re-derives
- * organization_id/location_id/nfc_card_id from a fresh server-side lookup
- * of public_id rather than trusting anything else the client might send,
- * and re-checks the card/location are still active at submission time
- * (they were valid when the page loaded, but could have been deactivated
- * in between).
+ * there is no INSERT policy for anon/authenticated on purpose). Delegates
+ * to submit_feedback_atomic, which re-derives organization_id/location_id/
+ * nfc_card_id from public_id and re-checks the card/location are active as
+ * part of the same atomic operation as the insert -- not a separate lookup
+ * that could go stale between the check and the write.
  */
 export async function submitFeedbackAction(
   _prevState: FeedbackActionState,
@@ -66,26 +64,45 @@ export async function submitFeedbackAction(
     };
   }
 
-  const card = await lookupPublicCard(parsed.data.public_id);
-  if (!card || !card.isActive) {
-    return { status: "error", error: "Ez a link már nem aktív." };
-  }
-
+  // submit_feedback_atomic does the active-status check and the insert as
+  // one atomic database operation (locking the card row for the duration),
+  // closing the race a separate lookup-then-insert had: the card/location
+  // could be deactivated in between the two round trips, and the insert
+  // would still go through. It also enforces a per-card rate limit (see the
+  // migration) -- both are review findings #6 and #2 respectively.
   const admin = createAdminClient();
-  const { error } = await admin.from("feedback").insert({
-    organization_id: card.organizationId,
-    location_id: card.locationId,
-    nfc_card_id: card.cardId,
-    rating: parsed.data.rating,
-    feedback_text: parsed.data.feedback_text,
-  });
+  const { data: result, error } = await admin
+    .rpc("submit_feedback_atomic", {
+      p_public_id: parsed.data.public_id,
+      p_rating: parsed.data.rating,
+      p_feedback_text: parsed.data.feedback_text,
+    })
+    .single();
 
   if (error) {
+    if (error.code === "VT001" || error.code === "VT002") {
+      return { status: "error", error: "Ez a link már nem aktív." };
+    }
+    if (error.code === "VT003") {
+      return {
+        status: "error",
+        error: "Túl sok vélemény érkezett erről a kártyáról. Kérjük, próbáld újra pár perc múlva.",
+      };
+    }
     return {
       status: "error",
       error: "Nem sikerült elküldeni a véleményedet. Kérjük, próbáld újra.",
     };
   }
+
+  const card = {
+    organizationId: result.organization_id,
+    nfcCardId: result.nfc_card_id,
+    organizationName: result.organization_name,
+    locationName: result.location_name,
+    cardName: result.card_name,
+    googleReviewUrl: result.google_review_url,
+  };
 
   cookieStore.set(cookieName, "1", {
     httpOnly: true,
@@ -105,6 +122,7 @@ export async function submitFeedbackAction(
     after(() =>
       sendNegativeFeedbackAlert({
         organizationId: card.organizationId,
+        nfcCardId: card.nfcCardId,
         organizationName: card.organizationName,
         locationName: card.locationName,
         cardName: card.cardName,

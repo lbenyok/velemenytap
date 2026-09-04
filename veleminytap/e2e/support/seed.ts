@@ -3,7 +3,7 @@ import { loadEnv } from "./env";
 
 loadEnv();
 
-function adminClient() {
+export function adminClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SECRET_KEY;
   if (!url || !key) {
@@ -71,6 +71,29 @@ export async function seedFeedbackFixture(orgId: number, namePrefix: string): Pr
     cardId: card.id,
     feedbackId: feedback.id,
   };
+}
+
+export type SeededCard = { cardId: number; publicId: string; locationId: number };
+
+/** One location and one active NFC card with no feedback on it yet. */
+export async function seedActiveCard(orgId: number, namePrefix: string): Promise<SeededCard> {
+  const admin = adminClient();
+
+  const { data: location, error: locationError } = await admin
+    .from("locations")
+    .insert({ organization_id: orgId, name: `E2E ${namePrefix} Location` })
+    .select("id")
+    .single();
+  if (locationError) throw locationError;
+
+  const { data: card, error: cardError } = await admin
+    .from("nfc_cards")
+    .insert({ organization_id: orgId, location_id: location.id, display_name: "E2E Card" })
+    .select("id, public_id")
+    .single();
+  if (cardError) throw cardError;
+
+  return { cardId: card.id, publicId: card.public_id, locationId: location.id };
 }
 
 export type SeededOrg = {
