@@ -1,6 +1,16 @@
 # Status
 
-Last updated: 2026-09-04, after a review-prep pass (no new features) that re-verified the full test suite/lint/typecheck/build, reviewed the diff since the last review checkpoint, and rewrote `REVIEW_REQUEST.md` for an independent senior-engineer review. Prior entry: 2026-09-03, after the "Phase 14" master-build-prompt gap-fill session, follow-up Resend/Sentry/Playwright-CI wiring passes, a homepage build, and a full Hungarian localization + brand rebrand.
+Last updated: 2026-09-04, after responding to the independent engineering review requested in the previous entry (branch `fix/independent-review-findings`, off commit `a3d5ce1`). Prior entry: 2026-09-04, after a review-prep pass (no new features) that rewrote `REVIEW_REQUEST.md` for that review.
+
+## Review-response pass (2026-09-04)
+
+All 11 findings from the independent review verified against the actual code (not accepted on faith) and fixed where confirmed; see the finding-by-finding verdict handed back to the reviewer for the full detail. In brief:
+
+- **Confirmed and fixed, all with new migrations against a newly-provisioned isolated Supabase test project (not the shared dev/production one) and new automated tests:** Sentry redaction (4 real bugs — see `SECURITY.md`), the open-redirect in both `next`-param redirect call sites, the `feedback_update` RLS policy's missing column-level restriction, `nfc_cards.location_id` relocation, public-submission abuse/email-amplification (a real database-backed rate limit and alert cooldown, not Redis), the public submission path's active-status check-then-insert race, the analytics row-cap silent truncation (confirmed empirically: 1200 seeded rows, `.limit(5000)` requested, 1000 returned), organization-onboarding's non-atomicity/non-idempotency, and the feedback inbox's cursor pagination correctness under tied `created_at` values.
+- **New test coverage**, all run against the isolated project: `e2e/feedback-and-card-integrity.spec.ts`, `e2e/public-submission-safety.spec.ts`, `e2e/feedback-pagination.spec.ts`, `e2e/analytics-row-cap.spec.ts`, `e2e/organization-onboarding.spec.ts`, `e2e/tenant-isolation.spec.ts`, `e2e/redirect-safety.spec.ts`, plus 29 new `lib/safe-redirect.test.ts` unit tests, 22 rewritten `lib/sentry-redact.test.ts` unit tests, and 7 new `features/analytics/fetch-all-rows.test.ts` unit tests. 35 e2e tests and 82 unit tests, all green.
+- **Test infrastructure**: e2e/db tests now run against a dedicated, isolated Supabase project (`.env.test.local`, gitignored) instead of the shared dev/production one flagged in the prior entry's "Deliberate tradeoff" — see `e2e/README.md`. **CI's e2e job secrets still need updating** to the isolated project's values if they were copied from `.env.local` before this change; see "What's needed from the user" below.
+- **Documentation corrected**, not just code: `SECURITY.md`'s admin-client-consumer count was wrong (claimed two, actually four at review time); now lists all three current admin-client consumers plus the two `SECURITY DEFINER`/`SECURITY INVOKER` database functions that are the other RLS-bypass category, and the "no rate limiting" / "no tenant-isolation test" claims in this file's own prior "Not done" section (below) are corrected rather than left stale.
+- **Not part of this pass, described but not executed**: production migration/deployment of any of this — see `DECISIONS.md` for the rollout plan. Nothing was deployed, merged, or applied to the production database during this pass.
 
 ## Review-prep pass (2026-09-04, no new functionality)
 
@@ -44,18 +54,20 @@ Everything above was typechecked, linted, and — for the UI-facing pieces — m
 ## Not done / explicitly deferred
 
 - **Sentry source map upload.** Error capture is fully live; source maps (readable stack traces in the dashboard instead of minified ones) need a `SENTRY_AUTH_TOKEN` plus org/project slugs, deliberately skipped for now — see `DECISIONS.md`.
-- **A genuinely isolated e2e environment.** e2e tests run against the shared Supabase project (see `DECISIONS.md`); revisit once real customers are on the product.
-- **Tenant-isolation automated test.** Verified manually in earlier phases; not codified as a repeatable test.
+- ~~A genuinely isolated e2e environment.~~ **Done this pass** — see the review-response entry above and `e2e/README.md`.
+- ~~Tenant-isolation automated test.~~ **Done this pass** — `e2e/tenant-isolation.spec.ts`.
 - **QR code generation for NFC cards.** Explicitly lower priority per the product skill ("do not allow QR work to delay core functionality") — not started, and nothing currently blocks a business from printing/encoding the public URL onto a physical NFC tag by other means in the meantime.
-- **Redis-backed rate limiting.** Deliberate MVP gap, not a bug — full reasoning in `SECURITY.md`.
+- ~~Redis-backed rate limiting.~~ **Superseded, not simply done** — a database-backed rate limit was built instead (`submit_feedback_atomic`), which closes the actual gap (an unbounded scripted flood) without Redis; see `SECURITY.md` for why Redis specifically remained unnecessary rather than merely deferred.
 - **Org switcher, role-gated authorization, `feedback_notes` table, logo upload UI.** All deliberate MVP-scope decisions — see `DECISIONS.md` for the reasoning behind each.
+- **Tenant-scoped SQL aggregate functions/views for analytics.** Considered as part of this pass's analytics-truncation fix; page-by-page fetching past the row cap was chosen instead for this MVP stage — see `ARCHITECTURE.md`'s "What's deliberately not built."
 
 ## What's needed from the user before the next round
 
 - ~~Confirmation that the Supabase Auth Site URL/Redirect URLs were added for production.~~ **Confirmed done.**
 - ~~Verify a sending domain in Resend.~~ **Confirmed done — `velemenytap.hu`, sends to arbitrary recipients working.**
 - ~~A decision on whether/when to prioritize Sentry vs. Playwright/CI vs. further product features.~~ **Both are done.**
-- ~~Add three GitHub Actions repo secrets.~~ **Confirmed done — CI's e2e job is fully green.**
+- ~~Add three GitHub Actions repo secrets.~~ **Confirmed done — CI's e2e job is fully green** as of the prior entry, but its secrets still point at the shared dev/production project. **Update them to the new isolated test project's values** (same three: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`) so CI's e2e job runs against the isolated project too, not production — see `e2e/README.md`.
+- Apply the eight new migrations from this pass to the production database (see `DECISIONS.md` for the rollout/rollback plan) — **not done as part of this pass**, deliberately, per this task's explicit instruction not to touch production.
 - Optional: a `SENTRY_AUTH_TOKEN` + org/project slugs, if/when readable (non-minified) stack traces in the Sentry dashboard become worth the extra setup.
 
 ## Deployed
