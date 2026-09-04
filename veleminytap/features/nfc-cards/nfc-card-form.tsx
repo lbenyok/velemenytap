@@ -52,45 +52,69 @@ export function NfcCardForm({
   }, [state]);
 
   const hasLocations = locations.length > 0;
+  // A card's location_id is immutable at the database level once created
+  // (private.prevent_nfc_card_location_change, round-2 finding R2-09 --
+  // this field used to be an ordinary editable dropdown here even for an
+  // existing card, so picking a different location on the edit form
+  // produced a confusing generic "couldn't save" error instead of ever
+  // explaining why). The location Select below is create-only; editing an
+  // existing card shows its location as read-only text instead, and
+  // updateNfcCardAction doesn't accept a location_id input at all anymore.
+  const currentLocationLabel = card
+    ? (locations.find((l) => l.value === String(card.location_id))?.label ?? "—")
+    : null;
 
   return (
     <form action={formAction} noValidate>
       {card ? <input type="hidden" name="id" value={card.id} /> : null}
       <FieldGroup>
-        <Field data-invalid={!!state.error}>
-          <FieldLabel htmlFor="location_id">Helyszín</FieldLabel>
-          <Select
-            items={locations}
-            name="location_id"
-            defaultValue={card ? String(card.location_id) : undefined}
-            required
-            disabled={!hasLocations}
-          >
-            <SelectTrigger id="location_id" className="w-full">
-              <SelectValue placeholder="Válassz egy helyszínt" />
-            </SelectTrigger>
-            {/* alignItemWithTrigger (the default) positions the matching
-                item exactly over the trigger. With exactly one option --
-                the common case for a brand-new org with one location --
-                that positioning breaks (the option lands at (0,0) and
-                can't be clicked), because there's no other item to force
-                the popup into its normal below-trigger layout. Disabling
-                it makes the list render the same way regardless of how
-                many options there are. */}
-            <SelectContent alignItemWithTrigger={false}>
-              {locations.map((location) => (
-                <SelectItem key={location.value} value={location.value}>
-                  {location.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {!hasLocations ? (
-            <FieldDescription className="text-destructive">
-              Adj hozzá egy helyszínt, mielőtt NFC-kártyát hoznál létre.
+        {card ? (
+          <Field>
+            <FieldLabel>Helyszín</FieldLabel>
+            <p className="rounded-md border border-input bg-muted px-3 py-2 text-sm text-muted-foreground">
+              {currentLocationLabel}
+            </p>
+            <FieldDescription>
+              A helyszín nem módosítható létrehozás után. Ha a kártyát másik
+              helyszínre szeretnéd áthelyezni, deaktiváld ezt a kártyát, és
+              hozz létre egy újat az új helyszínen.
             </FieldDescription>
-          ) : null}
-        </Field>
+          </Field>
+        ) : (
+          <Field data-invalid={!!state.error}>
+            <FieldLabel htmlFor="location_id">Helyszín</FieldLabel>
+            <Select
+              items={locations}
+              name="location_id"
+              required
+              disabled={!hasLocations}
+            >
+              <SelectTrigger id="location_id" className="w-full">
+                <SelectValue placeholder="Válassz egy helyszínt" />
+              </SelectTrigger>
+              {/* alignItemWithTrigger (the default) positions the matching
+                  item exactly over the trigger. With exactly one option --
+                  the common case for a brand-new org with one location --
+                  that positioning breaks (the option lands at (0,0) and
+                  can't be clicked), because there's no other item to force
+                  the popup into its normal below-trigger layout. Disabling
+                  it makes the list render the same way regardless of how
+                  many options there are. */}
+              <SelectContent alignItemWithTrigger={false}>
+                {locations.map((location) => (
+                  <SelectItem key={location.value} value={location.value}>
+                    {location.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {!hasLocations ? (
+              <FieldDescription className="text-destructive">
+                Adj hozzá egy helyszínt, mielőtt NFC-kártyát hoznál létre.
+              </FieldDescription>
+            ) : null}
+          </Field>
+        )}
         <Field data-invalid={!!state.error}>
           <FieldLabel htmlFor="display_name">Kártya neve</FieldLabel>
           <Input
