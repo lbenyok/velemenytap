@@ -1,6 +1,26 @@
 # Status
 
-Last updated: 2026-09-04, after merging the review-response branch and applying its migrations to production. Prior entry: 2026-09-04, after responding to the independent engineering review requested before that (branch `fix/independent-review-findings`, off commit `a3d5ce1`).
+Last updated: 2026-09-04, after implementing and testing (not yet merging) the response to a second, independent round-2 engineering review of `master` (commit `8f05205`, the state after PR #1's squash merge `e2bbb7b`). Branch `fix/round2-review-findings`, not merged — see "Round-2 review-response pass" below and `REVIEW_REQUEST.md` for the full handoff. Prior entry: 2026-09-04, after merging the round-1 review-response branch and applying its migrations to production.
+
+## Round-2 review-response pass (2026-09-04, not yet merged)
+
+A second independent review of `master` (post round-1 merge) raised 9 further findings (R2-01–R2-09). All 9 verified independently against actual code/database state (empirical reproductions, real concurrent database connections, `pg_proc.proacl`/`has_function_privilege()` introspection — not accepted on faith) and fixed; **all 9 confirmed, none rejected**. In brief:
+
+- **R2-01** — the round-1 open-redirect fix's origin check was necessary but not sufficient: a dot-segment payload (`/a/..//evil.example/path`) and a same-origin absolute URL with a double-slash pathname both produced a same-origin-*validated* result that was itself a protocol-relative URL. Fixed by re-validating the exact output string, not just the input candidate (`lib/safe-redirect.ts`).
+- **R2-02/R2-03/R2-04** — round 1's analytics fix (page-fetching past PostgREST's 1000-row cap up to a 5000-row ceiling) still had a silent ceiling at 5000, plus `OFFSET`-pagination inconsistency under concurrent writes. Rebuilt as two tenant-scoped SQL aggregation functions (`get_feedback_overview_snapshot`, `get_feedback_period_analytics`) computing every statistic in one snapshot-consistent call, with an explicit unavailable/retry UI state on query failure instead of an apparently-valid empty result.
+- **R2-05** — `submit_feedback_atomic` locked only the card row, not the location row it also reads status from; a location deactivated mid-transaction could still receive a feedback insert. Fixed by locking both rows in the same `SELECT`, reproduced with two real concurrent database connections.
+- **R2-06** — e2e test config could silently fall back to production credentials and reuse a wrongly-configured already-running dev server. Fixed: fails closed on missing isolated-project config, force-disables `RESEND_API_KEY`/`NEXT_PUBLIC_SENTRY_DSN` for test runs, and a Playwright `globalSetup` verifies the actually-running server's configured Supabase URL before any test executes.
+- **R2-07** — `revoke ... from public` alone did not remove `anon`/`authenticated`'s ability to call either round-1 RPC, due to this project's `ALTER DEFAULT PRIVILEGES` configuration. Not a demonstrated RLS bypass in practice, but fixed with an explicit role allowlist on every RPC (5 functions total).
+- **R2-08** — the negative-feedback alert cooldown was a plain, tenant-writable column; an org's own authenticated session could reset it directly, and the per-card rate limit didn't bound total email volume across an org's cards. Fixed: the cooldown column is now trigger-protected against any caller but one dedicated function, plus a new organization-wide hourly send budget. Recipient-address verification deliberately not built this pass — see `DECISIONS.md` § "R2-08."
+- **R2-09** — the card editor offered a location-change dropdown the database has rejected since round 1; fixed at both the UI (read-only location text when editing) and server-action (no `location_id` field in the update schema at all) layers.
+
+**New migrations** (4, none applied to production): `20260904130921_tenant_scoped_analytics_aggregation.sql`, `20260904131144_enforce_rpc_role_allowlists.sql`, `20260904132712_lock_location_in_feedback_submission.sql`, `20260904135437_server_owned_alert_cooldown_and_budget.sql` — all validated against the same isolated test project as round 1, never against production.
+
+**New/extended test coverage**, all against the isolated project: `e2e/nfc-card-location-lock.spec.ts`, `e2e/analytics-aggregation.spec.ts`, `e2e/location-deactivation-race.spec.ts` (real two-connection concurrency, using the `pg` driver directly since PostgREST/supabase-js has no cross-request transaction control), `e2e/negative-feedback-alert-abuse.spec.ts`, `e2e/support/env.test.ts`; extended `lib/safe-redirect.test.ts` (34, up from 29), `e2e/redirect-safety.spec.ts` (7, up from 4); new `features/analytics/parse-snapshots.ts`/`.test.ts`. Deleted (confirmed dead first): `features/analytics/aggregate.ts`/`.test.ts`, `fetch-all-rows.ts`/`.test.ts`, `e2e/analytics-row-cap.spec.ts` (all superseded by SQL aggregation).
+
+**Verification**: `npm run typecheck` clean, `npm run lint` clean, `npm run test` 83/83 (Vitest), `npm run test:e2e` 49/49 (Playwright, real browser, isolated test project), `npm run build` clean (all 16 routes compile). Test-project database confirmed clean of leftover orgs/users after the full run. **None of this constitutes production verification** — every test ran against the isolated Supabase test project, never against the linked production project; no production migration has been applied and no production data was read or written as part of this pass.
+
+**Not part of this pass**: merging the branch, applying the 4 new migrations to production, or deploying — this task's explicit constraint. See `REVIEW_REQUEST.md` for the reviewable PR and rollout plan once approved.
 
 ## Merged to production (2026-09-04)
 
@@ -63,9 +83,16 @@ Everything above was typechecked, linted, and — for the UI-facing pieces — m
 - **QR code generation for NFC cards.** Explicitly lower priority per the product skill ("do not allow QR work to delay core functionality") — not started, and nothing currently blocks a business from printing/encoding the public URL onto a physical NFC tag by other means in the meantime.
 - ~~Redis-backed rate limiting.~~ **Superseded, not simply done** — a database-backed rate limit was built instead (`submit_feedback_atomic`), which closes the actual gap (an unbounded scripted flood) without Redis; see `SECURITY.md` for why Redis specifically remained unnecessary rather than merely deferred.
 - **Org switcher, role-gated authorization, `feedback_notes` table, logo upload UI.** All deliberate MVP-scope decisions — see `DECISIONS.md` for the reasoning behind each.
-- **Tenant-scoped SQL aggregate functions/views for analytics.** Considered as part of this pass's analytics-truncation fix; page-by-page fetching past the row cap was chosen instead for this MVP stage — see `ARCHITECTURE.md`'s "What's deliberately not built."
+- ~~Tenant-scoped SQL aggregate functions/views for analytics.~~ **Done in the round-2 pass** — `get_feedback_overview_snapshot`/`get_feedback_period_analytics`, see `DATABASE_SCHEMA.md`.
+- **Verified `notification_email` recipients for negative-feedback alerts.** An organization-wide send budget bounds the blast radius (round-2, R2-08); actual address verification needs its own email-confirmation flow, deliberately out of scope this pass — see `DECISIONS.md`.
 
-## What's needed from the user before the next round
+## What's needed from the user before round 2 can ship
+
+- Review and approve [the round-2 PR](REVIEW_REQUEST.md) (not yet opened against `master` as of this entry — see `REVIEW_REQUEST.md` for the branch/commit range).
+- Approval to apply the 4 new migrations to **production** and merge — this task's explicit constraint kept both out of scope for this pass itself.
+- Once approved: the same migrations-before-merge rollout order round 1 used (see `REVIEW_REQUEST.md` § 6 for the exact plan), then confirm the Vercel deploy reflects the merged commit.
+
+## What was needed from the user before round 1 shipped
 
 - ~~Confirmation that the Supabase Auth Site URL/Redirect URLs were added for production.~~ **Confirmed done.**
 - ~~Verify a sending domain in Resend.~~ **Confirmed done — `velemenytap.hu`, sends to arbitrary recipients working.**
