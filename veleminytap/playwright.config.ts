@@ -1,4 +1,12 @@
 import { defineConfig, devices } from "@playwright/test";
+import { loadEnvVars } from "./e2e/support/env";
+
+// Overrides the spawned `next dev`/`next start` process's env before Next's
+// own .env.local loading runs -- Next never overwrites a var that's already
+// set in the process environment, so this is what makes the actual server
+// under test talk to the isolated e2e Supabase project (.env.test.local)
+// instead of the production one .env.local points at. See e2e/support/env.ts.
+const testEnv = loadEnvVars();
 
 export default defineConfig({
   testDir: "./e2e",
@@ -26,5 +34,6 @@ export default defineConfig({
     timeout: 60_000,
     stdout: "pipe",
     stderr: "pipe",
+    env: testEnv,
   },
 });

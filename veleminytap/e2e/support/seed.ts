@@ -79,26 +79,46 @@ export async function cleanupOrg(orgId: number): Promise<void> {
   await admin.from("organizations").delete().eq("id", orgId);
 }
 
-export type SeededAuthUser = { userId: string; email: string; password: string };
+export type SeededAuthUser = { userId: string; email: string; password: string; orgId: number };
 
-/** Creates a throwaway, pre-confirmed auth user for driving the real login form. */
+/**
+ * Creates a throwaway, pre-confirmed auth user for driving the real login
+ * form -- plus an organization/membership for it, since the dashboard
+ * layout redirects any org-less authenticated user to /onboarding. Without
+ * this, a redirect test would always land on /onboarding no matter what its
+ * safe fallback target was, masking the actual thing under test.
+ */
 export async function seedAuthUser(): Promise<SeededAuthUser> {
   const admin = adminClient();
   const email = `e2e-redirect-safety-${Date.now()}@example.com`;
   const password = `E2e-Test-${Date.now()}!`;
 
-  const { data, error } = await admin.auth.admin.createUser({
+  const { data: userData, error: userError } = await admin.auth.admin.createUser({
     email,
     password,
     email_confirm: true,
   });
-  if (error) throw error;
+  if (userError) throw userError;
 
-  return { userId: data.user.id, email, password };
+  const { data: org, error: orgError } = await admin
+    .from("organizations")
+    .insert({ name: `E2E Redirect Safety ${Date.now()}`, slug: `e2e-redirect-safety-${Date.now()}` })
+    .select("id")
+    .single();
+  if (orgError) throw orgError;
+
+  const { error: membershipError } = await admin
+    .from("organization_memberships")
+    .insert({ organization_id: org.id, user_id: userData.user.id, role: "owner" });
+  if (membershipError) throw membershipError;
+
+  return { userId: userData.user.id, email, password, orgId: org.id };
 }
 
-export async function cleanupAuthUser(userId: string): Promise<void> {
+export async function cleanupAuthUser(userId: string, orgId: number): Promise<void> {
   const admin = adminClient();
+  await admin.from("organization_memberships").delete().eq("organization_id", orgId);
+  await admin.from("organizations").delete().eq("id", orgId);
   await admin.auth.admin.deleteUser(userId);
 }
 

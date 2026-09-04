@@ -17,14 +17,20 @@ import {
  * safeRedirectTarget() helper; this suite drives each end-to-end.
  */
 
+// beforeEach/afterEach, not beforeAll/afterAll: Playwright runs file-level
+// beforeAll/afterAll once PER WORKER when a file's tests are distributed
+// across multiple parallel workers (the default here), not once per file --
+// so a shared `user` fixture would get independently (and concurrently)
+// re-seeded by every worker that picks up any test from this file. Each
+// test gets its own isolated user/org instead.
 let user: SeededAuthUser;
 
-test.beforeAll(async () => {
+test.beforeEach(async () => {
   user = await seedAuthUser();
 });
 
-test.afterAll(async () => {
-  await cleanupAuthUser(user.userId);
+test.afterEach(async () => {
+  await cleanupAuthUser(user.userId, user.orgId);
 });
 
 async function signIn(page: import("@playwright/test").Page) {
