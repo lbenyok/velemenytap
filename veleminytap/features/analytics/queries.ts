@@ -54,14 +54,14 @@ export async function getAnalyticsData(
 ): Promise<AnalyticsData> {
   const supabase = await createClient();
 
-  const since = new Date();
-  since.setUTCDate(since.getUTCDate() - (days - 1));
-  since.setUTCHours(0, 0, 0, 0);
-
+  // p_since is no longer passed -- the database function derives it from
+  // p_days itself and validates p_days against an explicit allowlist
+  // (round-3 finding R3-04: an arbitrary, caller-controlled p_days forced
+  // an unbounded generate_series; p_since was also redundant with it in
+  // every legitimate call, one more caller-trusted value than necessary).
   // Not .single() -- see overview-data.ts's identical comment.
   const result = await supabase.rpc("get_feedback_period_analytics", {
     p_organization_id: organizationId,
-    p_since: since.toISOString(),
     p_days: days,
   });
 
