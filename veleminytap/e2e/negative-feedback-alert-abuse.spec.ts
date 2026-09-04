@@ -45,9 +45,10 @@ test.afterEach(async () => {
 test("R2-08: a tenant's own authenticated session cannot reset the alert cooldown via a direct UPDATE", async () => {
   const admin = adminClient();
   // Prime a claimed cooldown first, via the legitimate path, so there's
-  // something to attempt resetting.
+  // something to attempt resetting. Round-3 R3-06: claim_negative_alert_send
+  // now returns the new log row's id (a reservation), not a plain boolean.
   const claimed = await admin.rpc("claim_negative_alert_send", { p_nfc_card_id: card.cardId });
-  expect(claimed.data).toBe(true);
+  expect(claimed.data).not.toBeNull();
 
   const client = await userClient(member.email, member.password);
   const { data, error } = await client
@@ -88,9 +89,45 @@ test("R2-08: claim_negative_alert_send lets only one claim through per card per 
   const second = await admin.rpc("claim_negative_alert_send", { p_nfc_card_id: card.cardId });
 
   expect(first.error).toBeNull();
-  expect(first.data).toBe(true);
+  expect(first.data).not.toBeNull();
   expect(second.error).toBeNull();
-  expect(second.data).toBe(false);
+  expect(second.data).toBeNull();
+});
+
+test("R3-02: an organization-wide budget of one under REAL concurrent claims for different cards lets exactly one through", async () => {
+  const admin = adminClient();
+  const BUDGET = 1;
+
+  // Five distinct, never-claimed cards -- if the budget check and the
+  // claim weren't serialized per organization, several of these could all
+  // read "0 used, budget 1" before any of them committed. Promise.all
+  // sends these as genuinely concurrent HTTP requests -- PostgREST opens
+  // an independent connection/transaction per request, so this is real
+  // concurrency, not a sequential loop dressed up to look like one (the
+  // gap round-3 finding R3-02 explicitly called out as insufficient in an
+  // earlier version of this suite).
+  const cards: SeededCard[] = [];
+  for (let i = 0; i < 5; i++) {
+    cards.push(await seedActiveCard(member.orgId, `alert-budget-race-${i}`));
+  }
+
+  const results = await Promise.all(
+    cards.map((c) =>
+      admin.rpc("claim_negative_alert_send", {
+        p_nfc_card_id: c.cardId,
+        p_org_hourly_budget: BUDGET,
+      }),
+    ),
+  );
+
+  for (const r of results) {
+    expect(r.error).toBeNull();
+  }
+  const claimedIds = results.map((r) => r.data).filter((id): id is number => id !== null);
+  expect(claimedIds).toHaveLength(BUDGET);
+  // And exactly one reservation exists to back that one claim -- distinct
+  // log ids, not the same row counted twice.
+  expect(new Set(claimedIds).size).toBe(BUDGET);
 });
 
 test("R2-08: an organization-wide hourly budget caps total claims regardless of how many different cards they come from", async () => {

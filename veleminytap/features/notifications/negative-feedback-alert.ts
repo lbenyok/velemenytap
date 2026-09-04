@@ -44,23 +44,35 @@ export async function sendNegativeFeedbackAlert(params: {
     return;
   }
 
-  try {
-    const admin = createAdminClient();
+  const admin = createAdminClient();
+  // Set once a claim succeeds; used in the `finally` block below to report
+  // this attempt's real outcome (round-3 R3-06) regardless of which return
+  // or throw path this function takes after that point -- a reservation
+  // that's claimed must always be finalized as either delivered or failed,
+  // never left silently unresolved by an early return (no recipients) or
+  // an unexpected exception.
+  let logId: number | null = null;
+  let delivered = false;
 
+  try {
     // Atomic claim: caps this at one alert per card per 5-minute cooldown
     // (finding #2, round 1) AND one alert per organization per hour
     // regardless of how many different cards it comes from (round-2
     // finding R2-08 -- the per-card cooldown alone doesn't bound total
-    // email volume across an org's cards). last_negative_alert_at is now
-    // genuinely server-owned: a trigger rejects any direct UPDATE to it
-    // from any caller, including this admin client -- the only way to
-    // change it is through this function, which is EXECUTE-restricted to
-    // service_role. See its migration for the full reasoning, including
-    // why a round-1 version of this same cooldown (a raw UPDATE from here)
-    // was not actually a sufficient fix on its own: an authenticated
-    // tenant's own session could reset it via a direct UPDATE, since RLS
-    // is row-level, not column-level.
-    const { data: claimed, error: claimError } = await admin.rpc("claim_negative_alert_send", {
+    // email volume across an org's cards), serialized across concurrent
+    // claims for different cards in the same org (round-3 finding R3-02).
+    // last_negative_alert_at is genuinely server-owned: a trigger rejects
+    // any direct UPDATE to it from any caller, including this admin
+    // client -- the only way to change it is through this function, which
+    // is EXECUTE-restricted to service_role. See its migration for the
+    // full reasoning, including why a round-1 version of this same
+    // cooldown (a raw UPDATE from here) was not actually a sufficient fix
+    // on its own: an authenticated tenant's own session could reset it via
+    // a direct UPDATE, since RLS is row-level, not column-level.
+    //
+    // Returns the new log row's id (a *reservation*, not a record of
+    // delivery -- round-3 finding R3-06) or null if nothing was claimed.
+    const { data: claimedLogId, error: claimError } = await admin.rpc("claim_negative_alert_send", {
       p_nfc_card_id: params.nfcCardId,
     });
 
@@ -68,9 +80,10 @@ export async function sendNegativeFeedbackAlert(params: {
       console.error("Failed to claim negative feedback alert cooldown:", claimError);
       return;
     }
-    if (!claimed) {
+    if (claimedLogId === null) {
       return;
     }
+    logId = claimedLogId;
 
     // A configured notification_email is an explicit override of the
     // default "email every owner/admin/manager" behavior -- it's how an
@@ -91,14 +104,20 @@ export async function sendNegativeFeedbackAlert(params: {
         .eq("organization_id", params.organizationId)
         .in("role", ALERT_ROLES);
 
-      if (!members || members.length === 0) return;
-
-      for (const member of members) {
-        const { data } = await admin.auth.admin.getUserById(member.user_id);
-        if (data.user?.email) recipients.push(data.user.email);
+      if (members) {
+        for (const member of members) {
+          const { data } = await admin.auth.admin.getUserById(member.user_id);
+          if (data.user?.email) recipients.push(data.user.email);
+        }
       }
     }
-    if (recipients.length === 0) return;
+    if (recipients.length === 0) {
+      // A reservation was claimed but there's no one to send to -- this
+      // is a failed attempt, not a silent success (R3-06); the `finally`
+      // block below finalizes it as such.
+      console.warn("Claimed a negative feedback alert slot but found no recipients to notify.");
+      return;
+    }
 
     const dashboardUrl = `${process.env.NEXT_PUBLIC_SITE_URL}/dashboard/feedback`;
     const stars = "★".repeat(params.rating) + "☆".repeat(5 - params.rating);
@@ -125,8 +144,21 @@ export async function sendNegativeFeedbackAlert(params: {
     // a production send failure would ever be visible.
     if (sendError) {
       console.error("Failed to send negative feedback alert email:", sendError);
+      return;
     }
+
+    delivered = true;
   } catch (error) {
     console.error("Failed to send negative feedback alert email:", error);
+  } finally {
+    if (logId !== null) {
+      const { error: finalizeError } = await admin.rpc("finalize_negative_alert_send", {
+        p_log_id: logId,
+        p_delivered: delivered,
+      });
+      if (finalizeError) {
+        console.error("Failed to finalize negative feedback alert log:", finalizeError);
+      }
+    }
   }
 }
