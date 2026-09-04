@@ -1,20 +1,53 @@
 import "server-only";
 
 import { createClient } from "@/lib/supabase/server";
-import type { FeedbackRow } from "./aggregate";
-import { fetchAllRowsPaginated } from "./fetch-all-rows";
+import { parsePeriodAnalytics } from "./parse-snapshots";
 
-export type AnalyticsData = {
-  feedback: FeedbackRow[];
-  locationNames: Map<number, string>;
-  cardInfo: Map<number, { name: string; locationName: string }>;
+export type DailyPoint = { day: string; count: number; avgRating: number | null };
+export type RatingBucket = { rating: number; count: number };
+export type LocationStats = {
+  locationId: number;
+  name: string;
+  count: number;
+  avgRating: number;
+  resolvedPct: number;
+};
+export type CardStats = {
+  cardId: number;
+  name: string;
+  locationName: string;
+  count: number;
+  avgRating: number;
 };
 
-// Bounded so this stays a plain in-memory aggregation instead of needing a
-// SQL view/RPC -- fine at MVP scale (see fetch-all-rows.ts for why a single
-// .limit() doesn't actually enforce this on its own).
-const MAX_ROWS = 5000;
+export type AnalyticsData =
+  | {
+      unavailable: false;
+      total: number;
+      resolved: { resolved: number; total: number; pct: number };
+      distribution: RatingBucket[];
+      dailySeries: DailyPoint[];
+      byLocation: LocationStats[];
+      byCard: CardStats[];
+    }
+  | { unavailable: true };
 
+/**
+ * Computed entirely inside get_feedback_period_analytics (see its
+ * migration) rather than paginating raw rows into Node and reducing them
+ * client-side -- see overview-data.ts's identical comment for why (round-2
+ * findings R2-02, R2-03: a page-by-page ceiling is still a ceiling, and
+ * OFFSET pagination is not consistent across separate requests under
+ * concurrent inserts). One SQL statement computes the total, the daily
+ * series, the per-location breakdown, and the per-card breakdown from the
+ * same underlying scan, so they can never disagree with each other about
+ * which rows exist -- see that migration's comment for the exact
+ * consistency semantics this does and does not guarantee.
+ *
+ * A failed query surfaces as `unavailable: true`, not a silently-empty
+ * "0 feedback this period" (R2-04). Parsing/error-handling lives in
+ * parse-snapshots.ts so it's unit-testable without a live database.
+ */
 export async function getAnalyticsData(
   organizationId: number,
   days: number,
@@ -25,38 +58,12 @@ export async function getAnalyticsData(
   since.setUTCDate(since.getUTCDate() - (days - 1));
   since.setUTCHours(0, 0, 0, 0);
 
-  const [feedback, { data: locations }, { data: cards }] = await Promise.all([
-    fetchAllRowsPaginated<FeedbackRow>(
-      (from, to) =>
-        supabase
-          .from("feedback")
-          .select("id, rating, status, location_id, nfc_card_id, created_at", {
-            count: "exact",
-          })
-          .eq("organization_id", organizationId)
-          .gte("created_at", since.toISOString())
-          // id as a secondary sort key -- see overview-data.ts's identical
-          // comment; the same tie/pagination-boundary interaction applies
-          // to .range()-based pagination here.
-          .order("created_at", { ascending: true })
-          .order("id", { ascending: true })
-          .range(from, to),
-      MAX_ROWS,
-    ),
-    supabase.from("locations").select("id, name").eq("organization_id", organizationId),
-    supabase
-      .from("nfc_cards")
-      .select("id, display_name, locations(name)")
-      .eq("organization_id", organizationId),
-  ]);
+  // Not .single() -- see overview-data.ts's identical comment.
+  const result = await supabase.rpc("get_feedback_period_analytics", {
+    p_organization_id: organizationId,
+    p_since: since.toISOString(),
+    p_days: days,
+  });
 
-  const locationNames = new Map((locations ?? []).map((l) => [l.id, l.name]));
-  const cardInfo = new Map(
-    (cards ?? []).map((c) => [
-      c.id,
-      { name: c.display_name ?? "Untitled card", locationName: c.locations?.name ?? "—" },
-    ]),
-  );
-
-  return { feedback, locationNames, cardInfo };
+  return parsePeriodAnalytics(result);
 }

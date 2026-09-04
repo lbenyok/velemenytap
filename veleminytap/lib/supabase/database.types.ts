@@ -295,6 +295,20 @@ export interface Database {
           newly_created: boolean;
         }[];
       };
+      get_feedback_overview_snapshot: {
+        Args: {
+          p_organization_id: number;
+        };
+        Returns: Json;
+      };
+      get_feedback_period_analytics: {
+        Args: {
+          p_organization_id: number;
+          p_since: string;
+          p_days: number;
+        };
+        Returns: Json;
+      };
     };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;

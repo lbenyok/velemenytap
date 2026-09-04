@@ -1,4 +1,4 @@
-import type { RatingBucket } from "./aggregate";
+import type { RatingBucket } from "./queries";
 
 export function CompactDistribution({ buckets }: { buckets: RatingBucket[] }) {
   const total = buckets.reduce((sum, b) => sum + b.count, 0);
