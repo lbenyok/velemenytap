@@ -9,7 +9,17 @@ import { type NextRequest, NextResponse } from "next/server";
 // any test runs, and it returns only the already-public
 // NEXT_PUBLIC_SUPABASE_URL. Update this when new public routes are added
 // (e.g. a marketing home page).
-const PUBLIC_PATHS = ["/", "/login", "/signup", "/auth", "/r", "/api/e2e-config-check"];
+const PUBLIC_PATHS = [
+  "/",
+  "/login",
+  "/signup",
+  "/auth",
+  "/r",
+  "/api/e2e-config-check",
+  // Round-3 R3-03: the notification-email confirmation link is clicked
+  // from an email, possibly in a browser/device with no session at all.
+  "/api/notification-email/confirm",
+];
 
 function isPublicPath(pathname: string): boolean {
   return PUBLIC_PATHS.some(
