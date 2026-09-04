@@ -3,6 +3,7 @@
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
+import { safeRedirectTarget } from "@/lib/safe-redirect";
 
 export type AuthActionState = { error: string } | { error?: undefined };
 
@@ -86,13 +87,7 @@ export async function signInAction(
     return { error: translateAuthError(error.message) };
   }
 
-  const next = formData.get("next");
-  const safeNext =
-    typeof next === "string" && next.startsWith("/") && !next.startsWith("//")
-      ? next
-      : "/dashboard";
-
-  redirect(safeNext);
+  redirect(safeRedirectTarget(formData.get("next")));
 }
 
 export async function signOutAction() {

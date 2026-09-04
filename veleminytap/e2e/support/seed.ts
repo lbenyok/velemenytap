@@ -78,3 +78,39 @@ export async function cleanupOrg(orgId: number): Promise<void> {
   await admin.from("organization_memberships").delete().eq("organization_id", orgId);
   await admin.from("organizations").delete().eq("id", orgId);
 }
+
+export type SeededAuthUser = { userId: string; email: string; password: string };
+
+/** Creates a throwaway, pre-confirmed auth user for driving the real login form. */
+export async function seedAuthUser(): Promise<SeededAuthUser> {
+  const admin = adminClient();
+  const email = `e2e-redirect-safety-${Date.now()}@example.com`;
+  const password = `E2e-Test-${Date.now()}!`;
+
+  const { data, error } = await admin.auth.admin.createUser({
+    email,
+    password,
+    email_confirm: true,
+  });
+  if (error) throw error;
+
+  return { userId: data.user.id, email, password };
+}
+
+export async function cleanupAuthUser(userId: string): Promise<void> {
+  const admin = adminClient();
+  await admin.auth.admin.deleteUser(userId);
+}
+
+/**
+ * Generates a real, single-use email-OTP token_hash for an existing user --
+ * the same mechanism a magic-link/confirmation email would carry -- so a
+ * test can hit /auth/confirm and exercise its success branch (including the
+ * `next` redirect) without actually sending or reading an email.
+ */
+export async function generateConfirmToken(email: string): Promise<{ tokenHash: string }> {
+  const admin = adminClient();
+  const { data, error } = await admin.auth.admin.generateLink({ type: "magiclink", email });
+  if (error) throw error;
+  return { tokenHash: data.properties.hashed_token };
+}
