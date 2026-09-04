@@ -3,9 +3,13 @@ import { type NextRequest, NextResponse } from "next/server";
 
 // Protect-by-default: everything requires auth except this explicit
 // allowlist. /r is the public NFC landing page — customers reach it by
-// tapping a physical card, never signed in. Update this when new public
-// routes are added (e.g. a marketing home page).
-const PUBLIC_PATHS = ["/", "/login", "/signup", "/auth", "/r"];
+// tapping a physical card, never signed in. /api/e2e-config-check is a
+// test-only diagnostic endpoint (round-2 finding R2-06) that must be
+// reachable without a session — Playwright's global setup checks it before
+// any test runs, and it returns only the already-public
+// NEXT_PUBLIC_SUPABASE_URL. Update this when new public routes are added
+// (e.g. a marketing home page).
+const PUBLIC_PATHS = ["/", "/login", "/signup", "/auth", "/r", "/api/e2e-config-check"];
 
 function isPublicPath(pathname: string): boolean {
   return PUBLIC_PATHS.some(
