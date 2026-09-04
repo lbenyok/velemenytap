@@ -2,11 +2,13 @@
 
 ## Automated
 
-`npm run test` (Vitest). Covers pure logic only — nothing that needs a database, a browser, or Next.js's server runtime:
+`npm run test` (Vitest, 82 tests / 5 files). Covers pure logic only — nothing that needs a database, a browser, or Next.js's server runtime:
 
 - **`features/analytics/aggregate.test.ts`** — `ratingDistribution`, `dailySeries`, `resolvedStats`, `byLocation`, `byCard`. Zero-row/zero-division edge cases, UTC day bucketing, unknown-id fallbacks.
 - **`features/feedback/schema.test.ts`** — the public submission zod schema (`features/feedback/schema.ts`, extracted from `actions.ts` specifically so it's importable without pulling in `server-only`/`next/server`). Includes the **review-gating regression test at the schema level**: `it.each([1, 2, 3, 4, 5])("accepts rating %i", ...)` asserts the validator itself has no rating-dependent branching — every rating is equally valid input, which is the ground floor the CTA-visibility guarantee below is built on.
-- **`lib/sentry-redact.test.ts`** — the `beforeSend` hook that strips `feedback_text`/`internal_note` from every Sentry event before it's sent (`SECURITY.md` § Error handling / logging). Covers request-body/extra-context/breadcrumb redaction, non-sensitive fields passing through untouched, and a circular-reference case that must not hang.
+- **`lib/sentry-redact.test.ts`** (22 tests) — the `beforeSend` hook that strips `feedback_text`/`internal_note` from every Sentry event before it's sent (`SECURITY.md` § Error handling / logging). Canary-based: asserts against the fully serialized event, not just specific keys — request-body dropping, extra/context/breadcrumb key-based redaction, JSON-stringified content, repeated (non-circular) references, circular references, and pathologically deep structures.
+- **`lib/safe-redirect.test.ts`** (29 tests) — the shared open-redirect guard (`SECURITY.md` § Redirect safety): valid internal paths, absolute external URLs, protocol-relative URLs, the backslash bypass and its variants, control characters, encoded variants, and malformed input.
+- **`features/analytics/fetch-all-rows.test.ts`** (7 tests) — the pagination helper that fixed the analytics row-cap truncation (`SECURITY.md`, `DECISIONS.md`): single-page, multi-page with parallel remaining-page fetches, the `maxRows` ceiling, error handling, and a short-first-page edge case.
 
 `npm run typecheck` and `npm run lint` run clean on every change (not test suites, but part of the same verification gate — see `Definition of Done` in the product skill).
 
@@ -16,11 +18,17 @@ Anything that touches Supabase, RLS, Server Actions, cookies, or rendered UI —
 
 ## e2e (Playwright)
 
-`npm run test:e2e`. Full detail in `e2e/README.md`; summary here.
+`npm run test:e2e` (35 tests / 7 files), against a **dedicated, isolated Supabase test project** (`.env.test.local`, gitignored) — not the shared dev/production project. See `e2e/README.md` for the setup and `DECISIONS.md` for why this changed from the original shared-project approach.
 
 - **`e2e/review-gating.spec.ts`** — the product skill's Review-Gating Regression Test, automated for real: for each rating 1–5, load `/r/{publicId}` in a real browser, submit that rating, and assert the "Leave a Google review" CTA is visible with the correct `href`. Plus a duplicate-submission test (same card, same browser context, rejected on the second attempt).
-- Runs against a real, disposable org/location/five-cards seeded before the suite (`e2e/support/seed.ts`) and deleted after — **against the same Supabase project used for local dev**, not an isolated Docker stack. See `DECISIONS.md` for why, and the note in `e2e/README.md` about manually checking for orphaned `E2E Review Gating %` orgs if a run is killed mid-suite.
-- Runs locally against `npm run dev` (Playwright's `webServer` starts it automatically) and in CI (`.github/workflows/ci.yml`'s `e2e` job) — the CI job needs `NEXT_PUBLIC_SUPABASE_URL`/`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`/`SUPABASE_SECRET_KEY` as repository secrets, and skips (not fails) if they're not yet configured.
+- **`e2e/tenant-isolation.spec.ts`** — Org A's own signed-in, RLS-bound client cannot read or write any of Org B's organization/location/nfc_card/feedback/membership rows, through direct API calls, not just the app's own query shapes.
+- **`e2e/feedback-and-card-integrity.spec.ts`** — an org member cannot rewrite a feedback row's `rating`/`feedback_text` or relocate an `nfc_card`'s `location_id` via direct `UPDATE`, but can still edit `status`/`internal_note`/`display_name`.
+- **`e2e/public-submission-safety.spec.ts`** — a card deactivated between page load and submission is caught atomically (not just at page load); the per-card rate limit rejects a 21st submission within its window; the alert-cooldown claim lets exactly one of two concurrent attempts through.
+- **`e2e/feedback-pagination.spec.ts`** — 25 rows seeded with an identical `created_at` all appear exactly once across two inbox pages, none skipped or duplicated.
+- **`e2e/analytics-row-cap.spec.ts`** — 1200 real rows seeded; the dashboard overview shows 1200, not PostgREST's 1000-row cap.
+- **`e2e/organization-onboarding.spec.ts`** — one call creates exactly one org+membership with an accent-stripped slug; a second call for the same user is a no-op; two concurrent calls for the same user still produce exactly one organization; a slug collision falls back correctly; the real onboarding UI works end-to-end.
+- **`e2e/redirect-safety.spec.ts`** — drives the real login and email-confirmation flows against the open-redirect backslash bypass.
+- Runs locally against `npm run dev` (Playwright's `webServer` starts it automatically, with the isolated project's env injected) and in CI (`.github/workflows/ci.yml`'s `e2e` job) — the CI job needs `NEXT_PUBLIC_SUPABASE_URL`/`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`/`SUPABASE_SECRET_KEY` as repository secrets, pointed at the isolated project (**confirm this was updated** — they may still point at the old shared project), and skips (not fails) if they're not yet configured.
 
 ## Manual (performed this session, against a real linked Supabase project and a real browser)
 
@@ -56,5 +64,5 @@ Per the product skill, re-run this whenever the public rating/review flow change
 
 ## Known gaps (tracked, not silently skipped)
 
-- **No tenant-isolation automated test.** Verified manually in earlier phases (organization A cannot read organization B's data) but not codified as a repeatable test. Would need a second real Supabase test org and either RLS-level SQL tests or an integration test hitting the real database — both meaningfully more setup than the Vitest unit tests above.
-- **No automated notification test.** "Qualifying negative feedback triggers an alert; positive feedback doesn't" is currently verified by reading `features/notifications/negative-feedback-alert.ts` and the `isNegativeRating` threshold, not by a test that actually asserts an email was (or wasn't) sent.
+- ~~No tenant-isolation automated test.~~ **Resolved** — `e2e/tenant-isolation.spec.ts`.
+- **No automated notification test.** "Qualifying negative feedback triggers an alert; positive feedback doesn't" is currently verified by reading `features/notifications/negative-feedback-alert.ts` and the `isNegativeRating` threshold, not by a test that actually asserts an email was (or wasn't) sent. The new alert-cooldown *claim mechanism* (the atomic `UPDATE ... WHERE ... RETURNING` pattern) is tested directly (`e2e/public-submission-safety.spec.ts`), but sending the actual email through Resend remains unverified by any automated test — this test project deliberately has no `RESEND_API_KEY` configured (`e2e/README.md`), so exercising the real send would need either a second, Resend-key-bearing test configuration or a mocked Resend client.

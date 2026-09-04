@@ -2,6 +2,7 @@ import "server-only";
 
 import { createClient } from "@/lib/supabase/server";
 import { ratingDistribution, type RatingBucket } from "./aggregate";
+import { fetchAllRowsPaginated } from "./fetch-all-rows";
 
 export type RecentFeedbackItem = {
   id: number;
@@ -23,22 +24,34 @@ export type OverviewStats = {
 };
 
 // All-time, not period-scoped (unlike /dashboard/analytics) -- these are
-// meant to be the at-a-glance numbers on the homepage. Bounded the same way
-// as the analytics query for the same reason: fine at MVP scale, see that
-// file's comment.
+// meant to be the at-a-glance numbers on the homepage. Bounded so this stays
+// a plain in-memory aggregation instead of needing a SQL view/RPC -- fine at
+// MVP scale (see fetch-all-rows.ts for why a single .limit() doesn't
+// actually enforce this on its own).
 const MAX_ROWS = 5000;
 
 export async function getOverviewStats(organizationId: number): Promise<OverviewStats> {
   const supabase = await createClient();
 
-  const { data } = await supabase
-    .from("feedback")
-    .select("id, rating, status, feedback_text, created_at, locations(name)")
-    .eq("organization_id", organizationId)
-    .order("created_at", { ascending: false })
-    .limit(MAX_ROWS);
-
-  const rows = data ?? [];
+  const rows = await fetchAllRowsPaginated(
+    (from, to) =>
+      supabase
+        .from("feedback")
+        .select("id, rating, status, feedback_text, created_at, locations(name)", {
+          count: "exact",
+        })
+        .eq("organization_id", organizationId)
+        // id as a secondary sort key: created_at alone ties whenever two
+        // rows land in the same instant, and .range()-based pagination
+        // across parallel page requests needs a fully deterministic order
+        // to avoid the same class of skip/duplicate bug fixed in the
+        // feedback inbox's cursor pagination (see that migration's
+        // comment).
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .range(from, to),
+    MAX_ROWS,
+  );
   const total = rows.length;
   const averageRating =
     total > 0 ? Number((rows.reduce((sum, r) => sum + r.rating, 0) / total).toFixed(1)) : null;

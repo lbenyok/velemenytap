@@ -3,7 +3,6 @@
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
 
 export type CreateOrganizationState = { error: string } | { error?: undefined };
 
@@ -15,26 +14,14 @@ const createOrganizationSchema = z.object({
     .max(100, "A szervezet neve legfeljebb 100 karakter lehet."),
 });
 
-function slugify(name: string): string {
-  return name
-    .toLowerCase()
-    .normalize("NFKD")
-    // Strip combining marks left behind by NFKD (á -> a, ő -> o, ...).
-    .replace(/\p{Mark}/gu, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 60);
-}
-
 /**
- * Creates an organization and its first (owner) membership.
- *
- * There is no RLS INSERT policy for organizations/organization_memberships
- * (see supabase/migrations/20260903150741_core_schema_and_rls.sql) — a
- * brand-new user isn't a member of any organization yet, so a normal
- * authenticated policy can't authorize this. Auth is checked explicitly
- * below, then the two inserts run through the admin (secret-key) client,
- * which bypasses RLS entirely.
+ * Creates an organization and its first (owner) membership by calling
+ * create_organization_atomic (see its migration), a single atomic,
+ * idempotent database function -- not two separate inserts from here. A
+ * double-submit (double-click, network retry, navigating back to
+ * /onboarding and resubmitting) returns the user's existing organization
+ * instead of creating a second one; a failure partway through rolls back
+ * the whole thing instead of leaving an ownerless organization behind.
  */
 export async function createOrganizationAction(
   _prevState: CreateOrganizationState,
@@ -42,9 +29,8 @@ export async function createOrganizationAction(
 ): Promise<CreateOrganizationState> {
   const supabase = await createClient();
   const { data, error: claimsError } = await supabase.auth.getClaims();
-  const userId = data?.claims.sub;
 
-  if (claimsError || !userId) {
+  if (claimsError || !data?.claims.sub) {
     redirect("/login");
   }
 
@@ -55,48 +41,12 @@ export async function createOrganizationAction(
     return { error: parsed.error.issues[0]?.message ?? "Érvénytelen adat." };
   }
 
-  const baseSlug = slugify(parsed.data.name) || "organization";
-  const admin = createAdminClient();
+  const { error } = await supabase
+    .rpc("create_organization_atomic", { p_name: parsed.data.name })
+    .single();
 
-  let organizationId: number | null = null;
-  let slug = baseSlug;
-
-  // Retry with a random suffix on a slug collision, instead of building a
-  // full slug-negotiation UI for MVP.
-  for (let attempt = 0; attempt < 5 && organizationId === null; attempt++) {
-    const { data: org, error: orgError } = await admin
-      .from("organizations")
-      .insert({ name: parsed.data.name, slug })
-      .select("id")
-      .single();
-
-    if (org) {
-      organizationId = org.id;
-      break;
-    }
-
-    if (orgError?.code === "23505") {
-      slug = `${baseSlug}-${Math.random().toString(36).slice(2, 6)}`;
-      continue;
-    }
-
+  if (error) {
     return { error: "Nem sikerült létrehozni a szervezetet. Kérjük, próbáld újra." };
-  }
-
-  if (organizationId === null) {
-    return { error: "Nem sikerült létrehozni a szervezetet. Kérjük, próbáld újra." };
-  }
-
-  const { error: membershipError } = await admin
-    .from("organization_memberships")
-    .insert({ organization_id: organizationId, user_id: userId, role: "owner" });
-
-  if (membershipError) {
-    // Don't leave an ownerless, inaccessible organization behind.
-    await admin.from("organizations").delete().eq("id", organizationId);
-    return {
-      error: "Nem sikerült befejezni a szervezet beállítását. Kérjük, próbáld újra.",
-    };
   }
 
   redirect("/dashboard");

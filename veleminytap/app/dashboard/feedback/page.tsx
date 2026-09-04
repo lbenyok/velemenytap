@@ -14,6 +14,23 @@ import type { FeedbackDetailRow } from "@/features/feedback/feedback-detail-dial
 export const metadata: Metadata = { title: "Vélemények — VéleményTap" };
 
 const PAGE_SIZE = 20;
+const ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(\+\d{2}:\d{2}|Z)$/;
+
+/**
+ * Both fields end up interpolated into a raw PostgREST .or() filter string
+ * below (needed for the compound seek predicate -- supabase-js's query
+ * builder has no first-class "row value < row value" helper). Validating
+ * their shape first, rather than passing whatever a manipulated dashboard
+ * URL contains straight through, keeps that string free of anything but a
+ * timestamp and an integer -- a malformed or hostile cursor is treated as
+ * no cursor (first page) rather than passed through.
+ */
+function parseCursor(cursor: string | undefined, cursorId: string | undefined) {
+  if (!cursor || !cursorId || !ISO_TIMESTAMP_RE.test(cursor)) return null;
+  const id = Number(cursorId);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  return { createdAt: cursor, id };
+}
 
 type SearchParams = {
   status?: string;
@@ -22,6 +39,7 @@ type SearchParams = {
   card?: string;
   days?: string;
   cursor?: string;
+  cursorId?: string;
 };
 
 export default async function FeedbackPage({
@@ -47,7 +65,13 @@ export default async function FeedbackPage({
       "id, rating, feedback_text, status, priority, internal_note, created_at, locations(name), nfc_cards(display_name)",
     )
     .eq("organization_id", orgId)
+    // id as a secondary sort key: created_at alone ties whenever two rows
+    // land in the same instant (a realistic burst, not just a theoretical
+    // one -- see the migration adding the matching index). id is a strictly
+    // increasing identity column, so (created_at, id) is a true total order
+    // with no possibility of its own ties.
     .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
     .limit(PAGE_SIZE + 1);
 
   if (status !== "all") query = query.eq("status", status);
@@ -63,7 +87,16 @@ export default async function FeedbackPage({
     const since = new Date(Date.now() - Number(days) * 24 * 60 * 60 * 1000).toISOString();
     query = query.gte("created_at", since);
   }
-  if (sp.cursor) query = query.lt("created_at", sp.cursor);
+  const cursor = parseCursor(sp.cursor, sp.cursorId);
+  if (cursor) {
+    // Seek predicate matching the (created_at, id) order above: strictly
+    // before the cursor's created_at, OR tied on created_at and strictly
+    // before its id. A plain `created_at < cursor` would skip whichever
+    // same-created_at rows didn't happen to land before the page boundary.
+    query = query.or(
+      `created_at.lt.${cursor.createdAt},and(created_at.eq.${cursor.createdAt},id.lt.${cursor.id})`,
+    );
+  }
 
   const [{ data: feedback }, { data: locations }, { data: cards }] = await Promise.all([
     query,
@@ -121,7 +154,9 @@ export default async function FeedbackPage({
   if (cardId !== "all") nextParams.set("card", cardId);
   if (days !== "all") nextParams.set("days", days);
   if (hasMore) {
-    nextParams.set("cursor", pageRows[pageRows.length - 1].created_at);
+    const lastRow = pageRows[pageRows.length - 1];
+    nextParams.set("cursor", lastRow.created_at);
+    nextParams.set("cursorId", String(lastRow.id));
   }
 
   return (

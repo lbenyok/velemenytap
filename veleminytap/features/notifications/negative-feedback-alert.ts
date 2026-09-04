@@ -6,6 +6,16 @@ import { createAdminClient } from "@/lib/supabase/admin";
 const NEGATIVE_RATING_THRESHOLD = 2; // ratings 1-2 are treated as negative
 const ALERT_ROLES = ["owner", "admin", "manager"] as const;
 
+// Review finding #2 (email-amplification): the submission rate limit in
+// submit_feedback_atomic still allows up to 20 submissions per card per 5
+// minutes -- generous enough for real traffic, but a burst that size would
+// otherwise mean up to 20 alert emails for one card in one burst if every
+// one of them happened to be a low rating. This cooldown caps it at one
+// alert per card per window regardless of how many qualifying submissions
+// land inside it; the feedback itself is still recorded and visible in the
+// dashboard either way, only the email is suppressed.
+const ALERT_COOLDOWN_MINUTES = 5;
+
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
 function escapeHtml(value: string): string {
@@ -30,6 +40,7 @@ export function isNegativeRating(rating: number): boolean {
  */
 export async function sendNegativeFeedbackAlert(params: {
   organizationId: number;
+  nfcCardId: number;
   organizationName: string;
   locationName: string;
   cardName: string | null;
@@ -45,6 +56,25 @@ export async function sendNegativeFeedbackAlert(params: {
 
   try {
     const admin = createAdminClient();
+
+    // Atomic cooldown claim: this UPDATE only matches (and only then
+    // returns a row) if last_negative_alert_at is unset or older than the
+    // cooldown window, and it sets it to now() in the same statement --
+    // Postgres's row-level locking means two concurrent alerts for the same
+    // card can't both "win" the claim, so this is race-free without needing
+    // a database function for it.
+    const cutoff = new Date(Date.now() - ALERT_COOLDOWN_MINUTES * 60_000).toISOString();
+    const { data: claimed } = await admin
+      .from("nfc_cards")
+      .update({ last_negative_alert_at: new Date().toISOString() })
+      .eq("id", params.nfcCardId)
+      .or(`last_negative_alert_at.is.null,last_negative_alert_at.lt.${cutoff}`)
+      .select("id")
+      .maybeSingle();
+
+    if (!claimed) {
+      return;
+    }
 
     // A configured notification_email is an explicit override of the
     // default "email every owner/admin/manager" behavior -- it's how an

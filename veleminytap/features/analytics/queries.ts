@@ -2,6 +2,7 @@ import "server-only";
 
 import { createClient } from "@/lib/supabase/server";
 import type { FeedbackRow } from "./aggregate";
+import { fetchAllRowsPaginated } from "./fetch-all-rows";
 
 export type AnalyticsData = {
   feedback: FeedbackRow[];
@@ -10,8 +11,8 @@ export type AnalyticsData = {
 };
 
 // Bounded so this stays a plain in-memory aggregation instead of needing a
-// SQL view/RPC -- fine at MVP scale (see the analytics page's comment for
-// why this is deliberate, not a scale plan).
+// SQL view/RPC -- fine at MVP scale (see fetch-all-rows.ts for why a single
+// .limit() doesn't actually enforce this on its own).
 const MAX_ROWS = 5000;
 
 export async function getAnalyticsData(
@@ -24,14 +25,24 @@ export async function getAnalyticsData(
   since.setUTCDate(since.getUTCDate() - (days - 1));
   since.setUTCHours(0, 0, 0, 0);
 
-  const [{ data: feedback }, { data: locations }, { data: cards }] = await Promise.all([
-    supabase
-      .from("feedback")
-      .select("id, rating, status, location_id, nfc_card_id, created_at")
-      .eq("organization_id", organizationId)
-      .gte("created_at", since.toISOString())
-      .order("created_at", { ascending: true })
-      .limit(MAX_ROWS),
+  const [feedback, { data: locations }, { data: cards }] = await Promise.all([
+    fetchAllRowsPaginated<FeedbackRow>(
+      (from, to) =>
+        supabase
+          .from("feedback")
+          .select("id, rating, status, location_id, nfc_card_id, created_at", {
+            count: "exact",
+          })
+          .eq("organization_id", organizationId)
+          .gte("created_at", since.toISOString())
+          // id as a secondary sort key -- see overview-data.ts's identical
+          // comment; the same tie/pagination-boundary interaction applies
+          // to .range()-based pagination here.
+          .order("created_at", { ascending: true })
+          .order("id", { ascending: true })
+          .range(from, to),
+      MAX_ROWS,
+    ),
     supabase.from("locations").select("id, name").eq("organization_id", organizationId),
     supabase
       .from("nfc_cards")
@@ -47,5 +58,5 @@ export async function getAnalyticsData(
     ]),
   );
 
-  return { feedback: feedback ?? [], locationNames, cardInfo };
+  return { feedback, locationNames, cardInfo };
 }
