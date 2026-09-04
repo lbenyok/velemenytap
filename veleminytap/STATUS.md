@@ -1,8 +1,28 @@
 # Status
 
-Last updated: 2026-09-04, after implementing and testing (not yet merging) the response to a second, independent round-2 engineering review of `master` (commit `8f05205`, the state after PR #1's squash merge `e2bbb7b`). Branch `fix/round2-review-findings`, not merged — see "Round-2 review-response pass" below and `REVIEW_REQUEST.md` for the full handoff. Prior entry: 2026-09-04, after merging the round-1 review-response branch and applying its migrations to production.
+Last updated: 2026-09-04, after implementing and testing (not yet merging) the response to a third-round independent review, this time of PR #2 itself (the round-2 fix branch, `fix/round2-review-findings`) rather than of `master`. Still on `fix/round2-review-findings` — see "Round-3 review-response pass" below and `REVIEW_REQUEST.md` for the full handoff. Prior entry: 2026-09-04, after implementing round 2's own fixes (below).
 
-## Round-2 review-response pass (2026-09-04, not yet merged)
+## Round-3 review-response pass (2026-09-04, not yet merged)
+
+A third-party review of PR #2 (branch `fix/round2-review-findings`, then at commit `68cd929`) raised 7 further findings (R3-01–R3-07). All 7 verified independently — reproduced the CI failure R3-01 predicted, reproduced R3-02's race with real concurrent requests, confirmed R3-04/R3-07's gaps by direct RPC calls and catalog introspection — and fixed; **all 7 confirmed, none rejected**. In brief:
+
+- **R3-01 (high)** — `e2e/support/env.ts`'s credential resolution was broken in CI specifically (the case it was meant to protect): a per-key presence check could pass while the function still returned an object missing every key, which is exactly what broke Playwright's `globalSetup` and would have failed the entire CI e2e job before a single test ran. Rewritten to resolve from exactly one complete source (file or process environment, never a mix), validate the resolved project against an explicit allowlist (credential presence isn't proof of safety), and overwrite `process.env` so the test process and the spawned server always agree.
+- **R3-02** — `claim_negative_alert_send`'s org-wide budget check had no lock scoped to the organization, so concurrent claims for *different* cards in the same org could all pass the same "under budget" snapshot. Fixed with a `pg_advisory_xact_lock` keyed on the org id; verified with `Promise.all`-driven genuinely concurrent requests, not a sequential loop.
+- **R3-03** — built the recipient-confirmation flow round 2 had explicitly deferred: a candidate `notification_email` is now pending until a confirmation link (sent to the candidate address itself) is clicked, with the active address untouched until then and a trigger blocking any attempt to bypass verification via a direct write.
+- **R3-04** — `get_feedback_period_analytics`'s caller-controlled `p_days` fed straight into `generate_series` with no validation; now allowlisted to 7/30/90, rejected before any table scan.
+- **R3-05** — the alert-cooldown and (new) notification-email-change triggers now ship as a separate, later "enforce" migration from the RPCs/columns that introduce them, closing a real production rollout-ordering hazard where applying both together would break currently-deployed code mid-deploy.
+- **R3-06** — `claim_negative_alert_send`'s log row used to record an alert as sent the instant the cooldown/budget checks passed, before any recipient lookup or Resend call; rows are now attempts with an explicit status, finalized by a new `finalize_negative_alert_send()` called from a `finally` block so every reservation resolves.
+- **R3-07** — `get_feedback_overview_snapshot` had retained an unintended `service_role` grant (the same default-privileges gap R2-07 fixed for two other functions, missed for this one); fixed, and the full 5-function role matrix is now a committed automated test (`e2e/rpc-privilege-matrix.spec.ts`) instead of a one-time manual check.
+
+**New migrations** (5 new files, plus migration 12 revised in place since it had not yet been applied anywhere but the isolated test project): `20260904194100_enforce_alert_cooldown_trigger.sql`, `20260904194200_validate_analytics_period_days.sql`, `20260904194300_restrict_service_role_and_enable_alert_log_rls.sql`, `20260904194400_notification_email_verification.sql`, `20260904194500_enforce_notification_email_change_trigger.sql` — none applied to production; `supabase db advisors` reports no issues against the isolated project.
+
+**New/extended test coverage**, all against the isolated project: `e2e/notification-email-verification.spec.ts` (10 tests, including a full real-browser round trip through the actual confirmation URL), `e2e/negative-feedback-alert-finalize.spec.ts` (4), `e2e/analytics-period-validation.spec.ts` (10), `e2e/rpc-privilege-matrix.spec.ts` (6, direct Postgres catalog introspection), plus a new real-concurrency test in `e2e/negative-feedback-alert-abuse.spec.ts` and 5 new `e2e/support/env.test.ts` unit tests (11 total).
+
+**Verification**: `npm run typecheck` clean, `npm run lint` clean, `npm run test` 88/88 (Vitest), `npm run test:e2e` 80/80 (Playwright, real browser, isolated project, `SUPABASE_DB_URL` exported so the two connection-requiring spec files actually ran rather than skipped), `npm run build` clean (18 routes, including the new `/api/notification-email/confirm`). Test-project database confirmed clean of leftover orgs/users after the full run. **A full "migration replay from an empty database" was deliberately not performed** — see `REVIEW_REQUEST.md` § 5 for why (a raw schema reset risks silently losing the project's own `ALTER DEFAULT PRIVILEGES` configuration, which is itself exactly what R2-07/R3-07 are about) and what was done instead. **None of this constitutes production verification** — every test ran against the isolated Supabase test project, never production; no production migration has been applied.
+
+**Not part of this pass**: merging the branch, applying the 5 new migrations to production, or deploying.
+
+## Round-2 review-response pass (2026-09-04)
 
 A second independent review of `master` (post round-1 merge) raised 9 further findings (R2-01–R2-09). All 9 verified independently against actual code/database state (empirical reproductions, real concurrent database connections, `pg_proc.proacl`/`has_function_privilege()` introspection — not accepted on faith) and fixed; **all 9 confirmed, none rejected**. In brief:
 
@@ -86,11 +106,12 @@ Everything above was typechecked, linted, and — for the UI-facing pieces — m
 - ~~Tenant-scoped SQL aggregate functions/views for analytics.~~ **Done in the round-2 pass** — `get_feedback_overview_snapshot`/`get_feedback_period_analytics`, see `DATABASE_SCHEMA.md`.
 - **Verified `notification_email` recipients for negative-feedback alerts.** An organization-wide send budget bounds the blast radius (round-2, R2-08); actual address verification needs its own email-confirmation flow, deliberately out of scope this pass — see `DECISIONS.md`.
 
-## What's needed from the user before round 2 can ship
+## What's needed from the user before this branch can ship
 
-- Review and approve [the round-2 PR](REVIEW_REQUEST.md) (not yet opened against `master` as of this entry — see `REVIEW_REQUEST.md` for the branch/commit range).
-- Approval to apply the 4 new migrations to **production** and merge — this task's explicit constraint kept both out of scope for this pass itself.
-- Once approved: the same migrations-before-merge rollout order round 1 used (see `REVIEW_REQUEST.md` § 6 for the exact plan), then confirm the Vercel deploy reflects the merged commit.
+- Review and approve [PR #2](https://github.com/lbenyok/velemenytap/pull/2) (now updated in place with round 3's fixes, still open against `master` — see `REVIEW_REQUEST.md` for the branch/commit range).
+- Approval to apply the (now 9, cumulative across rounds 2 and 3) new migrations to **production** and merge — this task's explicit constraint kept both out of scope for this pass itself.
+- Once approved: the same migrations-before-merge rollout order round 1 used, respecting the expand/deploy/enforce ordering for the two trigger-pair migrations (see `REVIEW_REQUEST.md` § 6 for the exact plan), then confirm the Vercel deploy reflects the merged commit.
+- Optional but recommended: add `SUPABASE_DB_URL` as a CI repo secret (isolated project's connection string) so `e2e/rpc-privilege-matrix.spec.ts` and `e2e/location-deactivation-race.spec.ts` actually run in CI instead of silently skipping — already wired into `ci.yml`'s `e2e` job env, just needs the secret added.
 
 ## What was needed from the user before round 1 shipped
 

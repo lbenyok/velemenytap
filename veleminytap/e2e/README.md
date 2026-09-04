@@ -13,9 +13,11 @@ SUPABASE_SECRET_KEY=...
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
 ```
 
-`e2e/support/env.ts` loads this file directly (Playwright test files run under plain Node, not through Next's own env loading) and prefers it over `.env.local` when present. `playwright.config.ts` also injects these same values into the spawned `next dev`/`next start` process's environment, so the actual server under test talks to the isolated project too — Next never overrides an env var that's already set in the process, so this takes priority over whatever `.env.local` (production) would otherwise supply. If `.env.test.local` doesn't exist, both fall back to `.env.local` — **don't run this suite without `.env.test.local`** unless you mean to test against production.
+`e2e/support/env.ts` loads this file directly (Playwright test files run under plain Node, not through Next's own env loading). Credentials are resolved from **exactly one** canonical source — a fully-populated `.env.test.local`, or a fully-populated process environment (CI's case) — never a mix of the two; a source that's only partially complete is rejected rather than silently topped up from the other (round-3 finding R3-01). Once resolved, the three required keys are validated against an explicit allowlisted project reference and then written into `process.env`, overwriting anything already there — so this process's own fixtures (`e2e/support/seed.ts`) and the spawned `next dev`/`next start` process (`playwright.config.ts`'s `webServer.env`, built from the same resolved object) are guaranteed to agree, not just independently "probably fine." **There is no fallback to `.env.local` at all** — if neither source is complete, or the resolved project isn't the approved one, this throws immediately rather than running anything against production.
 
 New migrations need to be applied to the isolated project by hand (there's no CI-driven migration step yet): `npx supabase db push --db-url "<the isolated project's direct Postgres connection string>"`.
+
+Optionally export `SUPABASE_DB_URL` (same connection string) in your shell before running the suite — `.env.test.local` alone does **not** put it into `process.env` (it's not one of `env.ts`'s required keys, deliberately, since most of the suite doesn't need it). Without it, `rpc-privilege-matrix.spec.ts` and `location-deactivation-race.spec.ts` silently skip every test rather than failing, which is easy to mistake for a clean pass — check the run's own output for `skipped` counts, not just "no failures."
 
 ```bash
 npx playwright install --with-deps chromium   # one-time
@@ -35,7 +37,9 @@ Playwright starts `npm run dev` itself (`playwright.config.ts`'s `webServer`) an
 
 `review-gating.spec.ts` — the product skill's Review-Gating Regression Test, automated: for each rating 1–5, load the public feedback page, submit that rating, and assert the "Leave a Google review" CTA is visible with the correct `href`. Plus one test confirming a duplicate submission on the same card (same browser context) is rejected rather than silently creating a second row.
 
-`redirect-safety.spec.ts` — drives the real login and email-confirmation flows against the open-redirect fix (`lib/safe-redirect.ts`): a backslash-variant `next` param (`/\evil.example.com`, which a real browser's URL parser resolves the same as `//evil.example.com`) must never navigate away from the site, through either call site.
+`redirect-safety.spec.ts` — drives the real login and email-confirmation flows against the open-redirect fix (`lib/safe-redirect.ts`): a backslash-variant `next` param (`/\evil.example.com`, which a real browser's URL parser resolves the same as `//evil.example.com`) must never navigate away from the site, through either call site, plus round-2's dot-segment/double-slash-pathname payloads (R2-01).
+
+15 spec files total, each named for the finding(s) it covers and carrying its own doc comment explaining what it verifies and why — `tenant-isolation`, `analytics-aggregation`, `analytics-period-validation`, `location-deactivation-race`, `rpc-privilege-matrix`, `negative-feedback-alert-abuse`, `negative-feedback-alert-finalize`, `notification-email-verification`, `nfc-card-location-lock`, `organization-onboarding`, `public-submission-safety`, `feedback-and-card-integrity`, `feedback-pagination` among them. `rpc-privilege-matrix.spec.ts` and `location-deactivation-race.spec.ts` need a direct Postgres connection (`SUPABASE_DB_URL`, below) and skip gracefully, not fail, without one — **a skipped run of either is not equivalent to a passing one**; confirm they actually executed before treating a green suite as complete evidence.
 
 ## CI
 
@@ -45,4 +49,6 @@ Playwright starts `npm run dev` itself (`playwright.config.ts`'s `webServer`) an
 - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
 - `SUPABASE_SECRET_KEY`
 
-(Same values as `.env.test.local`, above — **not** `.env.local`.) Without them, the `e2e` job's `check-e2e-secrets` step reports `configured: false` and the job is skipped — not failed — so CI stays green on the parts that can run. If these secrets were set from `.env.local` before this change, update them to the isolated project's values, or CI's e2e job runs against production.
+(Same values as `.env.test.local`, above — **not** `.env.local`.) Without them, the `e2e` job's `check-e2e-secrets` step reports `configured: false` and the job is skipped — not failed — so CI stays green on the parts that can run. If these secrets were ever set from `.env.local`, update them to the isolated project's values — `e2e/support/env.ts` now actively rejects a resolved project that isn't the one it allowlists, so a production value here fails loudly (`loadEnvVars` throws) rather than silently running the suite against production.
+
+Optionally, add `SUPABASE_DB_URL` (the isolated project's direct/pooler Postgres connection string) as a repo secret too — `e2e/location-deactivation-race.spec.ts` needs a real second Postgres connection to interleave two transactions (not expressible through PostgREST/supabase-js) and skips itself, not fails, if this isn't set. Without it, that test's concurrency guarantee (round-2 R2-05) is never actually exercised in CI.

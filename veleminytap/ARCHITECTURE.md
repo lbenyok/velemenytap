@@ -38,7 +38,7 @@ organization ─ organization_membership ─ auth.users
 
 The admin client is not "the one deliberate RLS bypass" (an earlier version of this document said so) — see `SECURITY.md` § "The deliberate RLS bypasses" for the current, verified accounting of every place RLS is bypassed and why.
 
-**Proxy / route protection.** `proxy.ts` (renamed from the default `middleware.ts`) is protect-by-default: everything except `PUBLIC_PATHS` (`/`, `/login`, `/signup`, `/auth`, `/r`) requires a session, redirecting to `/login` otherwise.
+**Proxy / route protection.** `proxy.ts` (renamed from the default `middleware.ts`) is protect-by-default: everything except `PUBLIC_PATHS` (`/`, `/login`, `/signup`, `/auth`, `/r`, `/api/e2e-config-check`, `/api/notification-email/confirm`) requires a session, redirecting to `/login` otherwise. The last of those (round-3 R3-03) is a confirmation-link target clicked from an email, possibly with no session at all.
 
 ## Directory layout
 
@@ -65,6 +65,7 @@ supabase/migrations/    imperative SQL migrations, applied in order
 - **`database.types.ts` is hand-written**, not generated via `supabase gen types` (no local Docker environment available), and is updated by hand alongside every migration.
 - **Base UI, not Radix**, per the installed shadcn preset — component APIs (`render` prop instead of `asChild`, etc.) differ accordingly.
 - **`priority` is a Postgres generated column** (`feedback.priority`, derived from `rating`), not computed in application code, so it can never drift from the rating that produced it.
+- **Column-protecting triggers ship as two migrations, not one, when the column already has a production consumer.** The alert-cooldown and notification-email-change triggers (round 3, R3-05) are each split into an "expand" migration (new columns/functions, no enforcement yet) and a later "enforce" migration (the trigger itself) — applying both together would break currently-deployed application code that still writes the protected column(s) directly, in the gap between the migration landing and new code deploying. See `DATABASE_SCHEMA.md` § "Rollout ordering."
 
 ## What's deliberately not built (see `DECISIONS.md` for the reasoning behind each)
 
@@ -72,4 +73,4 @@ supabase/migrations/    imperative SQL migrations, applied in order
 - An organization switcher (schema supports multi-org membership; UI always resolves the earliest-joined org).
 - Role-gated dashboard authorization (owner/admin/manager/staff exist in the schema; no invite flow exists yet, so only "owner" is ever actually assigned).
 - File-upload UI for the organization logo (a pasted URL field instead).
-- Verified `notification_email` recipients for negative-feedback alerts — an organization-wide send budget (`SECURITY.md` § "Negative-feedback alert abuse controls") bounds the blast radius of an unverified recipient, but doesn't verify the organization actually controls the address. A real fix needs its own email-confirmation flow — see `DECISIONS.md` § "R2-08."
+- ~~Verified `notification_email` recipients for negative-feedback alerts.~~ **Done in round 3** (R3-03) — a real confirmation-link flow, not just the org-wide budget mitigation this line originally described. See `SECURITY.md` § "Notification recipient verification" and `DECISIONS.md` § "R2-08."
