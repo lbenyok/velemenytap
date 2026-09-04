@@ -1,6 +1,12 @@
 # Status
 
-Last updated: 2026-09-03, after the "Phase 14" master-build-prompt gap-fill session, follow-up Resend/Sentry/Playwright-CI wiring passes, a homepage build, and a full Hungarian localization + brand rebrand.
+Last updated: 2026-09-04, after a review-prep pass (no new features) that re-verified the full test suite/lint/typecheck/build, reviewed the diff since the last review checkpoint, and rewrote `REVIEW_REQUEST.md` for an independent senior-engineer review. Prior entry: 2026-09-03, after the "Phase 14" master-build-prompt gap-fill session, follow-up Resend/Sentry/Playwright-CI wiring passes, a homepage build, and a full Hungarian localization + brand rebrand.
+
+## Review-prep pass (2026-09-04, no new functionality)
+
+Full verification re-run from a clean state, all green: `npm run typecheck`, `npm run lint`, `npm run test` (30/30 Vitest), `npm run test:e2e` (6/6 Playwright against the real linked Supabase project, test data confirmed cleaned up), `npm run build` (production build succeeds). See `REVIEW_REQUEST.md` for the full external-review handoff — it now covers architecture, every implemented feature, repo structure, database tables, RLS policies, auth/authz, the public submission flow, Google Review link logic, security-sensitive files, all Server Actions/routes, migrations, tests, and known bugs/risks/shortcuts, addressed to an independent senior reviewer (ChatGPT).
+
+**One real bug found during this pass, not introduced in the reviewed diff:** `app/auth/confirm/route.ts` redirects to the raw `next` query parameter after a successful email-confirmation OTP verify, with no same-origin validation — an **open redirect**. Contrast with `features/auth/actions.ts`'s `signInAction`, which validates `next` (`typeof next === "string" && next.startsWith("/") && !next.startsWith("//")`) before redirecting. This file hasn't been touched since it was first written (`ea63f03`, the original auth-flow commit) and was not part of this session's diff — left unfixed deliberately per this pass's explicit "no new functionality" instruction, flagged here and in `REVIEW_REQUEST.md` for the reviewer and for a follow-up fix.
 
 ## Done
 
