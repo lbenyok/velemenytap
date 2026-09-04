@@ -309,6 +309,14 @@ export interface Database {
         };
         Returns: Json;
       };
+      claim_negative_alert_send: {
+        Args: {
+          p_nfc_card_id: number;
+          p_cooldown_minutes?: number;
+          p_org_hourly_budget?: number;
+        };
+        Returns: boolean;
+      };
     };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;

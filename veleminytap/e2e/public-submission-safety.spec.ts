@@ -88,31 +88,8 @@ test("finding #2: more than the per-card rate limit within the window is rejecte
   expect(count).toBe(20);
 });
 
-test("finding #2: the negative-feedback alert cooldown claim lets only one claim through per window", async () => {
-  // Exercises the exact atomic UPDATE ... WHERE ... RETURNING pattern
-  // negative-feedback-alert.ts uses, without needing a configured Resend
-  // key (this test project deliberately has none -- see e2e/README.md) or
-  // sending a real email. Postgres's row-level locking is what makes two
-  // concurrent claims for the same card resolve to exactly one winner; this
-  // confirms the query shape actually has that effect.
-  const admin = adminClient();
-  const cutoff = new Date(Date.now() - 5 * 60_000).toISOString();
-
-  const first = await admin
-    .from("nfc_cards")
-    .update({ last_negative_alert_at: new Date().toISOString() })
-    .eq("id", card.cardId)
-    .or(`last_negative_alert_at.is.null,last_negative_alert_at.lt.${cutoff}`)
-    .select("id")
-    .maybeSingle();
-  expect(first.data).not.toBeNull();
-
-  const second = await admin
-    .from("nfc_cards")
-    .update({ last_negative_alert_at: new Date().toISOString() })
-    .eq("id", card.cardId)
-    .or(`last_negative_alert_at.is.null,last_negative_alert_at.lt.${cutoff}`)
-    .select("id")
-    .maybeSingle();
-  expect(second.data).toBeNull();
-});
+// The negative-feedback alert cooldown claim itself is covered in
+// e2e/negative-feedback-alert-abuse.spec.ts (round-2 finding R2-08) -- it
+// now goes through claim_negative_alert_send(), not a raw UPDATE from
+// here, since a round-2 review confirmed a tenant's own authenticated
+// session could reset the old plain-column cooldown via a direct UPDATE.
