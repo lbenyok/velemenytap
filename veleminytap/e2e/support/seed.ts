@@ -15,6 +15,25 @@ export function adminClient() {
   return createClient<Database>(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
 }
 
+/**
+ * "JWT issued at future" (PostgREST error PGRST303) has been observed
+ * intermittently against this isolated test project -- never reproducibly,
+ * and unrelated to anything under test (it's a clock-skew condition inside
+ * Supabase's own infra for a freshly created project, not this app's code).
+ * Retries a PostgREST call up to twice more after a short pause, same
+ * mitigation as userClient()'s post-sign-in probe.
+ */
+export async function retryOnClockSkew<T extends { error: { code?: string } | null }>(
+  fn: () => PromiseLike<T>,
+): Promise<T> {
+  let result = await fn();
+  for (let attempt = 0; attempt < 2 && result.error?.code === "PGRST303"; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    result = await fn();
+  }
+  return result;
+}
+
 export type SeededFeedbackFixture = {
   locationId: number;
   otherLocationId: number;
@@ -232,16 +251,20 @@ export async function seedOrgWithMember(
   // so without this a flaky run (or a real bug this fixture happens to
   // trip) accumulates leftover auth users in the test project.
   try {
-    const { data: org, error: orgError } = await admin
-      .from("organizations")
-      .insert({ name: `E2E ${namePrefix} ${unique}`, slug: `e2e-${namePrefix}-${unique}` })
-      .select("id")
-      .single();
+    const { data: org, error: orgError } = await retryOnClockSkew(() =>
+      admin
+        .from("organizations")
+        .insert({ name: `E2E ${namePrefix} ${unique}`, slug: `e2e-${namePrefix}-${unique}` })
+        .select("id")
+        .single(),
+    );
     if (orgError) throw orgError;
 
-    const { error: membershipError } = await admin
-      .from("organization_memberships")
-      .insert({ organization_id: org.id, user_id: userData.user.id, role });
+    const { error: membershipError } = await retryOnClockSkew(() =>
+      admin
+        .from("organization_memberships")
+        .insert({ organization_id: org.id, user_id: userData.user.id, role }),
+    );
     if (membershipError) throw membershipError;
 
     return { userId: userData.user.id, email, password, orgId: org.id };
