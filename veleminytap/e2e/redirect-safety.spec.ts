@@ -1,9 +1,9 @@
 import { test, expect } from "@playwright/test";
 import {
-  seedAuthUser,
-  cleanupAuthUser,
+  seedOrgWithMember,
+  cleanupOrgWithMember,
   generateConfirmToken,
-  type SeededAuthUser,
+  type SeededOrgMember,
 } from "./support/seed";
 
 /**
@@ -23,14 +23,14 @@ import {
 // so a shared `user` fixture would get independently (and concurrently)
 // re-seeded by every worker that picks up any test from this file. Each
 // test gets its own isolated user/org instead.
-let user: SeededAuthUser;
+let user: SeededOrgMember;
 
 test.beforeEach(async () => {
-  user = await seedAuthUser();
+  user = await seedOrgWithMember("redirect-safety");
 });
 
 test.afterEach(async () => {
-  await cleanupAuthUser(user.userId, user.orgId);
+  await cleanupOrgWithMember(user.userId, user.orgId);
 });
 
 async function signIn(page: import("@playwright/test").Page) {

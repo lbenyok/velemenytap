@@ -14,6 +14,65 @@ function adminClient() {
   return createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
 }
 
+export type SeededFeedbackFixture = {
+  locationId: number;
+  otherLocationId: number;
+  cardId: number;
+  feedbackId: number;
+};
+
+/**
+ * One location, a second "other" location in the same org (for relocation
+ * tests), one NFC card at the first location, and one feedback row on that
+ * card -- the fixture RLS/consistency tests build their assertions on top
+ * of. Uses the admin client (bypasses RLS) since seeding test data is not
+ * itself part of what's under test.
+ */
+export async function seedFeedbackFixture(orgId: number, namePrefix: string): Promise<SeededFeedbackFixture> {
+  const admin = adminClient();
+
+  const { data: location, error: locationError } = await admin
+    .from("locations")
+    .insert({ organization_id: orgId, name: `E2E ${namePrefix} Location A` })
+    .select("id")
+    .single();
+  if (locationError) throw locationError;
+
+  const { data: otherLocation, error: otherLocationError } = await admin
+    .from("locations")
+    .insert({ organization_id: orgId, name: `E2E ${namePrefix} Location B` })
+    .select("id")
+    .single();
+  if (otherLocationError) throw otherLocationError;
+
+  const { data: card, error: cardError } = await admin
+    .from("nfc_cards")
+    .insert({ organization_id: orgId, location_id: location.id, display_name: "E2E Card" })
+    .select("id")
+    .single();
+  if (cardError) throw cardError;
+
+  const { data: feedback, error: feedbackError } = await admin
+    .from("feedback")
+    .insert({
+      organization_id: orgId,
+      location_id: location.id,
+      nfc_card_id: card.id,
+      rating: 3,
+      feedback_text: "Original feedback text",
+    })
+    .select("id")
+    .single();
+  if (feedbackError) throw feedbackError;
+
+  return {
+    locationId: location.id,
+    otherLocationId: otherLocation.id,
+    cardId: card.id,
+    feedbackId: feedback.id,
+  };
+}
+
 export type SeededOrg = {
   orgId: number;
   cards: { rating: number; publicId: string }[];
@@ -79,19 +138,32 @@ export async function cleanupOrg(orgId: number): Promise<void> {
   await admin.from("organizations").delete().eq("id", orgId);
 }
 
-export type SeededAuthUser = { userId: string; email: string; password: string; orgId: number };
+export type SeededOrgMember = {
+  userId: string;
+  email: string;
+  password: string;
+  orgId: number;
+};
 
 /**
- * Creates a throwaway, pre-confirmed auth user for driving the real login
- * form -- plus an organization/membership for it, since the dashboard
- * layout redirects any org-less authenticated user to /onboarding. Without
- * this, a redirect test would always land on /onboarding no matter what its
- * safe fallback target was, masking the actual thing under test.
+ * Creates a throwaway, pre-confirmed auth user plus an organization/
+ * membership for it -- the building block every RLS-as-a-real-user test and
+ * the redirect-safety suite need. (The dashboard layout redirects any
+ * org-less authenticated user to /onboarding, so without a membership,
+ * *any* post-login redirect test would land there regardless of its actual
+ * target, masking the thing under test.)
  */
-export async function seedAuthUser(): Promise<SeededAuthUser> {
+export async function seedOrgWithMember(
+  namePrefix: string,
+  role: "owner" | "admin" | "manager" | "staff" = "owner",
+): Promise<SeededOrgMember> {
   const admin = adminClient();
-  const email = `e2e-redirect-safety-${Date.now()}@example.com`;
-  const password = `E2e-Test-${Date.now()}!`;
+  // Date.now() alone collides under parallel workers (millisecond
+  // resolution, multiple workers starting within the same tick) -- unique
+  // per call regardless of timing.
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const email = `e2e-${namePrefix}-${unique}@example.com`;
+  const password = `E2e-Test-${unique}!`;
 
   const { data: userData, error: userError } = await admin.auth.admin.createUser({
     email,
@@ -100,26 +172,70 @@ export async function seedAuthUser(): Promise<SeededAuthUser> {
   });
   if (userError) throw userError;
 
-  const { data: org, error: orgError } = await admin
-    .from("organizations")
-    .insert({ name: `E2E Redirect Safety ${Date.now()}`, slug: `e2e-redirect-safety-${Date.now()}` })
-    .select("id")
-    .single();
-  if (orgError) throw orgError;
+  // If anything below fails, delete the just-created user rather than
+  // leaving it orphaned -- afterEach never runs for a beforeEach that threw,
+  // so without this a flaky run (or a real bug this fixture happens to
+  // trip) accumulates leftover auth users in the test project.
+  try {
+    const { data: org, error: orgError } = await admin
+      .from("organizations")
+      .insert({ name: `E2E ${namePrefix} ${unique}`, slug: `e2e-${namePrefix}-${unique}` })
+      .select("id")
+      .single();
+    if (orgError) throw orgError;
 
-  const { error: membershipError } = await admin
-    .from("organization_memberships")
-    .insert({ organization_id: org.id, user_id: userData.user.id, role: "owner" });
-  if (membershipError) throw membershipError;
+    const { error: membershipError } = await admin
+      .from("organization_memberships")
+      .insert({ organization_id: org.id, user_id: userData.user.id, role });
+    if (membershipError) throw membershipError;
 
-  return { userId: userData.user.id, email, password, orgId: org.id };
+    return { userId: userData.user.id, email, password, orgId: org.id };
+  } catch (err) {
+    await admin.auth.admin.deleteUser(userData.user.id);
+    throw err;
+  }
 }
 
-export async function cleanupAuthUser(userId: string, orgId: number): Promise<void> {
+export async function cleanupOrgWithMember(userId: string, orgId: number): Promise<void> {
   const admin = adminClient();
+  await admin.from("feedback").delete().eq("organization_id", orgId);
+  await admin.from("nfc_cards").delete().eq("organization_id", orgId);
+  await admin.from("locations").delete().eq("organization_id", orgId);
   await admin.from("organization_memberships").delete().eq("organization_id", orgId);
   await admin.from("organizations").delete().eq("id", orgId);
   await admin.auth.admin.deleteUser(userId);
+}
+
+/**
+ * A signed-in, RLS-bound client for a seeded user -- the publishable key,
+ * not the secret key, so every query goes through the exact same RLS
+ * policies the real dashboard runs under. This is how RLS itself gets
+ * tested directly (not just through the app's own query shapes, which
+ * might never happen to exercise a gap the policy leaves open).
+ */
+export async function userClient(email: string, password: string) {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+  if (!url || !key) {
+    throw new Error(
+      "NEXT_PUBLIC_SUPABASE_URL/NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY are required -- see e2e/README.md.",
+    );
+  }
+  const client = createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
+  const { error } = await client.auth.signInWithPassword({ email, password });
+  if (error) throw error;
+
+  // A freshly minted JWT's `iat` can transiently fail PostgREST's clock-skew
+  // check ("JWT issued at future", PGRST303) on this project -- seen
+  // intermittently, never reproducibly, and unrelated to anything under
+  // test here. One retry after a short pause clears it.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const probe = await client.from("organizations").select("id").limit(1);
+    if (!probe.error || probe.error.code !== "PGRST303") break;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  return client;
 }
 
 /**
