@@ -2,8 +2,8 @@
 
 This is a response to an independent review of `a3d5ce1`, not a from-scratch request — read this alongside `PRODUCT_SPEC.md`, `ARCHITECTURE.md`, `DATABASE_SCHEMA.md`, `SECURITY.md`, and `DECISIONS.md`, all updated to reflect the current, post-fix state (not left describing what was true at round 1). If you're a different reviewer picking this up cold: those five documents are still the right starting point, in that order; this document is the delta since round 1, not a replacement for them.
 
-**Branch:** `fix/independent-review-findings`, off `a3d5ce1` (the commit round 1 reviewed). **Not merged to `master`, not deployed, not applied to production** — see § "What was deliberately not done" below.
-**Commit range:** `5f8436c..7c2062d` (9 commits, 31 files, +2272/-196; `5f8436c` is round 1's `REVIEW_REQUEST.md`/`STATUS.md` baseline).
+**Branch:** `fix/independent-review-findings`, off `a3d5ce1` (the commit round 1 reviewed) — merged into `master` as squash commit `e2bbb7b` via [PR #1](https://github.com/lbenyok/velemenytap/pull/1), CI green. All 8 migrations (3 pre-existing + 5 new) have been applied to **production** (`supabase db advisors`: no issues; migration history confirmed in sync). This review is of code and schema now live on `master` and in production, not a pending branch.
+**Commit range:** `5f8436c..7c2062d` (9 commits, 31 files, +2272/-196; `5f8436c` is round 1's `REVIEW_REQUEST.md`/`STATUS.md` baseline) — plus one follow-up commit (`fa16131`) and the merge itself (`e2bbb7b`).
 **All 11 round-1 findings addressed** — verified independently against the actual code first (not accepted on faith), then fixed where confirmed. Verdict: **all 11 confirmed**, no findings rejected. See § 1 for the finding-by-finding detail.
 
 ---
@@ -35,7 +35,7 @@ No finding was rejected. Two implementation choices diverged from what the revie
 
 ## 3. What changed, structurally
 
-- **Isolated test infrastructure, for the first time.** `.env.test.local` (gitignored) points a dedicated, newly-provisioned Supabase project; `e2e/support/env.ts` prefers it over `.env.local`, and `playwright.config.ts` injects its values into the spawned dev/start server so the app under test talks to it too. All 8 new migrations were applied there (never to the shared dev/production project), verified with `supabase db advisors` after each (no issues), and all new tests run against it. **CI's e2e job secrets likely still point at the old shared project** — see `STATUS.md`'s "What's needed from the user."
+- **Isolated test infrastructure, for the first time.** `.env.test.local` (gitignored) points a dedicated, newly-provisioned Supabase project; `e2e/support/env.ts` prefers it over `.env.local`, and `playwright.config.ts` injects its values into the spawned dev/start server so the app under test talks to it too. All 5 new migrations (3 pre-existing + these 5 = 8 total) were applied there first (never to the shared dev/production project), verified with `supabase db advisors` after each (no issues), and all new tests run against it. **CI's e2e job secrets were updated** to the isolated project's values — confirmed green on the PR afterward.
 - **5 new database migrations** (`supabase/migrations/2026090408*`, `2026090409*`): column-restriction and location-immutability triggers, the atomic public-submission function, the pagination index, the atomic onboarding function. All committed, none applied to production. `DATABASE_SCHEMA.md` § "Database functions callable as RPCs" has the full privilege-model reasoning for each new `SECURITY DEFINER`/`SECURITY INVOKER` function — worth independent scrutiny per the Supabase security checklist, since this schema previously had zero `SECURITY DEFINER` functions reachable directly by an end user and now has one (`create_organization_atomic`).
 - **7 new/extended e2e spec files**, all against the isolated project: `feedback-and-card-integrity`, `public-submission-safety`, `feedback-pagination`, `analytics-row-cap`, `organization-onboarding`, `tenant-isolation`, `redirect-safety`. Plus 29 new `lib/safe-redirect.test.ts`, 22 rewritten `lib/sentry-redact.test.ts`, and 7 new `features/analytics/fetch-all-rows.test.ts` unit tests.
 - **Documentation corrected, not just appended to.** `SECURITY.md`, `ARCHITECTURE.md`, `DATABASE_SCHEMA.md`, `STATUS.md`, `DECISIONS.md` all updated to describe the current state; stale claims (the admin-client count, "no rate limiting," "no isolated e2e environment," "no tenant-isolation test") were corrected in place rather than left alongside new, contradicting text.
@@ -56,20 +56,21 @@ Two genuinely flaky (not code-related) conditions were hit and are worth knowing
 
 ## 5. Remaining risks / explicitly not addressed
 
-- **CI's e2e secrets** almost certainly still point at the shared dev/production Supabase project, not the new isolated one — round 2 should confirm this got updated (`STATUS.md`).
+- ~~CI's e2e secrets~~ — updated to the isolated test project's values; confirmed green.
 - **Sentry source-map upload** remains unconfigured (needs a credential, out of scope for this pass) — stack traces in the Sentry dashboard are still minified.
 - **The 20-per-5-minutes rate limit and 5-minute alert cooldown are untested against real production traffic patterns** — they're deliberately generous constants, easy to retune, but their correctness under genuine load (as opposed to the synthetic bursts the test suite constructs) is unverified.
 - **No QR code generation, org switcher, role-gated authorization, or logo upload UI** — all pre-existing, deliberate MVP-scope decisions, unchanged by this pass (`DECISIONS.md`).
 
-## 6. What was deliberately not done
+## 6. Rollout: what happened, in what order
 
-Per this task's explicit constraints: **no merge to `master`, no deployment, no migration applied to the production database.** All 8 new migrations exist only in `supabase/migrations/` on this branch and on the isolated test project — never on the project `.env.local` points at. If/when this branch is approved:
+This task's original constraints (no merge, no deployment, no production migration) applied only while the branch was under review. Once approved in this conversation, the rollout was executed in this order, deliberately migrations-before-merge to avoid any window where deployed code doesn't match the live schema:
 
-1. `git push -u origin fix/independent-review-findings`, open a PR against `master`.
-2. Apply the 8 new migrations to production with `supabase db push --db-url <production-db-url>` (get the connection string from Supabase project settings — **not** the one in `.env.test.local`), then `supabase db advisors` against production to confirm no issues before or immediately after.
-3. Update CI's three e2e repo secrets to the isolated test project's values (not production's) — see § 5.
-4. Merge, deploy via Vercel's normal flow.
-5. **Rollback plan if a migration causes a problem in production:** the new triggers (`prevent_feedback_content_change`, `prevent_nfc_card_location_change`) and the pagination index are all reversible with a `drop trigger`/`drop index` migration and no data loss. `submit_feedback_atomic` and `create_organization_atomic` are new functions with no prior callers to break — reverting the two application-code commits (`8a9487b`, `1faa370`) that call them, plus a follow-up migration dropping the functions, fully reverts both with no data-loss risk either way (neither migration altered or dropped any existing column/table).
+1. CI's three e2e repo secrets updated to the isolated test project's values (not production's) — confirmed green on [PR #1](https://github.com/lbenyok/velemenytap/pull/1) after the update (previously failing with `AuthApiError: Invalid API key`, since they'd been pointing at production's credentials against the isolated project's test code).
+2. All 5 new migrations applied to **production** via `supabase db push --db-url <production-pooler-url>` (the direct/IPv6 connection was unreachable from the network in use at the time; the transaction pooler, port 6543, worked). `supabase db advisors` against production: no issues. Migration history confirmed in sync (8/8, local and remote timestamps matching).
+3. [PR #1](https://github.com/lbenyok/velemenytap/pull/1) merged into `master` (squash commit `e2bbb7b`).
+4. Vercel deploy from `master` follows its normal auto-deploy flow — not separately verified as part of this task; **confirm the live deployment reflects `e2bbb7b`** as part of round 2.
+
+**Rollback plan, if needed:** the new triggers (`prevent_feedback_content_change`, `prevent_nfc_card_location_change`) and the pagination index are all reversible with a `drop trigger`/`drop index` migration and no data loss. `submit_feedback_atomic` and `create_organization_atomic` are new functions with no prior callers to break — reverting the two application-code commits (`8a9487b`, `1faa370`) that call them, plus a follow-up migration dropping the functions, fully reverts both with no data-loss risk either way (neither migration altered or dropped any existing column/table).
 
 ## 7. Where to be especially critical this round
 
