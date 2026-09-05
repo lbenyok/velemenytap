@@ -337,8 +337,17 @@ export interface Database {
           p_organization_id: number;
           p_email: string;
           p_expires_in_minutes?: number;
+          p_cooldown_minutes?: number;
+          p_org_hourly_budget?: number;
         };
-        Returns: string;
+        Returns: { token: string; log_id: number }[];
+      };
+      finalize_notification_email_change_send: {
+        Args: {
+          p_log_id: number;
+          p_delivered: boolean;
+        };
+        Returns: undefined;
       };
       clear_notification_email: {
         Args: {
