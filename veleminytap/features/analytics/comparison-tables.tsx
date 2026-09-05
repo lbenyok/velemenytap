@@ -6,7 +6,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import type { LocationStats, CardStats } from "./aggregate";
+import type { LocationStats, CardStats } from "./queries";
 
 export function LocationComparisonTable({ rows }: { rows: LocationStats[] }) {
   if (rows.length === 0) {

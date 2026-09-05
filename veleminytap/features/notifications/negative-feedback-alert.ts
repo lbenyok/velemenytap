@@ -6,16 +6,6 @@ import { createAdminClient } from "@/lib/supabase/admin";
 const NEGATIVE_RATING_THRESHOLD = 2; // ratings 1-2 are treated as negative
 const ALERT_ROLES = ["owner", "admin", "manager"] as const;
 
-// Review finding #2 (email-amplification): the submission rate limit in
-// submit_feedback_atomic still allows up to 20 submissions per card per 5
-// minutes -- generous enough for real traffic, but a burst that size would
-// otherwise mean up to 20 alert emails for one card in one burst if every
-// one of them happened to be a low rating. This cooldown caps it at one
-// alert per card per window regardless of how many qualifying submissions
-// land inside it; the feedback itself is still recorded and visible in the
-// dashboard either way, only the email is suppressed.
-const ALERT_COOLDOWN_MINUTES = 5;
-
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
 function escapeHtml(value: string): string {
@@ -54,27 +44,46 @@ export async function sendNegativeFeedbackAlert(params: {
     return;
   }
 
+  const admin = createAdminClient();
+  // Set once a claim succeeds; used in the `finally` block below to report
+  // this attempt's real outcome (round-3 R3-06) regardless of which return
+  // or throw path this function takes after that point -- a reservation
+  // that's claimed must always be finalized as either delivered or failed,
+  // never left silently unresolved by an early return (no recipients) or
+  // an unexpected exception.
+  let logId: number | null = null;
+  let delivered = false;
+
   try {
-    const admin = createAdminClient();
+    // Atomic claim: caps this at one alert per card per 5-minute cooldown
+    // (finding #2, round 1) AND one alert per organization per hour
+    // regardless of how many different cards it comes from (round-2
+    // finding R2-08 -- the per-card cooldown alone doesn't bound total
+    // email volume across an org's cards), serialized across concurrent
+    // claims for different cards in the same org (round-3 finding R3-02).
+    // last_negative_alert_at is genuinely server-owned: a trigger rejects
+    // any direct UPDATE to it from any caller, including this admin
+    // client -- the only way to change it is through this function, which
+    // is EXECUTE-restricted to service_role. See its migration for the
+    // full reasoning, including why a round-1 version of this same
+    // cooldown (a raw UPDATE from here) was not actually a sufficient fix
+    // on its own: an authenticated tenant's own session could reset it via
+    // a direct UPDATE, since RLS is row-level, not column-level.
+    //
+    // Returns the new log row's id (a *reservation*, not a record of
+    // delivery -- round-3 finding R3-06) or null if nothing was claimed.
+    const { data: claimedLogId, error: claimError } = await admin.rpc("claim_negative_alert_send", {
+      p_nfc_card_id: params.nfcCardId,
+    });
 
-    // Atomic cooldown claim: this UPDATE only matches (and only then
-    // returns a row) if last_negative_alert_at is unset or older than the
-    // cooldown window, and it sets it to now() in the same statement --
-    // Postgres's row-level locking means two concurrent alerts for the same
-    // card can't both "win" the claim, so this is race-free without needing
-    // a database function for it.
-    const cutoff = new Date(Date.now() - ALERT_COOLDOWN_MINUTES * 60_000).toISOString();
-    const { data: claimed } = await admin
-      .from("nfc_cards")
-      .update({ last_negative_alert_at: new Date().toISOString() })
-      .eq("id", params.nfcCardId)
-      .or(`last_negative_alert_at.is.null,last_negative_alert_at.lt.${cutoff}`)
-      .select("id")
-      .maybeSingle();
-
-    if (!claimed) {
+    if (claimError) {
+      console.error("Failed to claim negative feedback alert cooldown:", claimError);
       return;
     }
+    if (claimedLogId === null) {
+      return;
+    }
+    logId = claimedLogId;
 
     // A configured notification_email is an explicit override of the
     // default "email every owner/admin/manager" behavior -- it's how an
@@ -95,14 +104,20 @@ export async function sendNegativeFeedbackAlert(params: {
         .eq("organization_id", params.organizationId)
         .in("role", ALERT_ROLES);
 
-      if (!members || members.length === 0) return;
-
-      for (const member of members) {
-        const { data } = await admin.auth.admin.getUserById(member.user_id);
-        if (data.user?.email) recipients.push(data.user.email);
+      if (members) {
+        for (const member of members) {
+          const { data } = await admin.auth.admin.getUserById(member.user_id);
+          if (data.user?.email) recipients.push(data.user.email);
+        }
       }
     }
-    if (recipients.length === 0) return;
+    if (recipients.length === 0) {
+      // A reservation was claimed but there's no one to send to -- this
+      // is a failed attempt, not a silent success (R3-06); the `finally`
+      // block below finalizes it as such.
+      console.warn("Claimed a negative feedback alert slot but found no recipients to notify.");
+      return;
+    }
 
     const dashboardUrl = `${process.env.NEXT_PUBLIC_SITE_URL}/dashboard/feedback`;
     const stars = "★".repeat(params.rating) + "☆".repeat(5 - params.rating);
@@ -129,8 +144,21 @@ export async function sendNegativeFeedbackAlert(params: {
     // a production send failure would ever be visible.
     if (sendError) {
       console.error("Failed to send negative feedback alert email:", sendError);
+      return;
     }
+
+    delivered = true;
   } catch (error) {
     console.error("Failed to send negative feedback alert email:", error);
+  } finally {
+    if (logId !== null) {
+      const { error: finalizeError } = await admin.rpc("finalize_negative_alert_send", {
+        p_log_id: logId,
+        p_delivered: delivered,
+      });
+      if (finalizeError) {
+        console.error("Failed to finalize negative feedback alert log:", finalizeError);
+      }
+    }
   }
 }

@@ -1,8 +1,10 @@
 import "server-only";
 
 import { createClient } from "@/lib/supabase/server";
-import { ratingDistribution, type RatingBucket } from "./aggregate";
-import { fetchAllRowsPaginated } from "./fetch-all-rows";
+import { parseOverviewSnapshot } from "./parse-snapshots";
+import type { RatingBucket } from "./queries";
+
+export type { RatingBucket };
 
 export type RecentFeedbackItem = {
   id: number;
@@ -13,81 +15,46 @@ export type RecentFeedbackItem = {
   location_name: string;
 };
 
-export type OverviewStats = {
-  total: number;
-  averageRating: number | null;
-  today: number;
-  thisWeek: number;
-  unresolvedNegative: number;
-  distribution: RatingBucket[];
-  recent: RecentFeedbackItem[];
-};
+export type OverviewStats =
+  | {
+      unavailable: false;
+      total: number;
+      averageRating: number | null;
+      today: number;
+      thisWeek: number;
+      unresolvedNegative: number;
+      distribution: RatingBucket[];
+      recent: RecentFeedbackItem[];
+    }
+  | { unavailable: true };
 
-// All-time, not period-scoped (unlike /dashboard/analytics) -- these are
-// meant to be the at-a-glance numbers on the homepage. Bounded so this stays
-// a plain in-memory aggregation instead of needing a SQL view/RPC -- fine at
-// MVP scale (see fetch-all-rows.ts for why a single .limit() doesn't
-// actually enforce this on its own).
-const MAX_ROWS = 5000;
-
+/**
+ * All-time, not period-scoped (unlike /dashboard/analytics) -- meant to be
+ * the at-a-glance numbers on the homepage. Computed entirely inside
+ * get_feedback_overview_snapshot (see its migration) rather than paginating
+ * raw rows into Node: a round-2 review confirmed the prior page-by-page
+ * approach still had a silent truncation ceiling (R2-02, just a bigger one
+ * than the original 1000-row PostgREST cap) and was inconsistent under
+ * concurrent inserts across separate page requests (R2-03). A single SQL
+ * aggregate has neither problem -- there's no row-count ceiling to hit, and
+ * Postgres computes the whole result from one consistent snapshot no
+ * matter how many rows match.
+ *
+ * A failed query surfaces as an explicit `unavailable: true` result rather
+ * than silently rendering as "0 feedback so far" (R2-04) -- an error and
+ * an empty organization must never look the same to whoever reads this.
+ * The actual parsing/error-handling logic lives in parse-snapshots.ts,
+ * specifically so it's unit-testable without a live database.
+ */
 export async function getOverviewStats(organizationId: number): Promise<OverviewStats> {
   const supabase = await createClient();
 
-  const rows = await fetchAllRowsPaginated(
-    (from, to) =>
-      supabase
-        .from("feedback")
-        .select("id, rating, status, feedback_text, created_at, locations(name)", {
-          count: "exact",
-        })
-        .eq("organization_id", organizationId)
-        // id as a secondary sort key: created_at alone ties whenever two
-        // rows land in the same instant, and .range()-based pagination
-        // across parallel page requests needs a fully deterministic order
-        // to avoid the same class of skip/duplicate bug fixed in the
-        // feedback inbox's cursor pagination (see that migration's
-        // comment).
-        .order("created_at", { ascending: false })
-        .order("id", { ascending: false })
-        .range(from, to),
-    MAX_ROWS,
-  );
-  const total = rows.length;
-  const averageRating =
-    total > 0 ? Number((rows.reduce((sum, r) => sum + r.rating, 0) / total).toFixed(1)) : null;
+  // Not .single() -- this function returns a scalar jsonb value, not a
+  // set of rows, so PostgREST returns it directly rather than wrapping it
+  // in an array for .single() to unwrap.
+  const result = await supabase.rpc("get_feedback_overview_snapshot", {
+    p_organization_id: organizationId,
+  });
 
-  // "Today" and "this week" are UTC-day-based and rolling-7-day
-  // respectively, same semantics as the Analytics period selector (not a
-  // calendar week starting Monday) -- kept consistent rather than
-  // introducing a second definition of "week" elsewhere in the app.
-  const now = new Date();
-  const todayStart = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
-  );
-  const weekStart = new Date(todayStart.getTime() - 6 * 24 * 60 * 60 * 1000);
-
-  const today = rows.filter((r) => new Date(r.created_at) >= todayStart).length;
-  const thisWeek = rows.filter((r) => new Date(r.created_at) >= weekStart).length;
-  const unresolvedNegative = rows.filter(
-    (r) => r.rating <= 2 && r.status !== "resolved",
-  ).length;
-
-  const recent: RecentFeedbackItem[] = rows.slice(0, 5).map((r) => ({
-    id: r.id,
-    rating: r.rating,
-    feedback_text: r.feedback_text,
-    status: r.status,
-    created_at: r.created_at,
-    location_name: r.locations?.name ?? "—",
-  }));
-
-  return {
-    total,
-    averageRating,
-    today,
-    thisWeek,
-    unresolvedNegative,
-    distribution: ratingDistribution(rows),
-    recent,
-  };
+  return parseOverviewSnapshot(result);
 }

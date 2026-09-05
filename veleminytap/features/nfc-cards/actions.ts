@@ -10,24 +10,30 @@ export type NfcCardActionState =
   | { error?: undefined; success: true }
   | { error?: undefined; success?: undefined };
 
-const nfcCardSchema = z.object({
-  display_name: z
-    .string()
-    .trim()
-    .max(100, "A név túl hosszú.")
-    .transform((v) => (v === "" ? null : v)),
+const displayNameSchema = z
+  .string()
+  .trim()
+  .max(100, "A név túl hosszú.")
+  .transform((v) => (v === "" ? null : v));
+
+const createNfcCardSchema = z.object({
+  display_name: displayNameSchema,
   location_id: z.coerce
     .number()
     .int()
     .positive("Válassz egy helyszínt."),
 });
 
-function parseNfcCardForm(formData: FormData) {
-  return nfcCardSchema.safeParse({
-    display_name: formData.get("display_name") ?? "",
-    location_id: formData.get("location_id"),
-  });
-}
+// No location_id here at all (round-2 finding R2-09): a card's location is
+// immutable at the database level once created
+// (private.prevent_nfc_card_location_change), so this isn't just "not
+// shown in the edit form" -- the server action never even looks for a
+// location_id input, let alone attempts to write one. A crafted request
+// with an extra location_id field is silently ignored, not rejected with a
+// confusing "couldn't save" once it hits the database's own trigger.
+const updateNfcCardSchema = z.object({
+  display_name: displayNameSchema,
+});
 
 /**
  * Confirms the given location actually belongs to this organization before
@@ -56,7 +62,10 @@ export async function createNfcCardAction(
     return { error: "Nem található szervezet a fiókodhoz." };
   }
 
-  const parsed = parseNfcCardForm(formData);
+  const parsed = createNfcCardSchema.safeParse({
+    display_name: formData.get("display_name") ?? "",
+    location_id: formData.get("location_id"),
+  });
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Érvénytelen adat." };
   }
@@ -94,13 +103,11 @@ export async function updateNfcCardAction(
     return { error: "Érvénytelen kártya." };
   }
 
-  const parsed = parseNfcCardForm(formData);
+  const parsed = updateNfcCardSchema.safeParse({
+    display_name: formData.get("display_name") ?? "",
+  });
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Érvénytelen adat." };
-  }
-
-  if (!(await locationBelongsToOrg(parsed.data.location_id, organization.id))) {
-    return { error: "Válassz egy érvényes helyszínt." };
   }
 
   const supabase = await createClient();
@@ -108,7 +115,6 @@ export async function updateNfcCardAction(
     .from("nfc_cards")
     .update({
       display_name: parsed.data.display_name,
-      location_id: parsed.data.location_id,
     })
     .eq("id", cardId)
     .eq("organization_id", organization.id)

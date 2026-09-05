@@ -7,7 +7,7 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart";
-import type { RatingBucket } from "./aggregate";
+import type { RatingBucket } from "./queries";
 
 const config = {
   count: { label: "Vélemények", color: "var(--foreground)" },

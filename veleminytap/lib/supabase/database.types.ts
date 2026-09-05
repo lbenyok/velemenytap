@@ -28,6 +28,9 @@ export interface Database {
           slug: string;
           settings: Json;
           notification_email: string | null;
+          notification_email_pending: string | null;
+          notification_email_pending_token_hash: string | null;
+          notification_email_pending_expires_at: string | null;
           logo_url: string | null;
           created_at: string;
           updated_at: string;
@@ -38,6 +41,9 @@ export interface Database {
           slug: string;
           settings?: Json;
           notification_email?: string | null;
+          notification_email_pending?: string | null;
+          notification_email_pending_token_hash?: string | null;
+          notification_email_pending_expires_at?: string | null;
           logo_url?: string | null;
           created_at?: string;
           updated_at?: string;
@@ -48,6 +54,9 @@ export interface Database {
           slug?: string;
           settings?: Json;
           notification_email?: string | null;
+          notification_email_pending?: string | null;
+          notification_email_pending_token_hash?: string | null;
+          notification_email_pending_expires_at?: string | null;
           logo_url?: string | null;
           created_at?: string;
           updated_at?: string;
@@ -294,6 +303,54 @@ export interface Database {
           organization_slug: string;
           newly_created: boolean;
         }[];
+      };
+      get_feedback_overview_snapshot: {
+        Args: {
+          p_organization_id: number;
+        };
+        Returns: Json;
+      };
+      get_feedback_period_analytics: {
+        Args: {
+          p_organization_id: number;
+          p_days: number;
+        };
+        Returns: Json;
+      };
+      claim_negative_alert_send: {
+        Args: {
+          p_nfc_card_id: number;
+          p_cooldown_minutes?: number;
+          p_org_hourly_budget?: number;
+        };
+        Returns: number | null;
+      };
+      finalize_negative_alert_send: {
+        Args: {
+          p_log_id: number;
+          p_delivered: boolean;
+        };
+        Returns: undefined;
+      };
+      request_notification_email_change: {
+        Args: {
+          p_organization_id: number;
+          p_email: string;
+          p_expires_in_minutes?: number;
+        };
+        Returns: string;
+      };
+      clear_notification_email: {
+        Args: {
+          p_organization_id: number;
+        };
+        Returns: undefined;
+      };
+      confirm_notification_email_change: {
+        Args: {
+          p_token: string;
+        };
+        Returns: number | null;
       };
     };
     Enums: Record<string, never>;

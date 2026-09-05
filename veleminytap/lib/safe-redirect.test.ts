@@ -91,6 +91,58 @@ describe("safeRedirectTarget", () => {
     });
   });
 
+  describe("dot-segment / double-slash pathname bypass (round 2, R2-01)", () => {
+    // Confirmed: the origin-only check let both of these through, because
+    // the *candidate* parses same-origin (no ".." ever crosses into a new
+    // authority), but the resulting *pathname* is "//evil.example/path" --
+    // a protocol-relative reference in its own right. Handed back as the
+    // "safe" redirect target and later consumed as a real URL (a browser
+    // resolving a Location header, or this function's own output fed
+    // through the same resolution logic downstream), the leading "//" is
+    // read as "same scheme, different host" and the user leaves the site.
+    it("independently reproduces the bypass against the WHATWG URL parser", () => {
+      const malicious = "/a/..//evil.example/path";
+      const parsedAgainstTrusted = new URL(malicious, TRUSTED);
+      // The candidate itself DOES parse same-origin -- this is exactly
+      // what made the origin-only check insufficient.
+      expect(parsedAgainstTrusted.origin).toBe(TRUSTED);
+      expect(parsedAgainstTrusted.pathname).toBe("//evil.example/path");
+      // But that pathname, used as a fresh redirect target, resolves
+      // off-origin.
+      const asRedirectTarget = new URL(parsedAgainstTrusted.pathname, TRUSTED);
+      expect(asRedirectTarget.origin).not.toBe(TRUSTED);
+      expect(asRedirectTarget.origin).toBe("https://evil.example");
+    });
+
+    it("rejects /a/..//evil.example/path (dot-segment producing a double-slash pathname)", () => {
+      const result = safeRedirectTarget("/a/..//evil.example/path", TRUSTED);
+      expect(result).toBe("/dashboard");
+      // Whatever comes back must actually be safe when resolved, not just
+      // pass a prefix check.
+      expect(new URL(result, TRUSTED).origin).toBe(TRUSTED);
+    });
+
+    it("rejects a same-origin absolute URL whose pathname starts with // (no dot-segment needed)", () => {
+      const malicious = `${TRUSTED}//evil.example/path`;
+      const result = safeRedirectTarget(malicious, TRUSTED);
+      expect(result).toBe("/dashboard");
+      expect(new URL(result, TRUSTED).origin).toBe(TRUSTED);
+    });
+
+    it("rejects a bare double-slash pathname reached without any traversal", () => {
+      expect(safeRedirectTarget("//evil.example/path", TRUSTED)).toBe("/dashboard");
+    });
+
+    it("still allows a legitimate path that merely contains // later in it (not at the start)", () => {
+      // Only a *leading* "//" is a protocol-relative reference; "//"
+      // elsewhere in a path is an ordinary (if unusual) empty segment and
+      // stays same-origin no matter how it's later resolved.
+      const result = safeRedirectTarget("/dashboard//feedback", TRUSTED);
+      expect(result).toBe("/dashboard//feedback");
+      expect(new URL(result, TRUSTED).origin).toBe(TRUSTED);
+    });
+  });
+
   describe("control characters", () => {
     it("rejects a newline-injected value", () => {
       expect(safeRedirectTarget("/dashboard\nSet-Cookie: evil=1", TRUSTED)).toBe("/dashboard");

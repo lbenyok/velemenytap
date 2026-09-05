@@ -69,3 +69,39 @@ test("email confirmation: a backslash-variant next param does not escape the sit
 
   await expect(page).toHaveURL(/\/dashboard$/);
 });
+
+// Round 2 (R2-01): a dot-segment ("..") in the next param can produce a
+// pathname starting with "//" -- itself a protocol-relative reference --
+// even though the *candidate* parses same-origin. If the site actually
+// navigated off-origin here, evil.example doesn't resolve in this test
+// environment, so the browser would be left on a failed navigation
+// (net::ERR_NAME_NOT_RESOLVED), never landing on /dashboard -- this
+// assertion fails loudly either way, not silently.
+test("login: a dot-segment next param producing a double-slash pathname does not escape the site", async ({
+  page,
+}) => {
+  await page.goto("/login?next=" + encodeURIComponent("/a/..//evil.example/path"));
+  await signIn(page);
+
+  await expect(page).toHaveURL(/\/dashboard$/);
+});
+
+test("login: a same-origin absolute URL with a double-slash pathname does not escape the site", async ({
+  page,
+}) => {
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
+  await page.goto("/login?next=" + encodeURIComponent(`${siteUrl}//evil.example/path`));
+  await signIn(page);
+
+  await expect(page).toHaveURL(/\/dashboard$/);
+});
+
+test("email confirmation: a dot-segment next param producing a double-slash pathname does not escape the site", async ({
+  page,
+}) => {
+  const { tokenHash } = await generateConfirmToken(user.email);
+  const next = encodeURIComponent("/a/..//evil.example/path");
+  await page.goto(`/auth/confirm?token_hash=${tokenHash}&type=magiclink&next=${next}`);
+
+  await expect(page).toHaveURL(/\/dashboard$/);
+});

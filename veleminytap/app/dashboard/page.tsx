@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { TriangleAlert } from "lucide-react";
 import { getCurrentOrganization } from "@/features/organizations/current";
 import { getOverviewStats } from "@/features/analytics/overview-data";
 import { StatTile } from "@/features/analytics/stat-tile";
@@ -7,12 +8,36 @@ import { CompactDistribution } from "@/features/analytics/compact-distribution";
 import { RatingStars } from "@/features/feedback/rating-stars";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyHeader, EmptyTitle, EmptyDescription } from "@/components/ui/empty";
+import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 
 export const metadata: Metadata = { title: "Áttekintés — VéleményTap" };
 
 export default async function DashboardPage() {
   const organization = await getCurrentOrganization();
   const stats = await getOverviewStats(organization?.id ?? 0);
+
+  if (stats.unavailable) {
+    // A failed stats query must never render as if the organization simply
+    // has no feedback yet (round-2 finding R2-04) -- those are different
+    // facts and look identical to a reader unless this state is distinct.
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight">
+            Üdvözlünk, {organization?.name ?? "nálunk"}!
+          </h1>
+        </div>
+        <Alert variant="destructive">
+          <TriangleAlert />
+          <AlertTitle>Nem sikerült betölteni az áttekintést</AlertTitle>
+          <AlertDescription>
+            Kérjük, próbáld újra az oldal frissítésével. Ha a hiba továbbra is
+            fennáll, keresd az ügyfélszolgálatot.
+          </AlertDescription>
+        </Alert>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

@@ -7,7 +7,7 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart";
-import type { DailyPoint } from "./aggregate";
+import type { DailyPoint } from "./queries";
 import { formatDayLabel } from "./format";
 
 const config = {

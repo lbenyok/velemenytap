@@ -22,11 +22,22 @@ export type SettingsFormValues = {
 
 const initialState: SettingsActionState = {};
 
-export function SettingsForm({ organization }: { organization: SettingsFormValues }) {
+export function SettingsForm({
+  organization,
+  pendingNotificationEmail,
+}: {
+  organization: SettingsFormValues;
+  /** A still-unexpired, unconfirmed request (round-3 R3-03), if any. */
+  pendingNotificationEmail?: string | null;
+}) {
   const [state, formAction, isPending] = useActionState(
     updateOrganizationSettingsAction,
     initialState,
   );
+  // The action itself also reports a fresh pending address right after a
+  // successful submit (before the next server render picks it up from the
+  // database) -- prefer that over the page-load prop once it's set.
+  const currentPending = state.pendingEmail ?? pendingNotificationEmail;
 
   return (
     <form action={formAction} noValidate>
@@ -53,8 +64,17 @@ export function SettingsForm({ organization }: { organization: SettingsFormValue
           />
           <FieldDescription>
             Ide érkeznek a negatív véleményekről szóló értesítések. Hagyd
-            üresen, ha inkább minden csapattagot értesíteni szeretnél.
+            üresen, ha inkább minden csapattagot értesíteni szeretnél. Egy
+            új cím megadása után egy megerősítő linket küldünk rá — az
+            értesítések csak a megerősítés után kezdenek oda érkezni.
           </FieldDescription>
+          {currentPending ? (
+            <FieldDescription>
+              Megerősítésre vár: <strong>{currentPending}</strong>. Nézd meg
+              a postaládádat, vagy add meg újra a mentéshez, ha új
+              megerősítő linket szeretnél.
+            </FieldDescription>
+          ) : null}
         </Field>
         <Field>
           <FieldLabel htmlFor="logo_url">Logó URL-je</FieldLabel>
