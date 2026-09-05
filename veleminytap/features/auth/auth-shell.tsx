@@ -39,7 +39,10 @@ export function AuthShell({
         Vélemény
         <span
           className="bg-clip-text text-transparent"
-          style={{ backgroundImage: "var(--pf-accent-gradient)" }}
+          // Round-5 R5-08: --pf-accent-gradient-text (blue-to-teal), not
+          // --pf-accent-gradient (blue-to-cyan) -- the cyan endpoint fails
+          // WCAG AA for clipped text (~1.8:1). See globals.css.
+          style={{ backgroundImage: "var(--pf-accent-gradient-text)" }}
         >
           Tap
         </span>

@@ -41,7 +41,7 @@ const STEPS = [
   {
     n: "03",
     title: "Te mindent látsz",
-    body: "Azonnal megjelenik az irányítópultodon. Alacsony értékelésnél e-mail is érkezik a csapatodnak, ugyanabban a percben.",
+    body: "Azonnal megjelenik az irányítópultodon. Alacsony értékelésnél e-mail is érkezik a csapatodnak, hogy gyorsan léphess.",
   },
 ];
 
@@ -54,7 +54,7 @@ const DASHBOARD_CARDS = [
   {
     icon: Mail,
     title: "Azonnali jelzés a rosszakról",
-    body: "Egy 1 vagy 2 csillagos értékelés azonnal e-mailt küld a csapatodnak — mielőtt nyilvános véleménnyé válna.",
+    body: "Egy 1 vagy 2 csillagos értékelés azonnal e-mailt küld a csapatodnak, hogy még időben felvehessétek a kapcsolatot.",
   },
   {
     icon: BarChart3,
@@ -100,7 +100,7 @@ function SiteNav() {
         Vélemény
         <span
           className="bg-clip-text text-transparent"
-          style={{ backgroundImage: "var(--pf-accent-gradient)" }}
+          style={{ backgroundImage: "var(--pf-accent-gradient-text)" }}
         >
           Tap
         </span>
@@ -152,7 +152,7 @@ function Hero() {
             Azonnali, valódi{" "}
             <span
               className="bg-clip-text text-transparent italic"
-              style={{ backgroundImage: "var(--pf-accent-gradient)" }}
+              style={{ backgroundImage: "var(--pf-accent-gradient-text)" }}
             >
               vélemény.
             </span>
@@ -331,11 +331,17 @@ function FinalCta() {
   return (
     <section
       className="text-center"
-      style={{ backgroundImage: "var(--pf-accent-gradient)" }}
+      // Round-5 R5-08: was --pf-accent-gradient (blue-to-cyan) -- computed
+      // contrast for the white text sitting on top of it ranged as low as
+      // ~1.5:1 near the cyan end, failing WCAG AA badly. This section is a
+      // background FILL carrying text, not decorative gradient text, so
+      // it needs the same accessible blue-to-teal formula, not just a
+      // lighter touch -- see globals.css's --pf-accent-gradient-text.
+      style={{ backgroundImage: "var(--pf-accent-gradient-text)" }}
     >
       <div className="mx-auto max-w-6xl px-5 py-16 sm:px-8 sm:py-20">
         <Nfc className="mx-auto size-8 text-white" strokeWidth={1.5} />
-        <p className="mt-4 font-mono text-xs font-medium tracking-[0.14em] text-white/70 uppercase">
+        <p className="mt-4 font-mono text-xs font-medium tracking-[0.14em] text-white uppercase">
           Minden csillag számít
         </p>
         <h2
@@ -344,7 +350,7 @@ function FinalCta() {
         >
           Tedd ki az első kártyát a pultra.
         </h2>
-        <p className="mx-auto mt-3 max-w-md text-sm text-white/80 sm:text-base">
+        <p className="mx-auto mt-3 max-w-md text-sm text-white/90 sm:text-base">
           Ingyenesen indulhatsz. Nincs szükség bankkártyára, nincs szerződés.
         </p>
         <Link
