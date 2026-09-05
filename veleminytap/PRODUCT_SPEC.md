@@ -32,10 +32,15 @@ VéleményTap ("Opinion Tap") is a SaaS product for physical businesses — caf�
 - **Negative-feedback email alerts** — ratings ≤ 2 trigger a non-blocking email to the org's notification address (or all owner/admin/manager members if none is configured).
 - **Analytics & Overview** — total feedback, average rating, today/this-week counts, unresolved-negative count, rating distribution, recent feedback, volume-over-time and location/card comparisons on the Analytics page.
 - **Settings** — business name, notification email, logo URL.
+- **Billing** — a single flat subscription (4 990 Ft/hó), Stripe-hosted checkout and billing management. Every organization starts on a 14-day trial requiring no card; the dashboard is inaccessible once the trial lapses without an active subscription — the public NFC/feedback pages are never affected by billing status (see "The one rule that overrides everything else" below, and `DECISIONS.md`).
+
+## Pricing
+
+One plan, `4 990 Ft/hó`, covering unlimited locations and NFC cards per organization — no usage-based tiers for MVP (see `DECISIONS.md` for why). 14-day trial, no card required to start. Physical NFC cards themselves are sold separately (a different storefront, not this app) — a subscription and card ownership are independent: an organization can subscribe with zero cards, and a card someone bought keeps working even for an organization whose subscription has lapsed.
 
 ## Explicitly out of scope for MVP
 
-AI feedback analysis/summarization, Stripe billing, native mobile apps, enterprise RBAC, an org switcher, automation builders, QR-code generation (lower priority than the core loop — see `DECISIONS.md`).
+AI feedback analysis/summarization, tiered/usage-based billing, native mobile apps, enterprise RBAC, an org switcher, automation builders, QR-code generation (lower priority than the core loop — see `DECISIONS.md`).
 
 ## Success signal
 

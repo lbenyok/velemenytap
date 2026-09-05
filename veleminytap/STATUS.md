@@ -1,6 +1,19 @@
 # Status
 
-Last updated: 2026-09-05, after merging PR #2 into `master`, applying all 9 round-2/round-3 migrations to production, and discovering and fixing a pre-existing Vercel deployment gap (below) that had left production running application code from before round 1's entire review response. Prior entry: 2026-09-04, after implementing and testing (not yet merging) round 3's fixes.
+Last updated: 2026-09-05, after building subscription billing (Stripe) on a new branch (`feature/billing-subscriptions`, off `master` — the round-4 review-response branch, `fix/round4-review-findings`, is still open on its own PR and untouched by this work). Prior entry: 2026-09-05 (earlier the same day), after merging PR #2 into `master` and fixing the Vercel deployment gap.
+
+## Subscription billing built (2026-09-05, on `feature/billing-subscriptions`, not yet merged or applied to any database)
+
+Explicit user request: a paid subscription, with a real payment page. Decisions made with the user before building (`DECISIONS.md` has the full reasoning): one flat plan (4 990 Ft/hó), a 14-day no-card trial, and a paywall that gates only the operator dashboard — never the public NFC/feedback pages, since a card already sold and placed on a customer's counter must keep collecting real feedback regardless of its organization's billing status.
+
+Built: `organization_billing`/`stripe_webhook_events` tables plus an auto-provisioning trial trigger (migration `20260905125856`); `features/billing/` (Stripe Checkout/Billing Portal Server Actions, the `isBillingActive()` gating logic); `app/dashboard/billing/page.tsx` (the payment/plan page); the paywall itself in `app/dashboard/layout.tsx` (protect-by-default, exempting only the billing page); `app/api/webhooks/stripe/route.ts` (signature-verified, idempotent). Full reasoning and security properties in `ARCHITECTURE.md`, `DATABASE_SCHEMA.md`, `SECURITY.md`.
+
+**Verified**: `npm run typecheck`/`lint`/`build` clean; `npm run test` 110/110 passing (13 new for `isBillingActive`, 9 new for the webhook handler, mocking `stripe`/the admin client — no real Stripe credentials needed for these). **Not yet verified**: the migration has not been applied anywhere, not even the isolated test project — this sandboxed environment's outbound connection to the test project's Postgres pooler was blocked when this was attempted (the same intermittent restriction noted earlier this session), so `e2e/billing-paywall.spec.ts` (4 tests, covering the dashboard-vs-public-pages gating split) has not actually run. Real Stripe Checkout/Portal/webhook flows are also unverified end-to-end — that needs a real (test-mode) Stripe account, which doesn't exist yet.
+
+**What's needed from the user before this can be considered done:**
+1. Run `supabase db push --db-url "$SUPABASE_DB_URL"` against the isolated test project (from `veleminytap/`, with `.env.test.local`'s `SUPABASE_DB_URL` — the pooler connection string) to apply the new migration, then re-run `npm run test:e2e` to confirm `billing-paywall.spec.ts` actually passes.
+2. Create a Stripe account (test mode is enough for now) if one doesn't exist, create one Product/Price for the flat monthly plan, and add `STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET`/`STRIPE_PRICE_ID` to `.env.local` (and eventually `.env.test.local` if e2e coverage of the real Checkout flow is wanted later) — see `README.md` § Stripe for the local-dev webhook-forwarding command.
+3. Once verified, this branch needs its own review cycle (this is new, security-relevant, revenue-affecting code) before merging — not folded into round-4's already-in-flight PR #3.
 
 ## Merged to production (2026-09-05)
 

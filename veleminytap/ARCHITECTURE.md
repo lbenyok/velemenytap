@@ -11,6 +11,7 @@
 | Authorization | Postgres Row Level Security (RLS) — the actual tenant boundary, not app code |
 | Email | Resend (optional — degrades to a console warning if unconfigured) |
 | Error monitoring | Sentry (`@sentry/nextjs`, optional — no-op if unconfigured), with a `beforeSend` redaction hook stripping feedback content — see `SECURITY.md` |
+| Billing | Stripe (Checkout + Billing Portal, both Stripe-hosted — this app never handles card data itself) |
 | Hosting | Vercel |
 
 ## Multi-tenant hierarchy
@@ -38,19 +39,26 @@ organization ─ organization_membership ─ auth.users
 
 The admin client is not "the one deliberate RLS bypass" (an earlier version of this document said so) — see `SECURITY.md` § "The deliberate RLS bypasses" for the current, verified accounting of every place RLS is bypassed and why.
 
-**Proxy / route protection.** `proxy.ts` (renamed from the default `middleware.ts`) is protect-by-default: everything except `PUBLIC_PATHS` (`/`, `/login`, `/signup`, `/auth`, `/r`, `/api/e2e-config-check`, `/api/notification-email/confirm`) requires a session, redirecting to `/login` otherwise. The last of those (round-3 R3-03) is a confirmation-link target clicked from an email, possibly with no session at all.
+**Billing (subscription paywall).** Every organization gets a 14-day, no-card trial the instant it's created (`private.provision_organization_trial()`, `DATABASE_SCHEMA.md`). `app/dashboard/layout.tsx` gates every dashboard route except `/dashboard/billing` itself behind `isBillingActive()` (`features/billing/status.ts`) — protect-by-default, the same philosophy as `proxy.ts`'s auth gate, so a newly added dashboard page is covered automatically rather than needing an opt-in check. This deliberately does **not** touch the public NFC/feedback pages at all — a card already sold and sitting on a customer's counter keeps collecting real feedback regardless of its organization's billing status (see `PRODUCT_SPEC.md` and `DECISIONS.md`). The layout needs to know the *current* pathname (to exempt the billing page from its own redirect, avoiding a loop) — Server Components have no built-in way to read that, so `proxy.ts` forwards it as an `x-pathname` request header (Next.js's own documented recipe for this), read back via `next/headers`.
+
+Subscribing/managing billing goes through Stripe Checkout and the Billing Portal, both Stripe-hosted pages this app only ever redirects to (`features/billing/actions.ts`'s `createCheckoutSessionAction`/`createPortalSessionAction`, Server Actions using the admin client — `organization_billing` has no `authenticated` write policy at all, see `DATABASE_SCHEMA.md`). `app/api/webhooks/stripe/route.ts` is the one place Stripe's state flows back in: signature-verified (`stripe.webhooks.constructEvent`), idempotent via `stripe_webhook_events` (Stripe documents at-least-once, possibly-duplicate delivery), and public in `proxy.ts`'s `PUBLIC_PATHS` since Stripe's servers call it with no session — the signature check is the real security boundary there, not the auth gate.
+
+**Proxy / route protection.** `proxy.ts` (renamed from the default `middleware.ts`) is protect-by-default: everything except `PUBLIC_PATHS` (`/`, `/login`, `/signup`, `/auth`, `/r`, `/api/e2e-config-check`, `/api/notification-email/confirm`, `/api/webhooks/stripe`) requires a session, redirecting to `/login` otherwise. `/api/notification-email/confirm` (round-3 R3-03) is a confirmation-link target clicked from an email, possibly with no session at all; `/api/webhooks/stripe` is Stripe's own server calling in, never a browser with a session.
 
 ## Directory layout
 
 ```
 app/                  routes (App Router)
-  dashboard/           authenticated dashboard pages
+  dashboard/           authenticated dashboard pages (billing/ is the one paywall-exempt page)
+  api/webhooks/stripe/ Stripe webhook endpoint -- public, signature-verified
   r/[publicId]/        public NFC landing page
   login/ signup/ auth/  auth flow
 features/             feature-oriented domain code
-  auth/ organizations/ locations/ nfc-cards/ feedback/ analytics/ notifications/
+  auth/ organizations/ locations/ nfc-cards/ feedback/ analytics/ notifications/ billing/
   each typically: actions.ts (Server Actions), *-form.tsx, *-table.tsx, page-level components
+  billing/ specifically: actions.ts (checkout/portal), queries.ts, status.ts (isBillingActive)
 lib/supabase/          server.ts (RLS-bound client), admin.ts (secret-key client), database.types.ts (hand-written)
+lib/stripe.ts           server-only Stripe client
 supabase/migrations/    imperative SQL migrations, applied in order
 ```
 
@@ -66,6 +74,8 @@ supabase/migrations/    imperative SQL migrations, applied in order
 - **Base UI, not Radix**, per the installed shadcn preset — component APIs (`render` prop instead of `asChild`, etc.) differ accordingly.
 - **`priority` is a Postgres generated column** (`feedback.priority`, derived from `rating`), not computed in application code, so it can never drift from the rating that produced it.
 - **Column-protecting triggers ship as two migrations, not one, when the column already has a production consumer.** The alert-cooldown and notification-email-change triggers (round 3, R3-05) are each split into an "expand" migration (new columns/functions, no enforcement yet) and a later "enforce" migration (the trigger itself) — applying both together would break currently-deployed application code that still writes the protected column(s) directly, in the gap between the migration landing and new code deploying. See `DATABASE_SCHEMA.md` § "Rollout ordering."
+- **The paywall's trial expiry is computed at request time from `trial_ends_at`, not a stored "expired" status a cron job flips.** No scheduled task exists or is needed — `isBillingActive()` just compares against `now()` on every dashboard request, per the product skill's "avoid unnecessary infrastructure."
+- **A single flat plan, not tiers.** One price, unlimited locations/cards — matches the MVP guidance against premature tiering; the schema (`organization_billing.status`/`stripe_subscription_id`) doesn't assume a plan count of one, so introducing tiers later is additive, not a rework.
 
 ## What's deliberately not built (see `DECISIONS.md` for the reasoning behind each)
 

@@ -9,6 +9,7 @@ import {
   Inbox,
   BarChart3,
   Settings,
+  CreditCard,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -18,6 +19,7 @@ const NAV_ITEMS = [
   { href: "/dashboard/nfc-cards", label: "NFC kártyák", icon: Nfc },
   { href: "/dashboard/feedback", label: "Vélemények", icon: Inbox },
   { href: "/dashboard/analytics", label: "Elemzés", icon: BarChart3 },
+  { href: "/dashboard/billing", label: "Számlázás", icon: CreditCard },
   { href: "/dashboard/settings", label: "Beállítások", icon: Settings },
 ] as const;
 
