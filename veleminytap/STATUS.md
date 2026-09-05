@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-09-05, after merging PR #2 into `master` and applying all 9 round-2/round-3 migrations to production. Prior entry: 2026-09-04, after implementing and testing (not yet merging) round 3's fixes.
+Last updated: 2026-09-05, after merging PR #2 into `master`, applying all 9 round-2/round-3 migrations to production, and discovering and fixing a pre-existing Vercel deployment gap (below) that had left production running application code from before round 1's entire review response. Prior entry: 2026-09-04, after implementing and testing (not yet merging) round 3's fixes.
 
 ## Merged to production (2026-09-05)
 
@@ -10,10 +10,26 @@ Rollout followed the expand → deploy → enforce sequence `REVIEW_REQUEST.md` 
 
 1. The 7 "expand" migrations (`20260904130921` through `20260904135437`, plus `20260904194200`/`20260904194300`/`20260904194400`) applied to production first — deliberately skipping the two "enforce" migrations (`20260904194100`, `20260904194500`) by temporarily moving those files out of `supabase/migrations/` before running `supabase db push`, then restoring them. Verified with `supabase db push --dry-run` before and after.
 2. PR #2 merged into `master`.
-3. Vercel's auto-deploy from `master` confirmed live (checked via the Vercel dashboard) before proceeding — this is the step that actually gates the next one, since applying the enforce migrations before the new code is serving traffic would reject the old code's direct writes to `nfc_cards.last_negative_alert_at`/`organizations.notification_email` with a database error.
+3. Vercel's deployment believed live at the time (checked via the dashboard, which showed a "Ready" build) — **this check was wrong, see "Vercel deployment gap" below; the actual application code did not update until several hours and three diagnostic commits later.**
 4. The two "enforce" migrations applied via `supabase db push --include-all` (required since their timestamps sort earlier than migrations already applied in step 1 — Postgres/Supabase's own out-of-order-migration safeguard, not a mistake in the migration numbering).
 
-**Note on execution**: the two production `supabase db push` invocations were run directly by the user in their own terminal, not by Claude — Claude Code's auto-mode classifier blocks direct production-database write commands regardless of in-conversation approval. Claude prepared and dry-run-verified each command, the user executed them, and Claude independently re-verified the resulting state via `supabase migration list`/`db advisors` (read-only) afterward rather than trusting the terminal output secondhand.
+**Note on execution**: the three production `supabase db push` invocations (the two above, plus a later ad-hoc one — see below) were run directly by the user in their own terminal, not by Claude — Claude Code's auto-mode classifier blocks direct production-database write commands regardless of in-conversation approval. Claude prepared and dry-run-verified each command, the user executed them, and Claude independently re-verified the resulting state via `supabase migration list`/`db advisors` (read-only) afterward rather than trusting the terminal output secondhand.
+
+## Vercel deployment gap discovered and fixed (2026-09-05)
+
+**Finding**: after applying the round-2/round-3 migrations and merging PR #2, a live smoke check of the production site (`https://veleminytap.vercel.app`) found that two new public API routes this PR added (`/api/e2e-config-check`, `/api/notification-email/confirm`) were being redirected to `/login` instead of handled — the exact symptom of `proxy.ts` not yet knowing about them. Checking the Vercel dashboard's Deployments list confirmed it: the Production alias was still pointed at commit `a3d5ce1` — **a commit from before round 1's entire review response**, one day old, with no newer deployment (successful, failed, or otherwise) ever having been created. This meant:
+
+- Round 1's fixes (the open redirect close, tenant-isolation RLS work, all 11 findings) were never actually live in production at the application-code level, despite `STATUS.md`'s round-1 entry stating the merge was complete — that entry's Vercel-deploy claim was an unverified assumption (`"not separately verified as part of this exchange"`), and the assumption was wrong.
+- Round 2/3's fixes were likewise never live.
+- **The two "enforce" migrations just applied in this same session were, for a window, actively rejecting the still-live old code's direct writes** to `nfc_cards.last_negative_alert_at` and `organizations.notification_email` — meaning negative-feedback alerts and notification-email settings saves were failing in production during that window. No customers exist yet, so no real user was affected, but this was a genuine, live correctness bug for as long as it lasted.
+
+**Root cause, found by process of elimination** (each step confirmed empirically with a real test push, not assumed):
+1. Pushing an empty test commit to `master` produced **no new deployment at all** — the GitHub↔Vercel Git integration itself was broken (webhook not firing), unrelated to anything in this review cycle. Disconnecting and reconnecting the Git repository in Vercel's project settings fixed the webhook (confirmed: the next push did trigger a build).
+2. That build then failed with `Couldn't find any pages or app directory` — Vercel's **Root Directory** project setting was blank/wrong, building from the git repo root (which holds unrelated files — design assets, Claude config) instead of the `veleminytap/` subdirectory where the actual Next.js app lives. Likely reset to blank by the disconnect/reconnect in step 1. Setting Root Directory to `veleminytap` fixed this — confirmed: the next push built successfully and the previously-broken routes now respond correctly on the live production URL.
+
+**This means the Vercel project's Git integration and Root Directory setting were never correctly configured for continuous deployment from this repository, going back to before this entire review cycle began** — not something introduced by rounds 1–3's work. `ARCHITECTURE.md`/`DECISIONS.md` should be treated as accurate for application code from this point forward; anything they said was "deployed to production" before 2026-09-05 (afternoon) needs re-confirming, since it's now established that Vercel deployment status can silently lag the actual `master` HEAD by an unknown amount.
+
+**Verified after the fix**: `/api/e2e-config-check` returns the correct production Supabase project URL; `/api/notification-email/confirm` with an invalid token now correctly reaches the route handler and redirects to `/dashboard/settings?notification_email=invalid` (rather than bouncing to `/login` before ever running); homepage loads with no console errors. Not independently re-verified: the full authenticated dashboard flow (no test credentials used against production, consistent with this project's standing discipline of never writing test data to production).
 
 ## Round-3 review-response pass (2026-09-04, merged — see above)
 
