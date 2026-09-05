@@ -19,6 +19,10 @@ const PUBLIC_PATHS = [
   // Round-3 R3-03: the notification-email confirmation link is clicked
   // from an email, possibly in a browser/device with no session at all.
   "/api/notification-email/confirm",
+  // Stripe's servers call this with no session at all -- the webhook's own
+  // signature check (app/api/webhooks/stripe/route.ts) is the real
+  // security boundary here, not this allowlist.
+  "/api/webhooks/stripe",
 ];
 
 function isPublicPath(pathname: string): boolean {
@@ -28,7 +32,16 @@ function isPublicPath(pathname: string): boolean {
 }
 
 export async function proxy(request: NextRequest) {
-  let supabaseResponse = NextResponse.next({ request });
+  // Forwarded as a request header so Server Components (the dashboard
+  // layout's billing paywall, specifically -- see
+  // app/dashboard/layout.tsx) can read the current path via next/headers,
+  // which has no other way to know it. Next.js's own documented recipe
+  // for this: a new Headers instance, not a mutation of request.headers
+  // (which throws in some runtimes).
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set("x-pathname", request.nextUrl.pathname);
+
+  let supabaseResponse = NextResponse.next({ request: { headers: requestHeaders } });
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -42,7 +55,7 @@ export async function proxy(request: NextRequest) {
           cookiesToSet.forEach(({ name, value }) =>
             request.cookies.set(name, value),
           );
-          supabaseResponse = NextResponse.next({ request });
+          supabaseResponse = NextResponse.next({ request: { headers: requestHeaders } });
           cookiesToSet.forEach(({ name, value, options }) =>
             supabaseResponse.cookies.set(name, value, options),
           );

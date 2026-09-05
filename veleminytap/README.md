@@ -6,7 +6,7 @@ See also: [PRODUCT_SPEC.md](./PRODUCT_SPEC.md) (what it does and why), [ARCHITEC
 
 ## Stack
 
-Next.js 16 (App Router, Turbopack) · TypeScript · React 19 · Tailwind v4 · shadcn/ui (Base UI primitives) · Supabase (Postgres, Auth, RLS) · Resend · Sentry · Vercel.
+Next.js 16 (App Router, Turbopack) · TypeScript · React 19 · Tailwind v4 · shadcn/ui (Base UI primitives) · Supabase (Postgres, Auth, RLS) · Resend · Sentry · Stripe · Vercel.
 
 ## Local setup
 
@@ -24,6 +24,7 @@ Required env vars (see `.env.example`):
 - `NEXT_PUBLIC_SITE_URL` — the deployed origin, used to build links in emails.
 - `RESEND_API_KEY`, `RESEND_FROM_EMAIL` — optional. Negative-feedback alert emails are skipped (with a console warning) if unset, so the app runs fully without a Resend account.
 - `NEXT_PUBLIC_SENTRY_DSN` — optional. Error monitoring across client/server/edge; `Sentry.init()` with no DSN is a documented no-op, so the app runs fine without one. Public by design (see `SECURITY.md`), not a secret.
+- `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID_MONTHLY`, `STRIPE_PRICE_ID_YEARLY` — subscription billing. Not optional the way Resend/Sentry are: the billing page and webhook throw if invoked without them, same as `SUPABASE_SECRET_KEY`. See `SECURITY.md` § Billing.
 
 ## Scripts
 
@@ -50,6 +51,16 @@ Never hand-edit the production schema outside a migration file — see the Datab
 ## CI
 
 `.github/workflows/ci.yml` (at the repo root, one level above this directory — see `ARCHITECTURE.md`) runs typecheck/lint/Vitest on every push and PR to `master`. Playwright e2e also runs there if the repo has `NEXT_PUBLIC_SUPABASE_URL`/`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`/`SUPABASE_SECRET_KEY` configured as Actions secrets (Settings → Secrets and variables → Actions) — skips gracefully otherwise. See `e2e/README.md`.
+
+## Stripe (local development)
+
+Webhook events (`app/api/webhooks/stripe/route.ts`) need a real Stripe signing secret. Locally, forward events with the Stripe CLI and use the secret it prints for `STRIPE_WEBHOOK_SECRET`:
+
+```bash
+stripe listen --forward-to localhost:3000/api/webhooks/stripe
+```
+
+`STRIPE_PRICE_ID_MONTHLY`/`STRIPE_PRICE_ID_YEARLY` are the two Price object ids for the one product's monthly/yearly cadences, created once in the Stripe dashboard (Products) — not secrets, but required for Checkout to know what to charge.
 
 ## Deployment
 

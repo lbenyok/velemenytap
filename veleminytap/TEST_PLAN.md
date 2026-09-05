@@ -2,13 +2,15 @@
 
 ## Automated
 
-`npm run test` (Vitest, 82 tests / 5 files). Covers pure logic only — nothing that needs a database, a browser, or Next.js's server runtime:
+`npm run test` (Vitest, 110 tests / 7 files). Covers pure logic only — nothing that needs a database, a browser, or Next.js's server runtime:
 
 - **`features/analytics/aggregate.test.ts`** — `ratingDistribution`, `dailySeries`, `resolvedStats`, `byLocation`, `byCard`. Zero-row/zero-division edge cases, UTC day bucketing, unknown-id fallbacks.
 - **`features/feedback/schema.test.ts`** — the public submission zod schema (`features/feedback/schema.ts`, extracted from `actions.ts` specifically so it's importable without pulling in `server-only`/`next/server`). Includes the **review-gating regression test at the schema level**: `it.each([1, 2, 3, 4, 5])("accepts rating %i", ...)` asserts the validator itself has no rating-dependent branching — every rating is equally valid input, which is the ground floor the CTA-visibility guarantee below is built on.
 - **`lib/sentry-redact.test.ts`** (22 tests) — the `beforeSend` hook that strips `feedback_text`/`internal_note` from every Sentry event before it's sent (`SECURITY.md` § Error handling / logging). Canary-based: asserts against the fully serialized event, not just specific keys — request-body dropping, extra/context/breadcrumb key-based redaction, JSON-stringified content, repeated (non-circular) references, circular references, and pathologically deep structures.
 - **`lib/safe-redirect.test.ts`** (29 tests) — the shared open-redirect guard (`SECURITY.md` § Redirect safety): valid internal paths, absolute external URLs, protocol-relative URLs, the backslash bypass and its variants, control characters, encoded variants, and malformed input.
 - **`features/analytics/fetch-all-rows.test.ts`** (7 tests) — the pagination helper that fixed the analytics row-cap truncation (`SECURITY.md`, `DECISIONS.md`): single-page, multi-page with parallel remaining-page fetches, the `maxRows` ceiling, error handling, and a short-first-page edge case.
+- **`features/billing/status.test.ts`** (13 tests) — `isBillingActive()`, the paywall's entire access decision: no billing row, an active Stripe subscription, a not-yet-expired no-card trial, an expired one, a genuine Stripe-side trial (subscription exists, status `trialing`), and every inactive Stripe status (`past_due`/`canceled`/`incomplete`/`incomplete_expired`/`unpaid`/`paused`).
+- **`app/api/webhooks/stripe/route.test.ts`** (9 tests) — the webhook handler with `stripe`/the admin client mocked: missing/invalid signature rejected before touching the database, a genuine event updates the org's billing row, a duplicate event id is a no-op (not reapplied), a non-duplicate insert failure asks Stripe to retry (5xx), the `stripe_customer_id` fallback lookup when subscription metadata is missing, a resolvable-organization miss no-ops rather than crashing, an unrecognized future Stripe status maps to `incomplete` instead of failing the update, and an irrelevant event type is acknowledged without action.
 
 `npm run typecheck` and `npm run lint` run clean on every change (not test suites, but part of the same verification gate — see `Definition of Done` in the product skill).
 
@@ -18,7 +20,11 @@ Anything that touches Supabase, RLS, Server Actions, cookies, or rendered UI —
 
 ## e2e (Playwright)
 
-`npm run test:e2e` (35 tests / 7 files), against a **dedicated, isolated Supabase test project** (`.env.test.local`, gitignored) — not the shared dev/production project. See `e2e/README.md` for the setup and `DECISIONS.md` for why this changed from the original shared-project approach.
+`npm run test:e2e`, against a **dedicated, isolated Supabase test project** (`.env.test.local`, gitignored) — not the shared dev/production project. See `e2e/README.md` for the setup and `DECISIONS.md` for why this changed from the original shared-project approach.
+
+**The list below predates several rounds of additions and is not the authoritative current file list** — `e2e/README.md` is (16 spec files as of this branch; it names and describes every one). Kept here for the tests with enough narrative detail to be worth repeating, plus the newest addition:
+
+- **`e2e/billing-paywall.spec.ts`** — the subscription paywall gates the dashboard (a lapsed org is redirected from any `/dashboard/*` route to `/dashboard/billing`, which itself never redirects) but never the public product: feedback submission through `/r/{publicId}` keeps working, unauthenticated, for an organization with an inactive subscription. See `SECURITY.md` § Billing.
 
 - **`e2e/review-gating.spec.ts`** — the product skill's Review-Gating Regression Test, automated for real: for each rating 1–5, load `/r/{publicId}` in a real browser, submit that rating, and assert the "Leave a Google review" CTA is visible with the correct `href`. Plus a duplicate-submission test (same card, same browser context, rejected on the second attempt).
 - **`e2e/tenant-isolation.spec.ts`** — Org A's own signed-in, RLS-bound client cannot read or write any of Org B's organization/location/nfc_card/feedback/membership rows, through direct API calls, not just the app's own query shapes.

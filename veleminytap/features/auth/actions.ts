@@ -4,6 +4,9 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { safeRedirectTarget } from "@/lib/safe-redirect";
+import { getCurrentOrganization } from "@/features/organizations/current";
+import { getOrganizationBilling } from "@/features/billing/queries";
+import { isBillingActive } from "@/features/billing/status";
 
 export type AuthActionState = { error: string } | { error?: undefined };
 
@@ -87,7 +90,34 @@ export async function signInAction(
     return { error: translateAuthError(error.message) };
   }
 
-  redirect(safeRedirectTarget(formData.get("next")));
+  const target = safeRedirectTarget(formData.get("next"));
+
+  // Resolve the billing paywall's target directly here rather than
+  // letting app/dashboard/layout.tsx redirect a second time on its own
+  // render -- two server-side redirect()s chained through one Server
+  // Action response is a genuine, reproducible Turbopack dev-mode bug
+  // (the client's RSC-payload fetch for the second hop fails with a
+  // connection reset -- "Failed to fetch RSC payload... falling back to
+  // browser navigation" -- and the fallback can itself retrigger the same
+  // failure, producing a real client-side reload loop, confirmed directly
+  // via browser console during this feature's own e2e verification). A
+  // single redirect straight to the correct destination sidesteps the
+  // chain entirely; the layout's own check remains the actual security
+  // boundary for every other dashboard entry point (direct navigation,
+  // bookmarks, etc.), just not the one this specific race was found on.
+  if (target === "/dashboard" || target.startsWith("/dashboard/")) {
+    if (target !== "/dashboard/billing" && !target.startsWith("/dashboard/billing/")) {
+      const organization = await getCurrentOrganization();
+      if (organization) {
+        const billing = await getOrganizationBilling(organization.id);
+        if (!isBillingActive(billing)) {
+          redirect("/dashboard/billing");
+        }
+      }
+    }
+  }
+
+  redirect(target);
 }
 
 export async function signOutAction() {

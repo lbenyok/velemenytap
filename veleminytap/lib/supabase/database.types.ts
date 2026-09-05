@@ -17,6 +17,15 @@ export type LocationStatus = "active" | "inactive";
 export type NfcCardStatus = "active" | "inactive";
 export type FeedbackStatus = "new" | "in_progress" | "resolved";
 export type FeedbackPriority = "high" | "medium" | "normal";
+export type BillingStatus =
+  | "trialing"
+  | "active"
+  | "past_due"
+  | "canceled"
+  | "incomplete"
+  | "incomplete_expired"
+  | "unpaid"
+  | "paused";
 
 export interface Database {
   public: {
@@ -60,6 +69,65 @@ export interface Database {
           logo_url?: string | null;
           created_at?: string;
           updated_at?: string;
+        };
+        Relationships: [];
+      };
+      organization_billing: {
+        Row: {
+          organization_id: number;
+          stripe_customer_id: string | null;
+          stripe_subscription_id: string | null;
+          status: BillingStatus;
+          trial_ends_at: string | null;
+          current_period_end: string | null;
+          cancel_at_period_end: boolean;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          organization_id: number;
+          stripe_customer_id?: string | null;
+          stripe_subscription_id?: string | null;
+          status?: BillingStatus;
+          trial_ends_at?: string | null;
+          current_period_end?: string | null;
+          cancel_at_period_end?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          organization_id?: number;
+          stripe_customer_id?: string | null;
+          stripe_subscription_id?: string | null;
+          status?: BillingStatus;
+          trial_ends_at?: string | null;
+          current_period_end?: string | null;
+          cancel_at_period_end?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "organization_billing_organization_id_fkey";
+            columns: ["organization_id"];
+            isOneToOne: true;
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      stripe_webhook_events: {
+        Row: {
+          id: string;
+          created_at: string;
+        };
+        Insert: {
+          id: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          created_at?: string;
         };
         Relationships: [];
       };
