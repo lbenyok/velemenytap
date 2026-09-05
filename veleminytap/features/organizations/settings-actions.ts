@@ -83,18 +83,37 @@ export async function updateOrganizationSettingsAction(
       }
     }
   } else if (parsed.data.notification_email !== current?.notification_email) {
-    const { data: token, error: requestError } = await supabase.rpc("request_notification_email_change", {
-      p_organization_id: organization.id,
-      p_email: parsed.data.notification_email,
-    });
-    if (requestError || !token) {
-      return { error: "Nem sikerült elindítani az e-mail cím megerősítését. Kérjük, próbáld újra." };
+    // Round-5 R5-12: request_notification_email_change() now enforces a
+    // server-owned cooldown/hourly budget (a real Resend send otherwise
+    // had no rate limit at all) and returns which reservation this call
+    // claimed, not just a token -- finalize_notification_email_change_send
+    // below reports whether the send actually succeeded, the same
+    // reserved/delivered/failed pattern already used for the negative-
+    // feedback alert, so a transient Resend failure doesn't permanently
+    // burn budget the org never actually used.
+    const { data: requestResult, error: requestError } = await supabase
+      .rpc("request_notification_email_change", {
+        p_organization_id: organization.id,
+        p_email: parsed.data.notification_email,
+      })
+      .single();
+    if (requestError || !requestResult?.token) {
+      const tooManyRequests = requestError?.code === "VT203" || requestError?.code === "VT204";
+      return {
+        error: tooManyRequests
+          ? "Túl sok e-mail cím módosítási kérés érkezett. Kérjük, várj egy kicsit, majd próbáld újra."
+          : "Nem sikerült elindítani az e-mail cím megerősítését. Kérjük, próbáld újra.",
+      };
     }
 
     const sent = await sendNotificationEmailConfirmation({
       email: parsed.data.notification_email,
-      token,
+      token: requestResult.token,
       organizationName: parsed.data.name,
+    });
+    await supabase.rpc("finalize_notification_email_change_send", {
+      p_log_id: requestResult.log_id,
+      p_delivered: sent,
     });
     if (!sent) {
       return {

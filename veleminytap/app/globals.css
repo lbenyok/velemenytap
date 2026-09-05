@@ -58,6 +58,11 @@
     --brand-accent-hover: #1a41c2;
     --brand-accent-2: #22d3ee;
     --brand-gradient: linear-gradient(135deg, #2154eb 0%, #22d3ee 100%);
+    /* Round-4 R4-07: for gradient TEXT specifically (not large decorative
+       fills), where the bright cyan endpoint above fails WCAG AA contrast
+       against a light background (~1.8:1) -- #0e7490 keeps the same
+       blue-to-teal brand identity at ~5.4:1 against white. */
+    --brand-gradient-text: linear-gradient(135deg, #2154eb 0%, #0e7490 100%);
 
     --background: oklch(1 0 0);
     --foreground: oklch(0.145 0 0);
@@ -101,6 +106,10 @@
     --brand-accent-hover: #79a2f2;
     --brand-accent-2: #22d3ee;
     --brand-gradient: linear-gradient(135deg, #5b8def 0%, #22d3ee 100%);
+    /* Already >= 4.5:1 against this mode's dark surface -- reused as-is,
+       see the light-mode definition's comment for why light mode needed
+       a different value. */
+    --brand-gradient-text: var(--brand-gradient);
 
     --background: oklch(0.145 0 0);
     --foreground: oklch(0.985 0 0);
@@ -158,5 +167,59 @@
   --pf-accent-hover: #1a41c2;
   --pf-accent-2: #22d3ee;
   --pf-accent-gradient: linear-gradient(135deg, #2154eb 0%, #22d3ee 100%);
+  /* Round-5 R5-08: --pf-accent-gradient's cyan endpoint fails WCAG AA for
+     both gradient TEXT (bg-clip-text) and as a background fill under
+     light-colored text -- ~1.8:1 for text clipped to the endpoint color,
+     and as low as ~1.5:1 for white text sitting on the gradient as a
+     section background, computed across the full 135deg span, not just
+     eyeballed at one point. Use this token (same blue-to-teal formula
+     already established for the dashboard's --brand-gradient-text, round
+     4 R4-07) for both cases instead -- >= 5.3:1 for solid white text
+     against every point along it, unlike the cyan-ending gradient.
+     --pf-accent-gradient itself remains fine for non-text decorative use
+     (e.g. a border or icon fill) where contrast against overlaid content
+     doesn't apply. */
+  --pf-accent-gradient-text: linear-gradient(135deg, #2154eb 0%, #0e7490 100%);
   --pf-line: #e2e8f0;
+
+  /* Round-5 R5-09: the pf-* tokens above only ever covered this scope's
+     OWN styling (wordmark, page background, ink) -- any shadcn component
+     rendered inside it (Input, Button, FieldDescription, etc., all of
+     features/auth/*-form.tsx) still read the GENERIC tokens below
+     straight from :root/.dark, which DO flip with the system theme.
+     Verified directly: with the OS in dark mode, the auth shell's own
+     background stayed correctly light (the pf-* tokens worked), but
+     input borders used --border's dark value (barely visible against the
+     white card) and help/error text used --muted-foreground's dark
+     value (also washed out against white) -- a real, confirmed defect,
+     not a hypothetical one. ".public-feedback is light-only" (the
+     original design decision for the public marketing/feedback pages,
+     now the auth flow too) means EVERY token a component inside it might
+     read needs to be pinned here, not just the pf-prefixed ones -- these
+     are copied verbatim from :root's light-mode values. */
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  /* var(--pf-accent), not var(--brand-accent) -- --brand-accent itself is
+     never redefined in this block, so referencing it here would still
+     resolve to whatever .dark set it to on an ancestor <html> (this was
+     caught by hand: a submit button rendered #5b8def, dark mode's brand
+     blue, even though every other token below correctly stayed light).
+     --pf-accent is the one already pinned to the same color, right above
+     this block. */
+  --primary: var(--pf-accent);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: var(--pf-accent);
 }

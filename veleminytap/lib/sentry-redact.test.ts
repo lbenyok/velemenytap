@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { redactSensitiveData } from "./sentry-redact";
+import { redactSensitiveData, sanitizeUrl } from "./sentry-redact";
 import type { ErrorEvent } from "@sentry/nextjs";
 
 function event(overrides: Partial<ErrorEvent>): ErrorEvent {
@@ -57,13 +57,75 @@ describe("redactSensitiveData", () => {
       expect(result.request?.data).toBeUndefined();
     });
 
-    it("leaves the rest of event.request (url, method) untouched", () => {
+    it("leaves a URL with no sensitive query params, and the method, untouched", () => {
       const result = redactSensitiveData(
         event({ request: { url: "https://example.com/r/abc", method: "POST", data: { feedback_text: CANARY } } }),
       );
       expect(result.request?.url).toBe("https://example.com/r/abc");
       expect(result.request?.method).toBe("POST");
       expect(result.request?.data).toBeUndefined();
+    });
+  });
+
+  /**
+   * Round-5 finding R5-11: this app hands out real, live, single-use
+   * credentials as URL query parameters by design (the notification-email
+   * confirmation link, round-3 R3-03; Supabase's own email-OTP
+   * `token_hash` link) -- an exception thrown before either route
+   * consumes its token would otherwise ship a still-valid credential to
+   * Sentry via event.request.url or a navigation breadcrumb.
+   */
+  describe("event.request.url and breadcrumb URLs: sensitive query params redacted", () => {
+    it("redacts a live notification-email confirmation token in event.request.url", () => {
+      const result = redactSensitiveData(event({ request: { url: `https://app.example.com/api/notification-email/confirm?token=${CANARY}` } }));
+      expect(serialized(result)).not.toContain(CANARY);
+      expect(result.request?.url).toContain("/api/notification-email/confirm");
+      expect(result.request?.url).toContain("token=%5Bredacted%5D");
+    });
+
+    it("redacts a live Supabase token_hash in event.request.url", () => {
+      const result = redactSensitiveData(event({ request: { url: `/auth/confirm?token_hash=${CANARY}&type=email` } }));
+      expect(serialized(result)).not.toContain(CANARY);
+      // The other, non-sensitive param survives untouched.
+      expect(result.request?.url).toContain("type=email");
+    });
+
+    it("redacts a code query parameter pre-emptively (OAuth/magic-link shape this app may add later)", () => {
+      const result = redactSensitiveData(event({ request: { url: `/auth/callback?code=${CANARY}` } }));
+      expect(serialized(result)).not.toContain(CANARY);
+    });
+
+    it("preserves a relative URL as relative -- sanitizing must not turn it absolute", () => {
+      const result = redactSensitiveData(event({ request: { url: `/auth/confirm?token_hash=${CANARY}` } }));
+      expect(result.request?.url?.startsWith("/auth/confirm")).toBe(true);
+      expect(result.request?.url).not.toContain("placeholder.invalid");
+    });
+
+    it("redacts a sensitive param inside a navigation breadcrumb's 'to' URL", () => {
+      const result = redactSensitiveData(
+        event({ breadcrumbs: [{ category: "navigation", data: { from: "/login", to: `/auth/confirm?token_hash=${CANARY}` } }] }),
+      );
+      expect(serialized(result)).not.toContain(CANARY);
+    });
+
+    it("redacts a sensitive param inside a fetch/xhr breadcrumb's 'url' field", () => {
+      const result = redactSensitiveData(
+        event({ breadcrumbs: [{ category: "fetch", data: { url: `/api/notification-email/confirm?token=${CANARY}`, method: "GET" } }] }),
+      );
+      expect(serialized(result)).not.toContain(CANARY);
+    });
+
+    it("strips a request.cookies field outright, defensively", () => {
+      const result = redactSensitiveData(event({ request: { cookies: { session: CANARY } } }));
+      expect(result.request?.cookies).toBeUndefined();
+    });
+
+    it("strips an Authorization header outright, case-insensitively", () => {
+      const result = redactSensitiveData(
+        event({ request: { headers: { Authorization: `Bearer ${CANARY}`, "Content-Type": "application/json" } } }),
+      );
+      expect(serialized(result)).not.toContain(CANARY);
+      expect(result.request?.headers?.["Content-Type"]).toBe("application/json");
     });
   });
 
@@ -224,5 +286,38 @@ describe("redactSensitiveData", () => {
       const result = redactSensitiveData(event({ extra: tree }));
       expect(serialized(result)).not.toContain(CANARY);
     });
+  });
+});
+
+describe("sanitizeUrl", () => {
+  it("redacts a sensitive param's value while leaving the param name and other params intact", () => {
+    expect(sanitizeUrl(`/x?token=${CANARY}&keep=1`)).toBe("/x?token=%5Bredacted%5D&keep=1");
+  });
+
+  it("is case-insensitive on the parameter name", () => {
+    expect(sanitizeUrl(`/x?TOKEN=${CANARY}`)).not.toContain(CANARY);
+  });
+
+  it("redacts every sensitive param when more than one is present", () => {
+    const result = sanitizeUrl(`/x?token=${CANARY}&code=${CANARY}2`);
+    expect(result).not.toContain(CANARY);
+  });
+
+  it("returns a URL with no sensitive params completely unchanged", () => {
+    expect(sanitizeUrl("/dashboard/feedback?status=new")).toBe("/dashboard/feedback?status=new");
+  });
+
+  it("handles a full absolute URL, preserving scheme+host+path", () => {
+    const result = sanitizeUrl(`https://veleminytap.hu/auth/confirm?token_hash=${CANARY}`);
+    expect(result.startsWith("https://veleminytap.hu/auth/confirm?")).toBe(true);
+    expect(result).not.toContain(CANARY);
+  });
+
+  it("does not crash or leak on a malformed, unparseable URL", () => {
+    expect(() => sanitizeUrl("::::not a url::::")).not.toThrow();
+  });
+
+  it("leaves a plain path with no query string alone", () => {
+    expect(sanitizeUrl("/dashboard")).toBe("/dashboard");
   });
 });
