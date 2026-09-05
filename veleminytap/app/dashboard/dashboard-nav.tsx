@@ -81,26 +81,34 @@ export function DashboardNav() {
 
   return (
     <>
-      {/* Desktop (>= lg): every link's icon AND label always visible.
+      {/* Desktop (>= xl): every link's icon AND label always visible.
           Round-4 R4-05 found the previous version hid the label below
           `lg` entirely, leaving six icon-only links with no accessible
           name at tablet widths -- fixed by never hiding it once shown.
-          The breakpoint itself is `lg`, not `md`: at exactly 768px
-          (md), six full icon+label links plus the wordmark/org-name/
-          logout still overflowed the row (round-4 R4-06, caught by the
-          768px test case specifically -- moving the cutoff to `lg` was
-          the fix, not shrinking the links further). */}
-      <nav aria-label="Irányítópult navigáció" className="hidden items-center gap-1 lg:flex">
+          The breakpoint moved from `md` to `lg` in round 4 (768px still
+          overflowed the row with the wordmark/org-name/logout also
+          present), and round 5 (R5-07) found `lg` (1024px) *itself*
+          still wasn't enough: measured directly, the nav's own six links
+          render to ~846px wide starting after the wordmark, which
+          collides with the org-name column starting around ~732px at
+          1024px -- flexbox doesn't clip an overflowing sibling by
+          default, so this doesn't show up as a scrollbar (`scrollWidth`
+          staying equal to the viewport), only as actual visual overlap,
+          which is why the previous e2e coverage (checking scrollWidth
+          only, and only at 768/1280) missed it. `xl` (1280px) is the
+          first breakpoint with enough room for real-world org names, not
+          just the four-character one this was originally eyeballed
+          against. */}
+      <nav aria-label="Irányítópult navigáció" className="hidden items-center gap-1 xl:flex">
         {NAV_ITEMS.map((item) => (
           <NavLink key={item.href} {...item} active={isActive(pathname, item.href)} />
         ))}
       </nav>
 
-      {/* Below lg (including 768px/tablet, not just narrow phones): a
-          labelled menu button opens the same links in a side panel, full
-          label always visible there too. Round-4 R4-06 -- the wordmark,
-          six links, org name, and logout button could not reliably fit
-          one row below 1024px. */}
+      {/* Below xl (round-5 R5-07 -- was lg/1024px, measured to still
+          overlap the org name; see the desktop nav's own comment above):
+          a labelled menu button opens the same links in a side panel,
+          full label always visible there too. */}
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetTrigger
           render={
@@ -108,7 +116,7 @@ export function DashboardNav() {
               type="button"
               variant="ghost"
               size="icon-sm"
-              className="lg:hidden"
+              className="xl:hidden"
               aria-label="Menü megnyitása"
             />
           }

@@ -39,12 +39,14 @@ export default async function DashboardLayout({
 
   return (
     <div className={`flex min-h-svh flex-col ${fraunces.variable}`}>
-      {/* Round-4 R4-06: this row used to hold the wordmark, all six nav
-          links, the org name, and the logout button at once -- reliably
-          overflowing below ~768px. DashboardNav now collapses its own six
-          links into a menu button below `md`; the two pieces that stay in
-          this row at every width are the wordmark and a reachable
-          sign-out control. */}
+      {/* Round-4 R4-06 (breakpoint corrected in round-5 R5-07): this row
+          used to hold the wordmark, all six nav links, the org name, and
+          the logout button at once -- reliably overflowing below ~768px,
+          then found to still visually overlap the org name up through
+          1024px. DashboardNav collapses its own six links into a menu
+          button below `xl` (see its own comment); the two pieces that
+          stay in this row at every width are the wordmark and a
+          reachable sign-out control. */}
       <header className="flex h-14 items-center justify-between gap-2 border-b px-3 sm:px-6">
         <div className="flex min-w-0 items-center gap-2 sm:gap-6">
           <Link
