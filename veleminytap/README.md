@@ -24,7 +24,7 @@ Required env vars (see `.env.example`):
 - `NEXT_PUBLIC_SITE_URL` — the deployed origin, used to build links in emails.
 - `RESEND_API_KEY`, `RESEND_FROM_EMAIL` — optional. Negative-feedback alert emails are skipped (with a console warning) if unset, so the app runs fully without a Resend account.
 - `NEXT_PUBLIC_SENTRY_DSN` — optional. Error monitoring across client/server/edge; `Sentry.init()` with no DSN is a documented no-op, so the app runs fine without one. Public by design (see `SECURITY.md`), not a secret.
-- `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID` — subscription billing. Not optional the way Resend/Sentry are: the billing page and webhook throw if invoked without them, same as `SUPABASE_SECRET_KEY`. See `SECURITY.md` § Billing.
+- `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID_MONTHLY`, `STRIPE_PRICE_ID_YEARLY` — subscription billing. Not optional the way Resend/Sentry are: the billing page and webhook throw if invoked without them, same as `SUPABASE_SECRET_KEY`. See `SECURITY.md` § Billing.
 
 ## Scripts
 
@@ -60,7 +60,7 @@ Webhook events (`app/api/webhooks/stripe/route.ts`) need a real Stripe signing s
 stripe listen --forward-to localhost:3000/api/webhooks/stripe
 ```
 
-`STRIPE_PRICE_ID` is the flat monthly plan's Price object id, created once in the Stripe dashboard (Products) — not a secret, but required for Checkout to know what to charge.
+`STRIPE_PRICE_ID_MONTHLY`/`STRIPE_PRICE_ID_YEARLY` are the two Price object ids for the one product's monthly/yearly cadences, created once in the Stripe dashboard (Products) — not secrets, but required for Checkout to know what to charge.
 
 ## Deployment
 

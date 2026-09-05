@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { createStripeClient } from "@/lib/stripe";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getCurrentOrganization } from "@/features/organizations/current";
+import { isBillingInterval, stripePriceId } from "@/features/billing/plans";
 
 /**
  * Finds this organization's Stripe customer, creating one on first use.
@@ -51,11 +52,22 @@ async function getOrCreateStripeCustomerId(
  * catch swallows it and reports the wrong error. Every redirect target is
  * decided first (a plain string), and the actual redirect() call happens
  * once, after the try/catch.
+ *
+ * `interval` comes from which of the billing page's two forms was
+ * submitted (`features/billing/plans.ts`'s "monthly"/"yearly") -- validated
+ * against that same allowlist here too, not trusted from the client, since
+ * a crafted form submission could otherwise send any string through to
+ * `stripePriceId()`.
  */
-export async function createCheckoutSessionAction(): Promise<void> {
+export async function createCheckoutSessionAction(formData: FormData): Promise<void> {
   const organization = await getCurrentOrganization();
   if (!organization) {
     redirect("/onboarding");
+  }
+
+  const interval = formData.get("interval");
+  if (!isBillingInterval(interval)) {
+    redirect("/dashboard/billing?error=checkout_failed");
   }
 
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL!;
@@ -68,7 +80,7 @@ export async function createCheckoutSessionAction(): Promise<void> {
       mode: "subscription",
       customer: customerId,
       client_reference_id: organization.id.toString(),
-      line_items: [{ price: process.env.STRIPE_PRICE_ID!, quantity: 1 }],
+      line_items: [{ price: stripePriceId(interval), quantity: 1 }],
       success_url: `${siteUrl}/dashboard/billing?checkout=success`,
       cancel_url: `${siteUrl}/dashboard/billing?checkout=canceled`,
       metadata: { organization_id: organization.id.toString() },

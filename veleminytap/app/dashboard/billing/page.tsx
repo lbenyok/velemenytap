@@ -5,14 +5,18 @@ import { getCurrentOrganization } from "@/features/organizations/current";
 import { getOrganizationBilling } from "@/features/billing/queries";
 import { isBillingActive } from "@/features/billing/status";
 import { createCheckoutSessionAction, createPortalSessionAction } from "@/features/billing/actions";
+import { PLAN_PRICING, type BillingInterval } from "@/features/billing/plans";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Számlázás — VéleményTap" };
 
-const PLAN_PRICE_HUF = 4990;
+// Éves ár vs. 12x havi ár -- a "kb. 2 hónapot spórolsz" jelvényhez.
+const YEARLY_SAVINGS_HUF = PLAN_PRICING.monthly.amountHuf * 12 - PLAN_PRICING.yearly.amountHuf;
+const YEARLY_SAVINGS_MONTHS = Math.round(YEARLY_SAVINGS_HUF / PLAN_PRICING.monthly.amountHuf);
 
 const PLAN_FEATURES = [
   "Korlátlan helyszín és NFC kártya",
@@ -94,7 +98,7 @@ export default async function BillingPage({
         </Alert>
       ) : null}
 
-      <Card className="max-w-xl">
+      <Card className="max-w-2xl">
         <CardHeader>
           <div className="flex items-center justify-between gap-3">
             <CardTitle>VéleményTap előfizetés</CardTitle>
@@ -113,25 +117,14 @@ export default async function BillingPage({
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
-          <div>
-            <div className="flex items-baseline gap-1">
-              <span
-                className="text-3xl font-medium tracking-tight"
-                style={{ fontFamily: "var(--font-display)" }}
-              >
-                {PLAN_PRICE_HUF.toLocaleString("hu-HU")} Ft
-              </span>
-              <span className="text-sm text-muted-foreground">/ hónap</span>
-            </div>
-            <ul className="mt-4 space-y-2">
-              {PLAN_FEATURES.map((feature) => (
-                <li key={feature} className="flex items-start gap-2 text-sm text-foreground">
-                  <Star className="mt-0.5 size-3.5 shrink-0 text-primary" strokeWidth={2} />
-                  {feature}
-                </li>
-              ))}
-            </ul>
-          </div>
+          <ul className="space-y-2">
+            {PLAN_FEATURES.map((feature) => (
+              <li key={feature} className="flex items-start gap-2 text-sm text-foreground">
+                <Star className="mt-0.5 size-3.5 shrink-0 text-primary" strokeWidth={2} />
+                {feature}
+              </li>
+            ))}
+          </ul>
 
           {hasSubscription ? (
             <form action={createPortalSessionAction}>
@@ -140,14 +133,53 @@ export default async function BillingPage({
               </Button>
             </form>
           ) : (
-            <form action={createCheckoutSessionAction}>
-              <Button type="submit" className="w-full sm:w-auto">
-                Előfizetek
-              </Button>
-            </form>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <PlanOption interval="monthly" />
+              <PlanOption interval="yearly" savingsMonths={YEARLY_SAVINGS_MONTHS} />
+            </div>
           )}
+
+          <p className="text-xs text-muted-foreground">Az árak az ÁFát tartalmazzák.</p>
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+function PlanOption({ interval, savingsMonths }: { interval: BillingInterval; savingsMonths?: number }) {
+  const plan = PLAN_PRICING[interval];
+  return (
+    <div
+      className={cn(
+        "flex flex-col gap-3 rounded-xl border p-4",
+        interval === "yearly" ? "border-primary" : "border-border",
+      )}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-sm font-medium">{plan.label}</span>
+        {savingsMonths ? (
+          <Badge variant="secondary">kb. {savingsMonths} hónap ingyen</Badge>
+        ) : null}
+      </div>
+      <div className="flex items-baseline gap-1">
+        <span
+          className="text-2xl font-medium tracking-tight"
+          style={{ fontFamily: "var(--font-display)" }}
+        >
+          {plan.amountHuf.toLocaleString("hu-HU")} Ft
+        </span>
+        <span className="text-sm text-muted-foreground">/ {plan.cadence}</span>
+      </div>
+      <form action={createCheckoutSessionAction}>
+        <input type="hidden" name="interval" value={interval} />
+        <Button
+          type="submit"
+          variant={interval === "yearly" ? "default" : "outline"}
+          className="w-full"
+        >
+          Előfizetek
+        </Button>
+      </form>
     </div>
   );
 }
