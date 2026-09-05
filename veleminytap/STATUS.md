@@ -1,8 +1,21 @@
 # Status
 
-Last updated: 2026-09-04, after implementing and testing (not yet merging) the response to a third-round independent review, this time of PR #2 itself (the round-2 fix branch, `fix/round2-review-findings`) rather than of `master`. Still on `fix/round2-review-findings` — see "Round-3 review-response pass" below and `REVIEW_REQUEST.md` for the full handoff. Prior entry: 2026-09-04, after implementing round 2's own fixes (below).
+Last updated: 2026-09-05, after merging PR #2 into `master` and applying all 9 round-2/round-3 migrations to production. Prior entry: 2026-09-04, after implementing and testing (not yet merging) round 3's fixes.
 
-## Round-3 review-response pass (2026-09-04, not yet merged)
+## Merged to production (2026-09-05)
+
+[PR #2](https://github.com/lbenyok/velemenytap/pull/2) merged into `master` as squash commit `4f984e6`, following the user's explicit approval after reviewing `REVIEW_REQUEST.md`. All 17 migrations (8 pre-existing + 9 new across rounds 2–3) are now applied to production; `supabase db advisors --type all` reports no issues.
+
+Rollout followed the expand → deploy → enforce sequence `REVIEW_REQUEST.md` § 6 laid out, since this round introduced two column-protecting triggers that would have broken currently-deployed code if applied at the same time as the migrations introducing the RPCs replacing the old direct-write paths:
+
+1. The 7 "expand" migrations (`20260904130921` through `20260904135437`, plus `20260904194200`/`20260904194300`/`20260904194400`) applied to production first — deliberately skipping the two "enforce" migrations (`20260904194100`, `20260904194500`) by temporarily moving those files out of `supabase/migrations/` before running `supabase db push`, then restoring them. Verified with `supabase db push --dry-run` before and after.
+2. PR #2 merged into `master`.
+3. Vercel's auto-deploy from `master` confirmed live (checked via the Vercel dashboard) before proceeding — this is the step that actually gates the next one, since applying the enforce migrations before the new code is serving traffic would reject the old code's direct writes to `nfc_cards.last_negative_alert_at`/`organizations.notification_email` with a database error.
+4. The two "enforce" migrations applied via `supabase db push --include-all` (required since their timestamps sort earlier than migrations already applied in step 1 — Postgres/Supabase's own out-of-order-migration safeguard, not a mistake in the migration numbering).
+
+**Note on execution**: the two production `supabase db push` invocations were run directly by the user in their own terminal, not by Claude — Claude Code's auto-mode classifier blocks direct production-database write commands regardless of in-conversation approval. Claude prepared and dry-run-verified each command, the user executed them, and Claude independently re-verified the resulting state via `supabase migration list`/`db advisors` (read-only) afterward rather than trusting the terminal output secondhand.
+
+## Round-3 review-response pass (2026-09-04, merged — see above)
 
 A third-party review of PR #2 (branch `fix/round2-review-findings`, then at commit `68cd929`) raised 7 further findings (R3-01–R3-07). All 7 verified independently — reproduced the CI failure R3-01 predicted, reproduced R3-02's race with real concurrent requests, confirmed R3-04/R3-07's gaps by direct RPC calls and catalog introspection — and fixed; **all 7 confirmed, none rejected**. In brief:
 
@@ -106,12 +119,10 @@ Everything above was typechecked, linted, and — for the UI-facing pieces — m
 - ~~Tenant-scoped SQL aggregate functions/views for analytics.~~ **Done in the round-2 pass** — `get_feedback_overview_snapshot`/`get_feedback_period_analytics`, see `DATABASE_SCHEMA.md`.
 - **Verified `notification_email` recipients for negative-feedback alerts.** An organization-wide send budget bounds the blast radius (round-2, R2-08); actual address verification needs its own email-confirmation flow, deliberately out of scope this pass — see `DECISIONS.md`.
 
-## What's needed from the user before this branch can ship
+## What's needed from the user now
 
-- Review and approve [PR #2](https://github.com/lbenyok/velemenytap/pull/2) (now updated in place with round 3's fixes, still open against `master` — see `REVIEW_REQUEST.md` for the branch/commit range).
-- Approval to apply the (now 9, cumulative across rounds 2 and 3) new migrations to **production** and merge — this task's explicit constraint kept both out of scope for this pass itself.
-- Once approved: the same migrations-before-merge rollout order round 1 used, respecting the expand/deploy/enforce ordering for the two trigger-pair migrations (see `REVIEW_REQUEST.md` § 6 for the exact plan), then confirm the Vercel deploy reflects the merged commit.
-- Optional but recommended: add `SUPABASE_DB_URL` as a CI repo secret (isolated project's connection string) so `e2e/rpc-privilege-matrix.spec.ts` and `e2e/location-deactivation-race.spec.ts` actually run in CI instead of silently skipping — already wired into `ci.yml`'s `e2e` job env, just needs the secret added.
+- ~~Review and approve PR #2, apply migrations, merge.~~ **Done 2026-09-05** — see "Merged to production" above.
+- Add `SUPABASE_DB_URL` as a CI repo secret (isolated **test** project's connection string, not production's) so `e2e/rpc-privilege-matrix.spec.ts` and `e2e/location-deactivation-race.spec.ts` actually run in CI instead of silently skipping — already wired into `ci.yml`'s `e2e` job env, just needs the secret added under GitHub repo Settings → Secrets and variables → Actions.
 
 ## What was needed from the user before round 1 shipped
 
