@@ -53,6 +53,13 @@ test("an organization with no active subscription is redirected from the dashboa
   expect(error).toBeNull();
 
   await login(page, member.email, member.password);
+  // signInAction resolves the billing-active destination directly (see
+  // its own comment) specifically so this is a single redirect, not two
+  // chained through one Server Action response -- the latter was a real,
+  // reproducible Turbopack dev-mode bug (confirmed via browser console:
+  // the client's RSC-payload fetch for the second hop failed with a
+  // connection reset and fell back into a reload loop) caught while
+  // writing this exact test.
   await page.waitForURL(/\/dashboard\/billing$/);
   await expect(page.getByRole("heading", { name: "Számlázás" })).toBeVisible();
 
@@ -95,6 +102,11 @@ test("public feedback submission keeps working even when the organization's subs
   await page.goto(`/r/${card.publicId}`);
   await page.getByRole("radio", { name: /^5 csillag —/ }).click();
   await page.getByRole("button", { name: "Vélemény küldése" }).click();
+  // Playwright's click() resolves once the click is dispatched, not once
+  // the Server Action it triggers has actually committed -- querying the
+  // database immediately after is a race (see review-gating.spec.ts for
+  // the same wait-for-confirmation pattern this borrows).
+  await expect(page.getByRole("heading", { name: "Köszönjük!" })).toBeVisible();
 
   const { data: feedback, error } = await admin
     .from("feedback")
