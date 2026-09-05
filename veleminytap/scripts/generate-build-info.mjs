@@ -18,6 +18,18 @@ const files = readdirSync(migrationsDir)
   .sort();
 const latest = files.at(-1) ?? null;
 
+// Round-5 finding R5-05. Vercel's BUILD step always has VERCEL_ENV
+// available, regardless of the project's "Automatically expose System
+// Environment Variables" runtime-exposure setting -- that toggle only
+// governs whether the equivalent variables reach the deployed function at
+// REQUEST time. Baking the build-time value in here gives /api/health an
+// answer to "was this build made by Vercel as production/preview?" that
+// the SAME disabled toggle can't also suppress -- without this, a
+// misconfigured project reads as plain "development" (ok:true) at
+// runtime, silently hiding the exact failure this endpoint exists to
+// catch. See app/api/health/route.ts.
+const buildVercelEnv = process.env.VERCEL_ENV ?? null;
+
 const outPath = path.resolve(dirname, "../lib/build-info.ts");
 writeFileSync(
   outPath,
@@ -25,6 +37,7 @@ writeFileSync(
 // Regenerated on every "npm run dev"/"npm run build" (see package.json).
 export const LATEST_MIGRATION: string | null = ${JSON.stringify(latest)};
 export const MIGRATION_COUNT: number = ${files.length};
+export const BUILD_VERCEL_ENV: string | null = ${JSON.stringify(buildVercelEnv)};
 `,
 );
 
