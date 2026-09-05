@@ -1,6 +1,22 @@
 # Status
 
-Last updated: 2026-09-05, after merging PR #2 into `master`, applying all 9 round-2/round-3 migrations to production, and discovering and fixing a pre-existing Vercel deployment gap (below) that had left production running application code from before round 1's entire review response. Prior entry: 2026-09-04, after implementing and testing (not yet merging) round 3's fixes.
+Last updated: 2026-09-05, after implementing and testing (not yet merging) the response to a fourth-round independent review of `master` itself (following the round-2/3 merge and the Vercel deployment-gap fix, both below). Branch `fix/round4-review-findings`, not merged — see "Round-4 review-response pass" below and `REVIEW_REQUEST.md` for the full handoff. Prior entry: 2026-09-05, after merging PR #2 and fixing the Vercel deployment gap.
+
+## Round-4 review-response pass (2026-09-05, not yet merged)
+
+A fourth-round independent review found 8 further findings (R4-01–R4-08), directly motivated by the Vercel deployment gap discovered during the round-2/3 rollout (below) and by an unreviewed dashboard restyle that had shipped directly to `master`. All 8 verified and fixed; **all 8 confirmed, none rejected**. In brief:
+
+- **R4-01 (high)** — production had no way to prove which commit it was actually running, which is exactly how the deployment gap went undetected for as long as it did. `/api/health` (new) reports the build's own commit SHA, environment, and expected-migration snapshot, failing loud (503) if release metadata is missing in production/preview rather than silently reporting success. A new CI job polls it after every push to `master` and fails if the live commit doesn't match within 5 minutes — this is what would have caught the actual incident automatically.
+- **R4-02** — documented (couldn't configure directly — see `DEPLOYMENT.md`) the GitHub branch-protection and Vercel Deployment Checks settings needed so a deployment can't promote to Production before CI (including Playwright) finishes, plus a Preview-environment configuration pointed at the isolated test project with Resend/Sentry disabled.
+- **R4-03** — replaced the manual "move migration files aside, push, restore, eyeball the dashboard" rollout procedure with `scripts/rollout.mjs`: still stages files the same way, but every phase transition is now gated on an automated `/api/health` check, failing closed rather than proceeding on an assumption. Tested end-to-end against the isolated project with real (harmless) pending migrations and a fake passing/failing health server.
+- **R4-04** — `SUPABASE_DB_URL` is now mandatory in CI (`e2e/support/db-connection.ts` throws, not skips, when it's missing/unreachable/wrong-project in CI specifically; still optional for local runs), closing a false-green-CI gap for the RPC privilege matrix and location-deactivation concurrency tests.
+- **R4-05/R4-06** — the dashboard nav (shipped in the unreviewed restyle) had no accessible name for its six links below `lg`, and could not fit the header row at 320–768px. Rebuilt: every link's icon+label always visible at `lg`+, a labelled menu button (shadcn `Sheet`) below it with the same full-label links, `aria-current="page"` on the active route, keyboard/Escape verified.
+- **R4-07** — the same restyle's gradient wordmark used a cyan endpoint with ~1.8:1 contrast against white as small text; replaced with a deeper teal endpoint (~5.4:1, computed, not eyeballed) for the wordmark specifically. The homepage's own hero/nav use the identical original gradient and were **not** touched (out of this round's scope) — see `DECISIONS.md`.
+- **R4-08** — corrected stale claims across `STATUS.md`, `TEST_PLAN.md` (hardcoded test counts, references to deleted files), `README.md` (a context-free `vercel deploy --prod`), and added `DEPLOYMENT.md` as the standing deployment runbook this file's own historical entries increasingly needed.
+
+**Verification**: `npm run typecheck` clean, `npm run lint` clean, unit and e2e suites both green (`SUPABASE_DB_URL` exported so the connection-requiring specs actually ran), production build clean. See `REVIEW_REQUEST.md` for exact results and what remains manually configured (GitHub branch protection, Vercel Deployment Checks, Preview environment variables, `SUPABASE_DB_URL` as a CI secret if not already added in round 3).
+
+**Not part of this pass**: merging, applying anything to production (there are no new migrations this round), or deploying.
 
 ## Merged to production (2026-09-05)
 
@@ -147,7 +163,7 @@ Everything above was typechecked, linted, and — for the UI-facing pieces — m
 - ~~A decision on whether/when to prioritize Sentry vs. Playwright/CI vs. further product features.~~ **Both are done.**
 - ~~Add three GitHub Actions repo secrets.~~ **Confirmed done.** ~~Update them to the isolated test project's values.~~ **Done** — see "Merged to production" above.
 - ~~Apply the five new migrations to the production database.~~ **Done** — see "Merged to production" above.
-- Confirm the Vercel deployment triggered by the `master` merge actually reflects `e2bbb7b` — not separately verified as part of this pass.
+- ~~Confirm the Vercel deployment triggered by the `master` merge actually reflects `e2bbb7b`.~~ **This was never actually confirmed, and the honest answer turned out to be no** — see "Vercel deployment gap discovered and fixed (2026-09-05)" above. The deployment stayed on a pre-round-1 commit (`a3d5ce1`) for an extended period; this specific unresolved item is what that section is the resolution of, applying to the current commit rather than retroactively to `e2bbb7b` specifically (there's no way to confirm a now-superseded historical deployment state after the fact).
 - Optional: a `SENTRY_AUTH_TOKEN` + org/project slugs, if/when readable (non-minified) stack traces in the Sentry dashboard become worth the extra setup.
 
 ## Deployed
