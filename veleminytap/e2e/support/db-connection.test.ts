@@ -15,7 +15,11 @@ vi.mock("pg", () => ({
 }));
 
 const APPROVED_URL = "postgresql://postgres:pw@db.nowcuhwgeerzqlpweyxj.supabase.co:5432/postgres";
+const APPROVED_POOLER_URL =
+  "postgresql://postgres.nowcuhwgeerzqlpweyxj:pw@aws-1-eu-west-1.pooler.supabase.com:6543/postgres";
 const PRODUCTION_URL = "postgresql://postgres:pw@db.jvssnpvrcwjxldfeddnw.supabase.co:5432/postgres";
+const PRODUCTION_POOLER_URL =
+  "postgresql://postgres.jvssnpvrcwjxldfeddnw:pw@aws-0-eu-central-1.pooler.supabase.com:6543/postgres";
 
 /**
  * Round-4 finding R4-04: SUPABASE_DB_URL's environment-validation behavior
@@ -70,6 +74,22 @@ describe("connectToTestDb", () => {
     const result = await connectToTestDb();
     expect(result).not.toBeNull();
     expect(mockConnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("connects successfully via the pooler URL form (project ref in the username, not the hostname)", async () => {
+    process.env.SUPABASE_DB_URL = APPROVED_POOLER_URL;
+    mockConnect.mockResolvedValue(undefined);
+    const { connectToTestDb } = await import("./db-connection");
+    const result = await connectToTestDb();
+    expect(result).not.toBeNull();
+    expect(mockConnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects the production project's pooler URL, even locally", async () => {
+    process.env.SUPABASE_DB_URL = PRODUCTION_POOLER_URL;
+    const { connectToTestDb } = await import("./db-connection");
+    await expect(connectToTestDb()).rejects.toThrow(/does not resolve to the approved/);
+    expect(mockConnect).not.toHaveBeenCalled();
   });
 
   it("returns null locally when the approved project is unreachable", async () => {

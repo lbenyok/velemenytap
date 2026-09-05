@@ -38,6 +38,8 @@ If **Root Directory** is wrong, the build fails immediately with `Couldn't find 
 
 `SUPABASE_DB_URL` is not a Vercel environment variable at all — the deployed application never needs a direct Postgres connection (it only ever talks to Supabase over PostgREST/HTTP via the two keys above). It exists only as a GitHub Actions secret (§ 4) and in local `.env.test.local`/`.env.local`, for the test suite and `scripts/rollout.mjs`.
 
+**Use the connection pooler, not the direct `db.<ref>.supabase.co` host, for `SUPABASE_DB_URL`.** This project's Supabase region only offers the direct host over IPv6, and GitHub Actions runners have no IPv6 egress — a direct connection string fails there with `ENETUNREACH`, discovered firsthand when round-4's now-mandatory CI connection (R4-04) surfaced it as a hard failure instead of a silent skip. The pooler (`aws-<n>-<region>.pooler.supabase.com:6543`, username `postgres.<project-ref>` instead of plain `postgres`) resolves to real IPv4 addresses and works from CI. Get it from the Supabase dashboard → Project Settings → Database → Connection string → **Transaction pooler** (port 6543), for the isolated test project specifically — never production's. `e2e/support/db-connection.ts`'s `projectRefFromDbUrl()` recognizes both the direct and pooler URL forms when validating the project ref, so switching formats doesn't bypass the approved-project check.
+
 ## 4. GitHub Actions secrets
 
 Repository Settings → Secrets and variables → Actions:
@@ -47,7 +49,7 @@ Repository Settings → Secrets and variables → Actions:
 | `NEXT_PUBLIC_SUPABASE_URL` | isolated test project | `e2e` job |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | isolated test project | `e2e` job |
 | `SUPABASE_SECRET_KEY` | isolated test project | `e2e` job |
-| `SUPABASE_DB_URL` | isolated test project's direct connection string | `e2e` job (round-4 R4-04: now mandatory, not optional — see `e2e/support/db-connection.ts`) |
+| `SUPABASE_DB_URL` | isolated test project's **pooler** connection string (not the direct host — see § 3) | `e2e` job (round-4 R4-04: now mandatory, not optional — see `e2e/support/db-connection.ts`) |
 
 All four are checked together by the `check-e2e-secrets` job; missing any one skips the whole `e2e` job with a warning rather than failing CI outright (so a fork/contributor without these secrets still gets a useful, if partial, CI run) — but once the job does run, none of its tests may silently skip for lack of a working database connection (that's the actual R4-04 fix).
 

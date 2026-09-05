@@ -2,13 +2,19 @@ import { Client } from "pg";
 import { APPROVED_TEST_PROJECT_REF } from "./env";
 
 function projectRefFromDbUrl(dbUrl: string): string | null {
-  // postgresql://postgres:PASSWORD@db.<ref>.supabase.co:5432/postgres (or
-  // the pooler host, ...pooler.supabase.com) -- either way the project ref
-  // is the first label of the hostname after "db." or the "aws-..." pooler
-  // segment's tenant identifier. Only the direct-connection form is used
-  // by this project (see e2e/README.md), so match that specifically.
-  const match = /db\.([a-z0-9]+)\.supabase\.co/.exec(dbUrl);
-  return match ? match[1] : null;
+  // Direct connection: postgresql://postgres:PASSWORD@db.<ref>.supabase.co:5432/postgres
+  const direct = /db\.([a-z0-9]+)\.supabase\.co/.exec(dbUrl);
+  if (direct) return direct[1];
+
+  // Pooler connection: postgresql://postgres.<ref>:PASSWORD@aws-N-<region>.pooler.supabase.com:6543/postgres
+  // -- the project ref is encoded in the username, not the hostname, since
+  // the pooler host is shared across projects in a region. Used instead of
+  // the direct host wherever IPv6-only egress isn't available (CI runners;
+  // see DEPLOYMENT.md).
+  const pooler = /:\/\/postgres\.([a-z0-9]+):[^@]*@[^/]*\.pooler\.supabase\.com/.exec(dbUrl);
+  if (pooler) return pooler[1];
+
+  return null;
 }
 
 function inCi(): boolean {
