@@ -24,10 +24,22 @@ jobs:
       - run: npm run lint
       - run: npm run test
 
-  # Playwright e2e needs a real Supabase project to hit (see e2e/README.md
-  # and DECISIONS.md for why this project reuses the same one dev/prod
-  # use, rather than a Docker-based local stack). Until those secrets are
+  # Playwright e2e needs a real (isolated, non-production) Supabase project
+  # to hit -- see e2e/README.md and DECISIONS.md. Until those secrets are
   # added to the repo, this job skips instead of failing CI outright.
+  #
+  # Round-4 finding R4-04: SUPABASE_DB_URL is now REQUIRED alongside the
+  # other three, not optional. It used to be possible for the e2e job to
+  # run "successfully" while its two DB-connection-dependent spec files
+  # (rpc-privilege-matrix, location-deactivation-race) silently skipped
+  # every test inside them -- a security-relevant privilege matrix and a
+  # concurrency-safety guarantee reporting green without ever actually
+  # running is false confidence, not missing coverage that degrades
+  # gracefully. Gating on it here (job skips loudly with a warning if
+  # unset, same as the other three) plus e2e/support/db-connection.ts
+  # throwing (not skipping) when SUPABASE_DB_URL is set but unreachable
+  # closes both halves of the gap: never silently absent, never silently
+  # unreachable.
   check-e2e-secrets:
     name: Check e2e secrets are configured
     runs-on: ubuntu-latest
@@ -38,10 +50,11 @@ jobs:
         run: |
           if [ -n "${{ secrets.SUPABASE_SECRET_KEY }}" ] && \
              [ -n "${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}" ] && \
-             [ -n "${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}" ]; then
+             [ -n "${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}" ] && \
+             [ -n "${{ secrets.SUPABASE_DB_URL }}" ]; then
             echo "configured=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::One or more e2e secrets are missing (need all three: SUPABASE_SECRET_KEY, NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY) -- e2e job will be skipped."
+            echo "::warning::One or more e2e secrets are missing (need all four: SUPABASE_SECRET_KEY, NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY, SUPABASE_DB_URL) -- e2e job will be skipped. SUPABASE_DB_URL became mandatory in round 4 (R4-04); add it under Settings -> Secrets and variables -> Actions, pointed at the isolated test project's direct Postgres connection string, never production's."
             echo "configured=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -57,11 +70,13 @@ jobs:
       NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
       NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
-      # Optional (round-3 R3-01/verification): direct Postgres connection
-      # string for the isolated project, for e2e/location-deactivation-race.spec.ts's
-      # real two-connection concurrency test. That test skips itself (not a
-      # failure) if this isn't set -- add SUPABASE_DB_URL as a repo secret to
-      # have it actually run in CI instead of always skipping.
+      # Mandatory in CI as of round-4 R4-04 (see check-e2e-secrets above) --
+      # direct Postgres connection string for the isolated project, used by
+      # e2e/rpc-privilege-matrix.spec.ts and
+      # e2e/location-deactivation-race.spec.ts. e2e/support/db-connection.ts
+      # throws (fails the run) rather than skipping if this is unset,
+      # unreachable, or doesn't resolve to the approved isolated project --
+      # skip-on-missing is a local-development-only convenience now.
       SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
       NEXT_PUBLIC_SITE_URL: http://localhost:3000
     steps:
@@ -81,3 +96,50 @@ jobs:
           name: playwright-report
           path: veleminytap/playwright-report/
           retention-days: 14
+
+  # Round-4 finding R4-01. Confirms Vercel actually deployed the commit
+  # that was just pushed to master, by polling the live production
+  # /api/health endpoint until it reports this exact SHA. This is what
+  # catches the historical failure mode that motivated it: GitHub CI can
+  # be fully green while Vercel's Git webhook silently never fires (or
+  # fires but the build fails, or fixes-but-never-promotes) -- production
+  # then keeps serving whatever it was already running, indefinitely, with
+  # nothing in this repository's own CI ever noticing. That happened for
+  # real, for an extended period spanning three review rounds (STATUS.md).
+  #
+  # This job cannot configure Vercel or GitHub itself -- see DEPLOYMENT.md
+  # for the external settings (Vercel Git connection, Root Directory,
+  # "Automatically expose System Environment Variables", branch protection
+  # required-status-checks) this check depends on but cannot enforce.
+  verify-production-deployment:
+    name: Verify production deployment matches this commit
+    needs: [checks, e2e]
+    if: always() && github.ref == 'refs/heads/master' && github.event_name == 'push' && needs.checks.result == 'success' && needs.e2e.result != 'failure'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Poll production until /api/health reports this commit
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          # Repository variable, not a secret -- this is the app's own
+          # public production URL. Falls back to the known default so this
+          # keeps working even if the variable is never explicitly set.
+          HEALTH_URL: ${{ vars.PRODUCTION_HEALTH_URL || 'https://veleminytap.vercel.app/api/health' }}
+        run: |
+          deadline=$((SECONDS + 300))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            response="$(curl -fsS --max-time 10 "$HEALTH_URL" || echo '')"
+            if [ -n "$response" ]; then
+              actual_sha="$(node -e "try{console.log(JSON.parse(process.argv[1]).commitSha||'')}catch{console.log('')}" "$response")"
+              ok="$(node -e "try{console.log(JSON.parse(process.argv[1]).ok===true)}catch{console.log('false')}" "$response")"
+              if [ "$ok" = "true" ] && [ "$actual_sha" = "$EXPECTED_SHA" ]; then
+                echo "Production is serving the expected commit ($EXPECTED_SHA)."
+                exit 0
+              fi
+              echo "Not yet -- production reports commitSha=$actual_sha ok=$ok, expected $EXPECTED_SHA. Retrying in 15s."
+            else
+              echo "No response from $HEALTH_URL yet. Retrying in 15s."
+            fi
+            sleep 15
+          done
+          echo "::error::Production did not report commit $EXPECTED_SHA within 5 minutes. This does NOT necessarily mean the code is broken -- it means the Vercel deployment either failed, never started (the Git webhook not firing is a real, previously-confirmed failure mode for this project -- see STATUS.md), or hasn't been promoted to Production yet. Check the Vercel Deployments dashboard directly; do not assume this is a false alarm."
+          exit 1

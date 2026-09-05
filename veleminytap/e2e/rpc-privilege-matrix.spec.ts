@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
-import { Client } from "pg";
+import type { Client } from "pg";
+import { connectToTestDb } from "./support/db-connection";
 
 /**
  * Round-3 finding R3-07: the RPC role-allowlist model (round-2 R2-07,
@@ -11,23 +12,10 @@ import { Client } from "pg";
  *
  * Needs a direct Postgres connection (SUPABASE_DB_URL) -- has_function_privilege()
  * and pg_proc are Postgres catalog features, not reachable through
- * PostgREST/supabase-js. Skips gracefully, not a hard failure, if that
- * connection isn't available in this environment (same as
- * e2e/location-deactivation-race.spec.ts).
+ * PostgREST/supabase-js. Skips gracefully LOCALLY if that connection isn't
+ * available; round-4 finding R4-04 makes this mandatory in CI instead --
+ * see e2e/support/db-connection.ts.
  */
-
-const DB_URL = process.env.SUPABASE_DB_URL;
-
-async function tryConnect(): Promise<Client | null> {
-  if (!DB_URL) return null;
-  const client = new Client({ connectionString: DB_URL, connectionTimeoutMillis: 5000 });
-  try {
-    await client.connect();
-    return client;
-  } catch {
-    return null;
-  }
-}
 
 type ExpectedGrant = {
   signature: string;
@@ -78,7 +66,7 @@ const EXPECTED: ExpectedGrant[] = [
 let client: Client | null;
 
 test.beforeAll(async () => {
-  client = await tryConnect();
+  client = await connectToTestDb();
 });
 
 test.afterAll(async () => {
