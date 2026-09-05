@@ -58,6 +58,11 @@
     --brand-accent-hover: #1a41c2;
     --brand-accent-2: #22d3ee;
     --brand-gradient: linear-gradient(135deg, #2154eb 0%, #22d3ee 100%);
+    /* Round-4 R4-07: for gradient TEXT specifically (not large decorative
+       fills), where the bright cyan endpoint above fails WCAG AA contrast
+       against a light background (~1.8:1) -- #0e7490 keeps the same
+       blue-to-teal brand identity at ~5.4:1 against white. */
+    --brand-gradient-text: linear-gradient(135deg, #2154eb 0%, #0e7490 100%);
 
     --background: oklch(1 0 0);
     --foreground: oklch(0.145 0 0);
@@ -101,6 +106,10 @@
     --brand-accent-hover: #79a2f2;
     --brand-accent-2: #22d3ee;
     --brand-gradient: linear-gradient(135deg, #5b8def 0%, #22d3ee 100%);
+    /* Already >= 4.5:1 against this mode's dark surface -- reused as-is,
+       see the light-mode definition's comment for why light mode needed
+       a different value. */
+    --brand-gradient-text: var(--brand-gradient);
 
     --background: oklch(0.145 0 0);
     --foreground: oklch(0.985 0 0);
