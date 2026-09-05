@@ -25,38 +25,47 @@ jobs:
       - run: npm run test
 
   # Playwright e2e needs a real (isolated, non-production) Supabase project
-  # to hit -- see e2e/README.md and DECISIONS.md. Until those secrets are
-  # added to the repo, this job skips instead of failing CI outright.
+  # to hit -- see e2e/README.md and DECISIONS.md.
   #
   # Round-4 finding R4-04: SUPABASE_DB_URL is now REQUIRED alongside the
-  # other three, not optional. It used to be possible for the e2e job to
-  # run "successfully" while its two DB-connection-dependent spec files
-  # (rpc-privilege-matrix, location-deactivation-race) silently skipped
-  # every test inside them -- a security-relevant privilege matrix and a
+  # other three, not optional -- a security-relevant privilege matrix and a
   # concurrency-safety guarantee reporting green without ever actually
   # running is false confidence, not missing coverage that degrades
-  # gracefully. Gating on it here (job skips loudly with a warning if
-  # unset, same as the other three) plus e2e/support/db-connection.ts
-  # throwing (not skipping) when SUPABASE_DB_URL is set but unreachable
-  # closes both halves of the gap: never silently absent, never silently
-  # unreachable.
+  # gracefully.
+  #
+  # Round-5 finding R5-01: R4-04 wasn't actually enforced end to end --
+  # this job used to just warn and skip on missing secrets unconditionally,
+  # so removing or misconfiguring one secret left `master` green while
+  # every database-dependent check silently never ran. scripts/check-e2e-
+  # secrets.mjs (unit tested) now fails this job outright when secrets are
+  # missing on a TRUSTED ref (a push to master, or a pull_request from a
+  # branch within this same repo -- both of which GitHub Actions does give
+  # repository secrets to). A fork pull request is the one legitimate case
+  # secrets are genuinely absent (GitHub never exposes them to a forked
+  # head), so that case still skips gracefully, not fails.
   check-e2e-secrets:
     name: Check e2e secrets are configured
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: veleminytap
     outputs:
       configured: ${{ steps.check.outputs.configured }}
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - id: check
-        run: |
-          if [ -n "${{ secrets.SUPABASE_SECRET_KEY }}" ] && \
-             [ -n "${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}" ] && \
-             [ -n "${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}" ] && \
-             [ -n "${{ secrets.SUPABASE_DB_URL }}" ]; then
-            echo "configured=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::One or more e2e secrets are missing (need all four: SUPABASE_SECRET_KEY, NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY, SUPABASE_DB_URL) -- e2e job will be skipped. SUPABASE_DB_URL became mandatory in round 4 (R4-04); add it under Settings -> Secrets and variables -> Actions, pointed at the isolated test project's direct Postgres connection string, never production's."
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-          fi
+        env:
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: node scripts/check-e2e-secrets.mjs
 
   e2e:
     name: Playwright e2e (review-gating regression)
@@ -114,7 +123,13 @@ jobs:
   verify-production-deployment:
     name: Verify production deployment matches this commit
     needs: [checks, e2e]
-    if: always() && github.ref == 'refs/heads/master' && github.event_name == 'push' && needs.checks.result == 'success' && needs.e2e.result != 'failure'
+    # Round-5 R5-01: `!= 'failure'` also passed for a *skipped* e2e job
+    # (e.g. check-e2e-secrets not run yet, or -- before this same finding's
+    # fix -- silently missing secrets on master) -- production could
+    # promote-verify without the e2e suite having run at all. Requiring
+    # `== 'success'` closes that: a skip is no longer indistinguishable
+    # from a pass for this gate's purposes.
+    if: always() && github.ref == 'refs/heads/master' && github.event_name == 'push' && needs.checks.result == 'success' && needs.e2e.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Poll production until /api/health reports this commit
