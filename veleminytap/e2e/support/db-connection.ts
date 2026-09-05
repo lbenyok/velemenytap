@@ -1,18 +1,63 @@
 import { Client } from "pg";
 import { APPROVED_TEST_PROJECT_REF } from "./env";
 
-function projectRefFromDbUrl(dbUrl: string): string | null {
-  // Direct connection: postgresql://postgres:PASSWORD@db.<ref>.supabase.co:5432/postgres
-  const direct = /db\.([a-z0-9]+)\.supabase\.co/.exec(dbUrl);
-  if (direct) return direct[1];
+/**
+ * Round-5 finding R5-02: this used to run two regexes against the RAW
+ * connection string with `.exec()` -- an unanchored search, not a parse.
+ * `.exec()` finds its pattern ANYWHERE in the string, including the query
+ * string, path, or password, none of which the server actually
+ * authenticates against. A connection string that genuinely points at
+ * production's pooler but happens to carry the approved test project's
+ * ref somewhere else in the string (e.g.
+ * `...@aws-0-eu-central-1.pooler.supabase.com:6543/postgres?application_name=db.<approved-ref>.supabase.co`)
+ * passed this check while actually connecting to production -- exactly
+ * the outcome this allowlist exists to prevent.
+ *
+ * Fixed by actually parsing the URL and extracting the ref only from the
+ * one component that's authoritative for each connection form: the
+ * hostname for a direct connection, the username for a pooler connection
+ * (the pooler host itself is shared across many projects/regions, so it
+ * can't identify one on its own). The password, path, query string, and
+ * fragment are never inspected -- a client fully controls all four, and
+ * none of them is what the server actually authenticates the connection
+ * against.
+ */
+export function projectRefFromDbUrl(dbUrl: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(dbUrl);
+  } catch {
+    return null;
+  }
 
-  // Pooler connection: postgresql://postgres.<ref>:PASSWORD@aws-N-<region>.pooler.supabase.com:6543/postgres
-  // -- the project ref is encoded in the username, not the hostname, since
-  // the pooler host is shared across projects in a region. Used instead of
-  // the direct host wherever IPv6-only egress isn't available (CI runners;
-  // see DEPLOYMENT.md).
-  const pooler = /:\/\/postgres\.([a-z0-9]+):[^@]*@[^/]*\.pooler\.supabase\.com/.exec(dbUrl);
-  if (pooler) return pooler[1];
+  if (url.protocol !== "postgresql:" && url.protocol !== "postgres:") {
+    return null;
+  }
+
+  const hostname = url.hostname.toLowerCase();
+
+  // Direct connection: db.<ref>.supabase.co -- the ref must be the
+  // hostname's ENTIRE first label, matched against the whole hostname
+  // (anchored), not found as a substring anywhere in the URL. This also
+  // rejects a suffixed lookalike host (db.<ref>.supabase.co.evil.com).
+  const directMatch = /^db\.([a-z0-9]+)\.supabase\.co$/.exec(hostname);
+  if (directMatch) {
+    return directMatch[1];
+  }
+
+  // Pooler connection: aws-<n>-<region>.pooler.supabase.com, used instead
+  // of the direct host wherever IPv6-only egress isn't available (CI
+  // runners; see DEPLOYMENT.md). The ref lives in the username
+  // ("postgres.<ref>"), decoded first since a URL's username component is
+  // percent-encoded and an encoded ref must be treated the same as a
+  // plain one, not silently fail to match.
+  if (/^aws-[0-9]+-[a-z0-9-]+\.pooler\.supabase\.com$/.test(hostname)) {
+    const username = decodeURIComponent(url.username);
+    const usernameMatch = /^postgres\.([a-z0-9]+)$/.exec(username);
+    if (usernameMatch) {
+      return usernameMatch[1];
+    }
+  }
 
   return null;
 }
