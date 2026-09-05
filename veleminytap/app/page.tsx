@@ -6,9 +6,9 @@ import { RatingDemo } from "@/features/marketing/rating-demo";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = {
-  title: "VéleményTap — NFC visszajelzés, ami sosem rejt el egy rossz értékelést",
+  title: "VéleményTap — NFC-s visszajelzés. Minden csillag számít.",
   description:
-    "Helyezz ki egy NFC-kártyát a pultra. A vásárlók öt másodperc alatt értékelik a látogatást, és ugyanazt a Google-értékelési linket kapják — válogatás nélkül.",
+    "Helyezz ki egy NFC-kártyát a pultra: öt másodperc alatt valódi értékelést kapsz, és minden vásárló ugyanazt a Google-értékelési linket kapja — válogatás nélkül.",
 };
 
 const fraunces = Fraunces({
@@ -20,7 +20,7 @@ const fraunces = Fraunces({
 
 const VERTICALS = [
   "Kávézók és éttermek",
-  "Szalonok és wellness",
+  "Szalonok és wellness stúdiók",
   "Rendelők és klinikák",
   "Edzőtermek és stúdiók",
   "Üzletek",
@@ -41,7 +41,7 @@ const STEPS = [
   {
     n: "03",
     title: "Te mindent látsz",
-    body: "Azonnal megjelenik az irányítópultodon. Alacsony értékelésnél e-mail is érkezik a csapatodnak, még ugyanabban a percben.",
+    body: "Azonnal megjelenik az irányítópultodon. Alacsony értékelésnél e-mail is érkezik a csapatodnak, ugyanabban a percben.",
   },
 ];
 
@@ -142,27 +142,27 @@ function Hero() {
     <section className="mx-auto max-w-6xl px-5 pt-8 pb-20 sm:px-8 sm:pt-14 sm:pb-28">
       <div className="grid items-center gap-12 lg:grid-cols-[1.05fr_0.95fr] lg:gap-10">
         <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-3 motion-safe:duration-700">
-          <Eyebrow>NFC visszajelzés üzleteknek</Eyebrow>
+          <Eyebrow>NFC-alapú visszajelzés üzleteknek</Eyebrow>
           <h1
             className="mt-4 text-4xl leading-[1.08] font-medium text-balance sm:text-5xl lg:text-[3.4rem]"
             style={{ fontFamily: "var(--font-display)" }}
           >
             Koppints a kártyára.
             <br />
-            Halld az{" "}
+            Azonnali, valódi{" "}
             <span
               className="bg-clip-text text-transparent italic"
               style={{ backgroundImage: "var(--pf-accent-gradient)" }}
             >
-              igazat.
+              vélemény.
             </span>
           </h1>
           <p className="mt-5 max-w-lg text-base leading-relaxed text-[var(--pf-ink-muted)] sm:text-lg">
             Egy NFC-kártya a pultnál öt másodperc alatt valódi értékeléssé
             alakít minden látogatást. Minden vásárló ugyanazt a
             Google-értékelési linket kapja — akár 1, akár 5 csillagot adott.
-            A vélemények szelektálása sérti a Google szabályzatát. Mi nem
-            válogatunk.
+            A vélemények válogatása sérti a Google irányelveit — nálunk
+            minden csillag számít.
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-4">
             <Link
@@ -280,7 +280,7 @@ function BuiltFor() {
           className="mt-3 max-w-xl text-2xl font-medium sm:text-3xl"
           style={{ fontFamily: "var(--font-display)" }}
         >
-          Minden helyre, ahova betérnek az emberek.
+          Bárhol, ahol ügyfelek betérnek.
         </h2>
         <div className="mt-7 flex flex-wrap gap-2.5">
           {VERTICALS.map((v) => (
@@ -305,7 +305,7 @@ function DashboardPreview() {
         className="mt-3 max-w-xl text-2xl font-medium sm:text-3xl"
         style={{ fontFamily: "var(--font-display)" }}
       >
-        Egy felület minden koppintáshoz.
+        Egy irányítópult, minden koppintáshoz.
       </h2>
       <div className="mt-10 grid gap-5 sm:grid-cols-3">
         {DASHBOARD_CARDS.map(({ icon: Icon, title, body }) => (
@@ -335,8 +335,11 @@ function FinalCta() {
     >
       <div className="mx-auto max-w-6xl px-5 py-16 sm:px-8 sm:py-20">
         <Nfc className="mx-auto size-8 text-white" strokeWidth={1.5} />
+        <p className="mt-4 font-mono text-xs font-medium tracking-[0.14em] text-white/70 uppercase">
+          Minden csillag számít
+        </p>
         <h2
-          className="mt-5 text-3xl font-medium text-white sm:text-4xl"
+          className="mt-3 text-3xl font-medium text-white sm:text-4xl"
           style={{ fontFamily: "var(--font-display)" }}
         >
           Tedd ki az első kártyát a pultra.
