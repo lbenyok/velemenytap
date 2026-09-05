@@ -38,7 +38,9 @@ export default async function SettingsPage({
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">Beállítások</h1>
+        <h1 className="text-2xl font-medium tracking-tight" style={{ fontFamily: "var(--font-display)" }}>
+          Beállítások
+        </h1>
         <p className="text-sm text-muted-foreground">
           Kezeld a vállalkozásod profilját és az értesítési beállításokat.
         </p>

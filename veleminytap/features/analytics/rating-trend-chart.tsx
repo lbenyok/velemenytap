@@ -11,7 +11,7 @@ import type { DailyPoint } from "./queries";
 import { formatDayLabel } from "./format";
 
 const config = {
-  avgRating: { label: "Átlagos értékelés", color: "var(--foreground)" },
+  avgRating: { label: "Átlagos értékelés", color: "var(--primary)" },
 } satisfies ChartConfig;
 
 export function RatingTrendChart({ data }: { data: DailyPoint[] }) {

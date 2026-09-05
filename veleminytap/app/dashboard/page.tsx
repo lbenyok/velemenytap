@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { TriangleAlert } from "lucide-react";
+import { TriangleAlert, Inbox, Star, CalendarDays, TrendingUp } from "lucide-react";
 import { getCurrentOrganization } from "@/features/organizations/current";
 import { getOverviewStats } from "@/features/analytics/overview-data";
 import { StatTile } from "@/features/analytics/stat-tile";
@@ -42,7 +42,10 @@ export default async function DashboardPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">
+        <h1
+          className="text-2xl font-medium tracking-tight"
+          style={{ fontFamily: "var(--font-display)" }}
+        >
           Üdvözlünk, {organization?.name ?? "nálunk"}!
         </h1>
         <p className="text-sm text-muted-foreground">
@@ -51,14 +54,20 @@ export default async function DashboardPage() {
       </div>
 
       <div className="grid gap-4 sm:grid-cols-3 lg:grid-cols-5">
-        <StatTile label="Összes vélemény" value={String(stats.total)} />
+        <StatTile label="Összes vélemény" value={String(stats.total)} icon={Inbox} />
         <StatTile
           label="Átlagos értékelés"
           value={stats.averageRating !== null ? stats.averageRating.toFixed(1) : "—"}
+          icon={Star}
         />
-        <StatTile label="Ma" value={String(stats.today)} />
-        <StatTile label="Ezen a héten" value={String(stats.thisWeek)} />
-        <StatTile label="Megoldatlan negatív" value={String(stats.unresolvedNegative)} />
+        <StatTile label="Ma" value={String(stats.today)} icon={CalendarDays} />
+        <StatTile label="Ezen a héten" value={String(stats.thisWeek)} icon={TrendingUp} />
+        <StatTile
+          label="Megoldatlan negatív"
+          value={String(stats.unresolvedNegative)}
+          icon={TriangleAlert}
+          tone="attention"
+        />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">

@@ -162,7 +162,9 @@ export default async function FeedbackPage({
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">Vélemények</h1>
+        <h1 className="text-2xl font-medium tracking-tight" style={{ fontFamily: "var(--font-display)" }}>
+        Vélemények
+      </h1>
         <p className="text-sm text-muted-foreground">
           Minden, amit a vásárlók beküldtek, legújabb elöl.
         </p>

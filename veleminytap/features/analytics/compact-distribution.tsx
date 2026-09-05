@@ -16,7 +16,7 @@ export function CompactDistribution({ buckets }: { buckets: RatingBucket[] }) {
             <span className="w-16 shrink-0 text-muted-foreground">{bucket.rating} csillag</span>
             <div className="h-2 flex-1 overflow-hidden rounded-full bg-muted">
               <div
-                className="h-full rounded-full bg-foreground"
+                className="h-full rounded-full bg-primary"
                 style={{ width: `${pct}%` }}
               />
             </div>

@@ -36,7 +36,9 @@ export default async function AnalyticsPage({
     return (
       <div className="space-y-6">
         <div className="flex items-center justify-between">
-          <h1 className="text-xl font-semibold tracking-tight">Elemzés</h1>
+          <h1 className="text-2xl font-medium tracking-tight" style={{ fontFamily: "var(--font-display)" }}>
+            Elemzés
+          </h1>
           <Suspense>
             <PeriodSelect value={String(days)} />
           </Suspense>
@@ -57,7 +59,9 @@ export default async function AnalyticsPage({
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Elemzés</h1>
+          <h1 className="text-2xl font-medium tracking-tight" style={{ fontFamily: "var(--font-display)" }}>
+            Elemzés
+          </h1>
           <p className="text-sm text-muted-foreground">
             {data.total} beküldött vélemény ebben az időszakban.
           </p>

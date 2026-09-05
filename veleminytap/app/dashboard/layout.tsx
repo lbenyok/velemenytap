@@ -1,10 +1,23 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { Fraunces } from "next/font/google";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentOrganization } from "@/features/organizations/current";
 import { signOutAction } from "@/features/auth/actions";
 import { Button } from "@/components/ui/button";
+import { DashboardNav } from "./dashboard-nav";
+
+// Same display face as the public marketing/feedback pages (app/page.tsx),
+// used just as restrainedly here: the wordmark and page titles only.
+// Everything else -- tables, forms, buttons -- stays in the body sans-serif,
+// so the dashboard reads as "same brand" rather than "trying to look like
+// the homepage."
+const fraunces = Fraunces({
+  subsets: ["latin", "latin-ext"],
+  weight: ["500", "600"],
+  variable: "--font-display",
+});
 
 export default async function DashboardLayout({
   children,
@@ -24,35 +37,28 @@ export default async function DashboardLayout({
   }
 
   return (
-    <div className="flex min-h-svh flex-col">
-      <header className="flex h-14 items-center justify-between border-b px-4 sm:px-6">
+    <div className={`flex min-h-svh flex-col ${fraunces.variable}`}>
+      <header className="flex h-14 items-center justify-between gap-4 border-b px-4 sm:px-6">
         <div className="flex items-center gap-6">
-          <Link href="/dashboard" className="text-sm font-semibold tracking-tight">
-            VéleményTap
+          <Link
+            href="/dashboard"
+            className="shrink-0 text-base font-semibold tracking-tight"
+            style={{ fontFamily: "var(--font-display)" }}
+          >
+            Vélemény
+            <span
+              className="bg-clip-text text-transparent"
+              style={{ backgroundImage: "var(--brand-gradient)" }}
+            >
+              Tap
+            </span>
           </Link>
-          <nav className="flex items-center gap-4 text-sm text-muted-foreground">
-            <Link href="/dashboard" className="hover:text-foreground">
-              Áttekintés
-            </Link>
-            <Link href="/dashboard/locations" className="hover:text-foreground">
-              Helyszínek
-            </Link>
-            <Link href="/dashboard/nfc-cards" className="hover:text-foreground">
-              NFC kártyák
-            </Link>
-            <Link href="/dashboard/feedback" className="hover:text-foreground">
-              Vélemények
-            </Link>
-            <Link href="/dashboard/analytics" className="hover:text-foreground">
-              Elemzés
-            </Link>
-            <Link href="/dashboard/settings" className="hover:text-foreground">
-              Beállítások
-            </Link>
-          </nav>
+          <DashboardNav />
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-sm text-muted-foreground">{organization.name}</span>
+          <span className="hidden text-sm text-muted-foreground sm:inline">
+            {organization.name}
+          </span>
           <form action={signOutAction}>
             <Button type="submit" variant="ghost" size="sm">
               Kijelentkezés

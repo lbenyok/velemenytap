@@ -11,7 +11,7 @@ import type { DailyPoint } from "./queries";
 import { formatDayLabel } from "./format";
 
 const config = {
-  count: { label: "Vélemények", color: "var(--foreground)" },
+  count: { label: "Vélemények", color: "var(--primary)" },
 } satisfies ChartConfig;
 
 export function VolumeChart({ data }: { data: DailyPoint[] }) {
