@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { safeRedirectTarget } from "./safe-redirect";
 
-const TRUSTED = "https://veleminytap.vercel.app";
+const TRUSTED = "https://velemenytap.vercel.app";
 
 describe("safeRedirectTarget", () => {
   describe("valid internal paths and query strings", () => {
@@ -34,11 +34,11 @@ describe("safeRedirectTarget", () => {
     });
 
     it("rejects a subdomain that isn't the trusted origin", () => {
-      expect(safeRedirectTarget("https://evil.veleminytap.vercel.app", TRUSTED)).toBe("/dashboard");
+      expect(safeRedirectTarget("https://evil.velemenytap.vercel.app", TRUSTED)).toBe("/dashboard");
     });
 
     it("rejects the trusted host on the wrong port", () => {
-      expect(safeRedirectTarget("https://veleminytap.vercel.app:8443/dashboard", TRUSTED)).toBe("/dashboard");
+      expect(safeRedirectTarget("https://velemenytap.vercel.app:8443/dashboard", TRUSTED)).toBe("/dashboard");
     });
 
     it("rejects a non-http(s) scheme (javascript:)", () => {

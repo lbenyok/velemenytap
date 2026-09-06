@@ -45,6 +45,15 @@ export type SetOnboardingTourStatusResult = { error?: string };
  * Deliberately does nothing for "reopen" itself -- reopening the tour from
  * the header button is a client-only UI action that doesn't call this
  * action at all. Only a subsequent dismissal or completion does.
+ *
+ * Found during an independent review: the UPDATE's own zero-affected-rows
+ * result is ambiguous by itself -- it's produced both by the guard's
+ * intended no-op (already "completed") and by a real failure (membership
+ * revoked between the lookup above and this call, so RLS no longer permits
+ * the write; or the organization is simply gone). The two were previously
+ * treated identically as success, which meant a real failure could report
+ * success and the client would close the tour having persisted nothing.
+ * Disambiguated below with a follow-up read through this same client.
  */
 export async function setOnboardingTourStatusAction(
   status: string,
@@ -59,7 +68,7 @@ export async function setOnboardingTourStatusAction(
   }
 
   const supabase = await createClient();
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("organizations")
     .update({ onboarding_tour_status: status })
     .eq("id", organization.id)
@@ -69,12 +78,44 @@ export async function setOnboardingTourStatusAction(
   if (error) {
     return { error: "Nem sikerült menteni az útmutató állapotát." };
   }
-  // Zero rows affected means the WHERE clause's own guard blocked the
-  // write -- the organization's status was already "completed" (either
-  // already known to this client, or updated concurrently by another
-  // device/tab since). That's the guard working as intended, not a
-  // failure: the caller asked to record something, and the organization's
-  // terminal state is correctly unchanged. Only a genuine database error
-  // above is reported as a failure to the caller.
+  if (data.length > 0) {
+    // The WHERE clause matched and RLS's own WITH CHECK allowed the write --
+    // genuinely, freshly persisted by this call.
+    return {};
+  }
+
+  // Zero rows affected is ambiguous on its own. It's what the WHERE
+  // clause's own guard produces when the organization already reads
+  // "completed" (the common, harmless no-op this guard exists for) -- but
+  // it's equally what a membership revoked between the lookup above and
+  // this UPDATE would produce (RLS's `is_org_member` check no longer
+  // passes, so the row simply doesn't match for this session anymore), or
+  // a deleted organization. Those are real failures: the write did not
+  // happen, but the caller would otherwise be told it succeeded and the
+  // client would close the tour having persisted nothing. An affected-row
+  // count alone can't distinguish these, so read the row back through this
+  // same RLS-bound client and decide from its actual value.
+  const { data: current, error: readError } = await supabase
+    .from("organizations")
+    .select("onboarding_tour_status")
+    .eq("id", organization.id)
+    .maybeSingle();
+
+  if (readError || !current) {
+    // Unreadable or gone under this session's own RLS view -- membership
+    // no longer holds, or the organization no longer exists. Not the
+    // harmless no-op case; report it as a real failure.
+    return { error: "Nem sikerült menteni az útmutató állapotát." };
+  }
+  if (current.onboarding_tour_status !== "completed") {
+    // Readable, and not "completed" -- the WHERE clause should have let
+    // this UPDATE through, so zero rows here means something genuinely
+    // prevented the write (RLS's WITH CHECK, most likely) rather than the
+    // terminal-state guard doing its job. Report it rather than treating
+    // an unexplained no-op as success.
+    return { error: "Nem sikerült menteni az útmutató állapotát." };
+  }
+  // Confirmed directly: the organization already reads "completed". The
+  // guard blocked a write that would have been a no-op anyway.
   return {};
 }

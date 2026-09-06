@@ -513,8 +513,8 @@ describe("sanitizeUrl", () => {
   });
 
   it("handles a full absolute URL, preserving scheme+host+path", () => {
-    const result = sanitizeUrl(`https://veleminytap.hu/auth/confirm?token_hash=${CANARY}`);
-    expect(result.startsWith("https://veleminytap.hu/auth/confirm?")).toBe(true);
+    const result = sanitizeUrl(`https://velemenytap.hu/auth/confirm?token_hash=${CANARY}`);
+    expect(result.startsWith("https://velemenytap.hu/auth/confirm?")).toBe(true);
     expect(result).not.toContain(CANARY);
   });
 

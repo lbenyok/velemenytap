@@ -20,8 +20,8 @@ const TEST_ENVIRONMENTS = loadEnvironments(
   JSON.stringify({
     production: {
       supabaseProjectRef: TEST_REF,
-      allowedOrigin: "https://veleminytap.vercel.app",
-      healthUrl: "https://veleminytap.vercel.app/api/health",
+      allowedOrigin: "https://velemenytap.vercel.app",
+      healthUrl: "https://velemenytap.vercel.app/api/health",
       environment: "production",
     },
     staging: {
@@ -190,8 +190,8 @@ describe("parseArgs", () => {
     expect(args.expectedSha).toBe(VALID_SHA);
     expect(args.dryRun).toBe(false);
     expect(args.target).toBe("production");
-    expect(args.allowedOrigin).toBe("https://veleminytap.vercel.app");
-    expect(args.healthUrl).toBe("https://veleminytap.vercel.app/api/health");
+    expect(args.allowedOrigin).toBe("https://velemenytap.vercel.app");
+    expect(args.healthUrl).toBe("https://velemenytap.vercel.app/api/health");
     expect(args.environment).toBe("production");
   });
 

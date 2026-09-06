@@ -41,7 +41,7 @@ const STEPS = [
   {
     n: "03",
     title: "Te mindent látsz",
-    body: "Azonnal megjelenik az irányítópultodon. Alacsony értékelésnél e-mailes értesítést is kapsz, hogy időben léphess.",
+    body: "Azonnal megjelenik az irányítópultodon. Alacsony értékelésnél e-mailes értesítést is beállíthatsz, hogy időben léphess.",
   },
 ];
 

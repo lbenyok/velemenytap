@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import { useTour } from "./tour-provider";
 import { TOUR_STEPS, TOUR_WELCOME } from "./tour-steps";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
@@ -79,7 +78,6 @@ export function TourDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const { pending, next, back, beginSteps, skip, complete, retry, closeAnyway } = useTour();
-  const router = useRouter();
   const highlightedRef = useRef<HTMLElement | null>(null);
   const step = phase === "step" ? TOUR_STEPS[stepIndex] : null;
   // Local only -- the final step's own action button needs to know it
@@ -126,15 +124,14 @@ export function TourDialog({
 
   async function handleActionClick(href: string) {
     setActionPending(true);
-    const succeeded = await complete();
+    // Navigation itself happens inside the provider's attemptClose, not
+    // here -- passing `href` through means it still fires after a later
+    // successful retry too, not just when this specific call succeeds.
+    // `pending.saving` (not this local flag) drives the UI once a retry is
+    // in play; this flag only covers the window before the first attempt
+    // either resolves or hands off to the shared pending/retry banner.
+    await complete(href);
     setActionPending(false);
-    // Only navigate once the completion is actually confirmed persisted --
-    // on failure, `pending` (from the provider) now carries the error, and
-    // the shared banner below renders the retry/close-anyway choice
-    // instead. Navigating away here would abandon that state mid-flight.
-    if (succeeded) {
-      router.push(href);
-    }
   }
 
   return (

@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useContext, useRef, useState, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
 import { setOnboardingTourStatusAction } from "./actions";
 import { TourDialog } from "./tour-dialog";
 import type { OnboardingTourStatus } from "@/lib/supabase/database.types";
@@ -10,8 +11,23 @@ type TourPhase = "closed" | "welcome" | "step";
 /** Tracks an in-flight or failed attempt to close the dialog with a given
  * status -- while this is non-null, the dialog stays open and shows either
  * a saving indicator or a retry/close-anyway prompt, never silently
- * discarding the fact that the write hasn't been confirmed yet. */
-type PendingClose = { status: "completed" | "skipped"; saving: boolean; error: string | null };
+ * discarding the fact that the write hasn't been confirmed yet.
+ *
+ * `navigateTo` carries the final step's own action-button intent (e.g.
+ * "Helyszín hozzáadása" -> /dashboard/locations) across a failed attempt
+ * and into a later retry. It has to live here, not as a local variable
+ * where the button click originated, because "Próbáld újra" calls this
+ * same pending attempt back through `retry()` below -- not back through
+ * the button -- so the original intent would otherwise be lost the moment
+ * the first attempt fails. Every other close path (Kihagyom, Escape,
+ * backdrop, the ordinary Bezárás button) passes null here and never
+ * navigates, on the first attempt or any retry of it. */
+type PendingClose = {
+  status: "completed" | "skipped";
+  saving: boolean;
+  error: string | null;
+  navigateTo: string | null;
+};
 
 type TourContextValue = {
   phase: TourPhase;
@@ -31,11 +47,13 @@ type TourContextValue = {
    * open with an error/retry prompt if the write fails; never silently
    * closes on a failed save. */
   skip: () => void;
-  /** Attempts to record "completed" and close -- used by the final step's
-   * own Bezárás button. Returns whether it actually succeeded, so a
-   * caller that also needs to navigate (the final step's action button)
-   * can wait for a confirmed write before leaving the page. */
-  complete: () => Promise<boolean>;
+  /** Attempts to record "completed" and close -- used by both the final
+   * step's ordinary Bezárás button (no argument) and its own action
+   * button ("Helyszín hozzáadása", passing the href it should navigate to
+   * once the write is actually confirmed -- including via a later retry,
+   * not just this immediate call). Returns whether it actually
+   * succeeded. */
+  complete: (navigateTo?: string | null) => Promise<boolean>;
   /** Retries the currently pending (failed) close attempt. */
   retry: () => void;
   /** Gives up on persisting the pending close attempt and closes anyway --
@@ -71,6 +89,7 @@ export function TourProvider({
   );
   const [stepIndex, setStepIndex] = useState(0);
   const [pending, setPending] = useState<PendingClose | null>(null);
+  const router = useRouter();
   // This client's best understanding of the persisted status -- seeded
   // from the server-rendered value, updated only after a confirmed
   // successful write. Purely a client-side optimization (skips an
@@ -100,7 +119,10 @@ export function TourProvider({
     setStepIndex((i) => Math.max(0, i - 1));
   }
 
-  async function attemptClose(status: "completed" | "skipped"): Promise<boolean> {
+  async function attemptClose(
+    status: "completed" | "skipped",
+    navigateTo: string | null,
+  ): Promise<boolean> {
     // Client-side mirror of the server's own terminal-state guard -- avoids
     // an unnecessary request for the common "reopened a completed tour,
     // dismissed it again" case. Not load-bearing for correctness (the
@@ -108,10 +130,11 @@ export function TourProvider({
     if (lastKnownStatusRef.current === status || lastKnownStatusRef.current === "completed") {
       setPending(null);
       setPhase("closed");
+      if (navigateTo) router.push(navigateTo);
       return true;
     }
 
-    setPending({ status, saving: true, error: null });
+    setPending({ status, saving: true, error: null, navigateTo });
     // A Server Action call rejects (rather than resolving with `{ error }`)
     // on a genuine network failure -- a dropped connection, a timeout, the
     // server process itself erroring before the function body ever runs.
@@ -124,30 +147,36 @@ export function TourProvider({
     try {
       result = await setOnboardingTourStatusAction(status);
     } catch {
-      setPending({ status, saving: false, error: "Nem sikerült menteni az útmutató állapotát." });
+      setPending({ status, saving: false, error: "Nem sikerült menteni az útmutató állapotát.", navigateTo });
       return false;
     }
     if (result.error) {
-      setPending({ status, saving: false, error: result.error });
+      setPending({ status, saving: false, error: result.error, navigateTo });
       return false;
     }
     lastKnownStatusRef.current = status;
     setPending(null);
     setPhase("closed");
+    // Navigating here, rather than back at whatever call site originally
+    // triggered this attempt, is what makes a later retry (which re-enters
+    // this same function through `retry()`, carrying `pending.navigateTo`
+    // forward) still navigate on eventual success -- the call site itself
+    // is long gone by the time a retry succeeds.
+    if (navigateTo) router.push(navigateTo);
     return true;
   }
 
   function skip() {
-    void attemptClose("skipped");
+    void attemptClose("skipped", null);
   }
 
-  function complete(): Promise<boolean> {
-    return attemptClose("completed");
+  function complete(navigateTo: string | null = null): Promise<boolean> {
+    return attemptClose("completed", navigateTo);
   }
 
   function retry() {
     if (pending) {
-      void attemptClose(pending.status);
+      void attemptClose(pending.status, pending.navigateTo);
     }
   }
 
