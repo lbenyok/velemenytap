@@ -15,7 +15,7 @@ const LABELS: Record<number, string> = {
 const REFLECTIONS: Record<number, string> = {
   1: "Sajnáljuk, hogy nem voltál elégedett.",
   2: "Köszönjük, hogy jelezted.",
-  3: "Jó hallani, köszönjük!",
+  3: "Jó hallani, köszönjük.",
   4: "Örülünk, hogy élvezted!",
   5: "Csodálatos, köszönjük!",
 };

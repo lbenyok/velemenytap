@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 export const metadata: Metadata = {
   title: "VéleményTap — minden csillag számít",
   description:
-    "NFC-kártyát teszel ki a pultra. A vásárlóid pár másodperc alatt értékelnek, és mindenki ugyanahhoz a Google-linkhez jut, függetlenül attól, hány csillagot adott.",
+    "NFC-kártyát teszel ki a pultra. A vásárlóid pár másodperc alatt értékelnek, és utána mindenki ugyanazt a Google-értékelés linket kapja, a csillagok számától függetlenül.",
 };
 
 const fraunces = Fraunces({
@@ -31,7 +31,7 @@ const STEPS = [
   {
     n: "01",
     title: "Koppintás",
-    body: "A vásárló odaérinti a telefonját a kártyához: nincs mit letölteni, nincs bejelentkezés, nincs beírandó cím.",
+    body: "A vásárló odaérinti a telefonját a kártyához. Nincs mit letölteni, nincs bejelentkezés, nem kell semmit beírnia.",
   },
   {
     n: "02",
@@ -159,8 +159,9 @@ function Hero() {
           <p className="mt-5 max-w-lg text-base leading-relaxed text-[var(--pf-ink-muted)] sm:text-lg">
             Kiteszed a kártyát a pultra. A vásárlód hozzáérinti a
             telefonját, és pár másodperc alatt kész az értékelés. Utána
-            mindenki ugyanahhoz a Google-linkhez jut, egy csillagtól ötig —
-            a válogatásról a Google szabályzata miatt is szó sem lehet.
+            mindenki ugyanahhoz a Google-értékelés linkhez jut, egy
+            csillagtól ötig — válogatásra nincs mód, ezt a Google
+            szabályzata sem engedné.
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-4">
             <Link
@@ -202,7 +203,7 @@ function ProofRow() {
           className="mt-3 max-w-xl text-2xl font-medium sm:text-3xl"
           style={{ fontFamily: "var(--font-display)" }}
         >
-          Akárhány csillagot adnak, ugyanoda jutnak.
+          Egy csillagtól ötig, mindenki ugyanoda jut.
         </h2>
         <div className="mt-8 grid grid-cols-2 gap-3 sm:grid-cols-5 sm:gap-4">
           {[1, 2, 3, 4, 5].map((n) => (
@@ -303,7 +304,7 @@ function DashboardPreview() {
         className="mt-3 max-w-xl text-2xl font-medium sm:text-3xl"
         style={{ fontFamily: "var(--font-display)" }}
       >
-        Minden koppintás egy helyen fut össze.
+        Egy irányítópult az összes koppintásnak.
       </h2>
       <div className="mt-10 grid gap-5 sm:grid-cols-3">
         {DASHBOARD_CARDS.map(({ icon: Icon, title, body }) => (
