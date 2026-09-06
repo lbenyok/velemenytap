@@ -106,6 +106,43 @@ jobs:
           path: veleminytap/playwright-report/
           retention-days: 14
 
+  # Round-6 finding R6-08. `e2e` above SKIPS (its own `if` is false) for a
+  # fork pull request, since GitHub Actions never exposes repository
+  # secrets to a `pull_request` run whose head is a fork -- correct and
+  # intentional on its own. The problem is what that skip means for branch
+  # protection: GitHub treats a SKIPPED job as satisfying a required status
+  # check, the same as a job that actually ran and passed. Once `e2e` is
+  # configured as a required check (DEPLOYMENT.md § 5, still an open owner
+  # action -- R4-02), a fork PR could merge having never run the e2e suite
+  # at all, silently defeating round-4 R4-04's "the RPC privilege matrix
+  # and concurrency tests must never silently not-run" guarantee for
+  # exactly the untrusted-contribution path that guarantee matters most for.
+  #
+  # This job is the actual required check to configure in branch
+  # protection instead of `e2e` itself (see DEPLOYMENT.md § 5's fork
+  # contribution flow) -- it treats anything other than `e2e` having
+  # genuinely SUCCEEDED as a failure, including a skip, so a skipped e2e
+  # run can never satisfy it. It needs no secrets and does not check out
+  # untrusted code (no pull_request_target), so a fork PR gains nothing by
+  # triggering it. Runs as part of the same workflow run as `e2e` itself,
+  # so it is inherently bound to the same immutable PR head SHA that
+  # triggered this run -- no separate mechanism is needed for that.
+  e2e-gate:
+    name: E2E actually ran (required check)
+    needs: [check-e2e-secrets, e2e]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless e2e genuinely succeeded (a skip does not count)
+        run: |
+          echo "check-e2e-secrets configured: ${{ needs.check-e2e-secrets.outputs.configured }}"
+          echo "e2e result: ${{ needs.e2e.result }}"
+          if [ "${{ needs.e2e.result }}" != "success" ]; then
+            echo "::error::The e2e job did not succeed (result: '${{ needs.e2e.result }}'). This is the required check to configure in branch protection instead of the bare 'e2e' job -- GitHub treats a SKIPPED job as satisfying a required check, which would let a fork pull request (the one case e2e legitimately skips for, since GitHub never hands it repository secrets) merge without the RPC privilege matrix, RLS tests, or any other database-dependent check ever having run. See DEPLOYMENT.md's fork contribution flow for how a maintainer runs the real suite against a fork PR's code before merging it."
+            exit 1
+          fi
+          echo "e2e genuinely succeeded for this commit."
+
   # Round-4 finding R4-01. Confirms Vercel actually deployed the commit
   # that was just pushed to master, by polling the live production
   # /api/health endpoint until it reports this exact SHA. This is what
