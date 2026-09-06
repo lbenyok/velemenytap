@@ -113,31 +113,76 @@ export async function updateOrganizationSettingsAction(
     // now (round-6 R6-04) -- a client can no longer report its own
     // reservation as delivered/failed, so both privileged calls use the
     // admin client, never the user's RLS-bound session.
+    //
+    // Round-7 finding R7-06 (LOW): once request_notification_email_change
+    // above has created a 'reserved' row, EVERY path from here on --
+    // issue_notification_email_change_token failing, Resend failing, or
+    // an unexpected exception anywhere in between -- must still finalize
+    // that reservation, or it strands as 'reserved' (permanently
+    // consuming its hourly-budget slot until it ages out of the trailing-
+    // hour window on its own, per that table's own documented worst case)
+    // for a send that never happened. The `try`/`catch`/`finally` here
+    // guarantees exactly one finalize attempt regardless of which branch
+    // ran or whether anything threw -- `sent` starts false and is only
+    // ever set true after a confirmed successful send, so an exception
+    // partway through is reported as a failed attempt, never a delivered
+    // one.
     const admin = createAdminClient();
-    const { data: token, error: tokenError } = await admin.rpc("issue_notification_email_change_token", {
-      p_log_id: logId,
-    });
-    if (tokenError || !token) {
+    let sent = false;
+    let issuanceFailed = false;
+    try {
+      const { data: token, error: tokenError } = await admin.rpc("issue_notification_email_change_token", {
+        p_log_id: logId,
+      });
+      if (tokenError || !token) {
+        issuanceFailed = true;
+      } else {
+        sent = await sendNotificationEmailConfirmation({
+          email: parsed.data.notification_email,
+          token,
+          organizationName: parsed.data.name,
+        });
+      }
+    } catch (err) {
+      console.error("Unexpected error issuing or sending the notification-email confirmation:", err);
+      issuanceFailed = true;
+    } finally {
+      try {
+        const { error: finalizeError } = await admin.rpc("finalize_notification_email_change_send", {
+          p_log_id: logId,
+          p_delivered: sent,
+        });
+        if (finalizeError) {
+          console.error("Failed to finalize a notification-email-change reservation:", finalizeError);
+        }
+      } catch (err) {
+        // A network-level failure to even reach finalize itself -- logged,
+        // not retried indefinitely; the reservation still ages out of the
+        // trailing-hour budget window on its own (an accepted, bounded
+        // worst case, the same one an unfinalized reservation from a
+        // crashed process already represents -- see the migration's own
+        // comment on private.notification_email_change_log).
+        console.error("Unexpected error finalizing a notification-email-change reservation:", err);
+      }
+    }
+
+    if (issuanceFailed) {
       return {
         error: "Nem sikerült elindítani az e-mail cím megerősítését. Kérjük, próbáld újra.",
       };
     }
-
-    const sent = await sendNotificationEmailConfirmation({
-      email: parsed.data.notification_email,
-      token,
-      organizationName: parsed.data.name,
-    });
-    await admin.rpc("finalize_notification_email_change_send", {
-      p_log_id: logId,
-      p_delivered: sent,
-    });
     if (!sent) {
       return {
         error:
           "Nem sikerült elküldeni a megerősítő e-mailt. Ellenőrizd az e-mail címet, és próbáld újra.",
       };
     }
+    // Deliberate: if the email genuinely sent (`sent === true`) but the
+    // finalize call itself failed (logged above), the user still sees
+    // success -- the real-world outcome they care about (an email went
+    // out) happened; a finalize failure is purely an internal budget-
+    // accounting concern, not something that should make a successful
+    // send look like a failure to the person who triggered it.
     pendingEmail = parsed.data.notification_email;
   }
 
