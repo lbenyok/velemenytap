@@ -154,10 +154,12 @@ test("R6-01: an authenticated client cannot call issue_notification_email_change
 });
 
 test("R6-04: an authenticated client cannot override the cooldown/budget -- the parameters no longer exist on the RPC", async () => {
+  // Round-7 finding R7-03's general principle applied here too: assert the
+  // SPECIFIC expected failure (PostgREST's "no matching function overload"
+  // class, PGRST202), not merely "some error occurred" -- a permission
+  // error or an unrelated failure would pass an "any error" assertion just
+  // as easily without actually proving there's no overload left to tune.
   const client = await userClient(member.email, member.password);
-  // Calling with the OLD, now-removed parameter names must fail as "no
-  // matching function", not silently ignore them and succeed -- proving
-  // there is no overload a client could still hit to tune its own limits.
   const { data, error } = await client.rpc("request_notification_email_change", {
     p_organization_id: member.orgId,
     p_email: "candidate@example.com",
@@ -165,10 +167,22 @@ test("R6-04: an authenticated client cannot override the cooldown/budget -- the 
     p_org_hourly_budget: 999999,
   });
   expect(data).toBeNull();
-  expect(error).not.toBeNull();
+  expect(error?.code).toBe("PGRST202");
+  expect(error?.message).toContain("Could not find the function");
 });
 
-test("R6-01: the round-3 3-argument function is no longer callable by authenticated (its live token-leak grant was revoked)", async () => {
+test("R6-01: the round-3 3-argument function no longer exists at all -- it was dropped, not merely grant-stripped", async () => {
+  // History here: round-6 (R6-01/R6-03) planned to keep this function
+  // defined with its grants revoked, as a rollout-compatibility bridge.
+  // Round-7's own verification discovered that plan never actually
+  // worked -- its third parameter's default made it ambiguous against the
+  // new 2-argument function for PostgREST's own overload resolution,
+  // breaking every real call regardless of grants (see DECISIONS.md).
+  // Migration 20260906100000 drops it outright. Calling it now fails as
+  // "function not found" (PGRST202), not "permission denied" -- asserting
+  // the SPECIFIC class, not just "some error", per round-7 R7-03's general
+  // principle that an unconstrained error assertion proves nothing about
+  // which failure actually occurred.
   const client = await userClient(member.email, member.password);
   const { data, error } = await client.rpc("request_notification_email_change", {
     p_organization_id: member.orgId,
@@ -176,7 +190,7 @@ test("R6-01: the round-3 3-argument function is no longer callable by authentica
     p_expires_in_minutes: 1440,
   });
   expect(data).toBeNull();
-  expect(error).not.toBeNull();
+  expect(error?.code).toBe("PGRST202");
 });
 
 test("R3-03: confirming with the correct token promotes the pending address to active", async () => {
@@ -447,6 +461,96 @@ test("R5-12: an organization-wide hourly budget caps total requests, proven unde
   expect(budgetExceeded).toHaveLength(5 - BUDGET);
 });
 
+/**
+ * Found during this round's own independent adversarial self-review, not
+ * one of R7-01 through R7-08 as originally listed -- but the identical bug
+ * class as R7-05 (claim_negative_alert_send), in the very function R6-04
+ * had already partially fixed for it. request_notification_email_change()
+ * captures clock_timestamp() correctly for its cooldown/budget CHECKS, but
+ * the row it inserts right after used to rely on reserved_at's column
+ * DEFAULT (now(), frozen at this transaction's own start -- before it
+ * waited on the advisory lock), not the same clock_timestamp() value.
+ *
+ * This test forces the exact skew that bug depended on: a second raw
+ * connection holds the same advisory lock request_notification_email_change
+ * itself acquires (hashtext('notification_email_change:' || orgId)) for a
+ * fixed, known duration, so the RPC call's transaction is genuinely queued
+ * behind it -- not a timing assumption about how fast the RPC happens to
+ * run. Once the lock is released and the RPC returns, the resulting log
+ * row's reserved_at must be close to the moment the lock was actually
+ * released (when the RPC's own clock_timestamp() call could first run),
+ * never close to the moment the RPC call was originally issued (its
+ * now()-frozen transaction start, well before the lock was free).
+ */
+test("R7-05-class: reserved_at reflects when the reservation actually happened, not a now() frozen before the advisory-lock wait", async () => {
+  const lockHolder = await connectToTestDb();
+  test.skip(!dbClient || !lockHolder, "No direct Postgres connection available in this environment.");
+  if (!dbClient || !lockHolder) return;
+
+  const HOLD_MS = 1500;
+  try {
+    // A server-side timestamp taken BEFORE the RPC's own transaction even
+    // starts -- what an unfixed now() (frozen at transaction start) would
+    // have produced for reserved_at, since the RPC call is issued only
+    // after this. Compared against reserved_at using ONLY server-side
+    // clock_timestamp() readings throughout this test, never the test
+    // runner's own Date.now() -- a remote hosted database's clock is not
+    // guaranteed to agree with the local machine's, and an earlier version
+        // of this test compared client wall-clock time against server
+    // timestamps directly, which produced a spurious multi-second mismatch
+    // from clock skew alone, not from the bug this test exists to catch.
+    const before = await dbClient.query<{ now: string }>("select clock_timestamp() as now");
+    const beforeMs = new Date(before.rows[0].now).getTime();
+
+    await lockHolder.query("begin");
+    await lockHolder.query("select pg_advisory_xact_lock(hashtext('notification_email_change:' || $1::text))", [
+      member.orgId,
+    ]);
+
+    const client = await userClient(member.email, member.password);
+    let rpcStillBlocked = true;
+    const rpcPromise = client
+      .rpc("request_notification_email_change", { p_organization_id: member.orgId, p_email: "skew-check@example.com" })
+      .then((r) => {
+        rpcStillBlocked = false;
+        return r;
+      });
+
+    await new Promise((resolve) => setTimeout(resolve, HOLD_MS));
+    // The RPC's own advisory-lock wait must still be blocking it while the
+    // raw connection above holds the identical lock key -- confirming this
+    // test actually forces the skew, not merely hoping the RPC happens to
+    // be slow enough on its own.
+    expect(rpcStillBlocked).toBe(true);
+
+    await lockHolder.query("commit");
+    const released = await dbClient.query<{ now: string }>("select clock_timestamp() as now");
+    const releasedMs = new Date(released.rows[0].now).getTime();
+    const { data: logId, error } = await rpcPromise;
+    expect(error).toBeNull();
+    expect(logId).not.toBeNull();
+
+    const { rows } = await dbClient.query(
+      "select reserved_at from private.notification_email_change_log where id = $1",
+      [logId],
+    );
+    const reservedAtMs = new Date(rows[0].reserved_at).getTime();
+
+    // Before the fix: reserved_at fell back to the reserved_at column's
+    // now() default -- frozen at the RPC's own transaction start, which
+    // happened before it ever waited on the lock -- landing close to
+    // `beforeMs`, well over a second too early. After the fix: it must
+    // land at or after the lock was actually released, when
+    // clock_timestamp() first had the chance to run inside the function.
+    expect(reservedAtMs).toBeGreaterThanOrEqual(releasedMs - 500); // small tolerance for statement-execution time
+    expect(reservedAtMs).toBeGreaterThan(beforeMs + HOLD_MS / 2); // the actual regression check
+    expect(reservedAtMs).toBeLessThan(releasedMs + 5000);
+  } finally {
+    await lockHolder.query("rollback").catch(() => {});
+    await lockHolder.end();
+  }
+});
+
 test("R5-12: a failed send does not permanently consume the budget it never actually used", async () => {
   test.skip(!dbClient, "No direct Postgres connection available in this environment.");
   const BUDGET = 1;
@@ -478,6 +582,80 @@ test("R5-12: a failed send does not permanently consume the budget it never actu
     p_email: "attempt2@example.com",
   });
   expect(attempt2.error).toBeNull();
+});
+
+/**
+ * Round-7 finding R7-06 (LOW): settings-actions.ts used to return
+ * immediately if issue_notification_email_change_token failed, without
+ * ever finalizing the reservation request_notification_email_change had
+ * already created -- stranding it as 'reserved' (consuming its budget
+ * slot until it ages out of the trailing-hour window on its own) for a
+ * token that was never even minted, let alone sent. Fixed with a
+ * try/catch/finally that always finalizes as failed on that path.
+ *
+ * Two things this test proves that weren't covered before: (1)
+ * issue_notification_email_change_token genuinely raises VT205 for a
+ * reservation that isn't 'reserved' any more -- reproduced directly by
+ * finalizing a reservation first, then attempting to issue a token for
+ * it, its own real precondition check, not a contrived stand-in. (2) The
+ * settings-actions.ts fix's actual dependency -- that finalizing an
+ * issuance-failure path as `p_delivered: false` frees the budget slot the
+ * same way a post-issuance send failure already does (the test directly
+ * above) -- so repeated issuance failures can never consume all of an
+ * organization's hourly request capacity.
+ */
+test("R7-06: issue_notification_email_change_token fails (VT205) for an already-resolved reservation, and finalizing that failure frees its budget slot", async () => {
+  test.skip(!dbClient, "No direct Postgres connection available in this environment.");
+  const BUDGET = 2;
+  await setRateLimitConfig(member.orgId, 0, BUDGET);
+
+  const client = await userClient(member.email, member.password);
+  const admin = adminClient();
+
+  // Reservation #1: resolved (finalized as failed) WITHOUT ever issuing a
+  // token for it at all -- e.g. a crash between reserving and issuing, in
+  // the real flow. Attempting to issue a token for it now must fail with
+  // VT205, proving that check is real, not merely documented.
+  const reservation1 = await client.rpc("request_notification_email_change", {
+    p_organization_id: member.orgId,
+    p_email: "attempt1@example.com",
+  });
+  expect(reservation1.error).toBeNull();
+  const logId1 = reservation1.data!;
+
+  const preemptiveFinalize = await admin.rpc("finalize_notification_email_change_send", {
+    p_log_id: logId1,
+    p_delivered: false,
+  });
+  expect(preemptiveFinalize.error).toBeNull();
+
+  const issueAfterResolved = await admin.rpc("issue_notification_email_change_token", { p_log_id: logId1 });
+  expect(issueAfterResolved.data).toBeNull();
+  expect(issueAfterResolved.error?.code).toBe("VT205");
+
+  // Reservation #2, same organization, same tiny budget: this is the
+  // settings-actions.ts scenario itself -- issuance fails for reservation
+  // #2, the finally block finalizes it as failed (exactly the same RPC
+  // call the test above already proved frees budget), and capacity must
+  // still be available for a THIRD, later attempt despite two prior
+  // reservations against a budget of only 2.
+  const reservation2 = await client.rpc("request_notification_email_change", {
+    p_organization_id: member.orgId,
+    p_email: "attempt2@example.com",
+  });
+  expect(reservation2.error).toBeNull();
+  const logId2 = reservation2.data!;
+  const finalizeIssuanceFailure = await admin.rpc("finalize_notification_email_change_send", {
+    p_log_id: logId2,
+    p_delivered: false,
+  });
+  expect(finalizeIssuanceFailure.error).toBeNull();
+
+  const reservation3 = await client.rpc("request_notification_email_change", {
+    p_organization_id: member.orgId,
+    p_email: "attempt3@example.com",
+  });
+  expect(reservation3.error).toBeNull();
 });
 
 /**
