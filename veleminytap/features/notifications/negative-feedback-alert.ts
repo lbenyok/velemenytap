@@ -143,13 +143,23 @@ export async function sendNegativeFeedbackAlert(params: {
     // and its own console logging is dev-only, so this is the only place
     // a production send failure would ever be visible.
     if (sendError) {
-      console.error("Failed to send negative feedback alert email:", sendError);
+      // Logs only name/message, not the whole SDK error object -- found
+      // during this round's own self-review: Resend's documented error
+      // shape doesn't echo back submitted content, but that's not a
+      // contract this file should rely on staying true forever, and the
+      // customer's own feedback text/HTML body live in this same
+      // function's closure, not in the error object itself, so there's no
+      // debugging value lost.
+      console.error("Failed to send negative feedback alert email:", { name: sendError.name, message: sendError.message });
       return;
     }
 
     delivered = true;
   } catch (error) {
-    console.error("Failed to send negative feedback alert email:", error);
+    console.error(
+      "Failed to send negative feedback alert email:",
+      error instanceof Error ? { name: error.name, message: error.message } : error,
+    );
   } finally {
     if (logId !== null) {
       const { error: finalizeError } = await admin.rpc("finalize_negative_alert_send", {

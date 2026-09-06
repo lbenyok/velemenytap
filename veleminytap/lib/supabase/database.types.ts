@@ -17,6 +17,7 @@ export type LocationStatus = "active" | "inactive";
 export type NfcCardStatus = "active" | "inactive";
 export type FeedbackStatus = "new" | "in_progress" | "resolved";
 export type FeedbackPriority = "high" | "medium" | "normal";
+export type OnboardingTourStatus = "not_started" | "completed" | "skipped";
 
 export interface Database {
   public: {
@@ -32,6 +33,7 @@ export interface Database {
           notification_email_pending_token_hash: string | null;
           notification_email_pending_expires_at: string | null;
           logo_url: string | null;
+          onboarding_tour_status: OnboardingTourStatus;
           created_at: string;
           updated_at: string;
         };
@@ -45,6 +47,7 @@ export interface Database {
           notification_email_pending_token_hash?: string | null;
           notification_email_pending_expires_at?: string | null;
           logo_url?: string | null;
+          onboarding_tour_status?: OnboardingTourStatus;
           created_at?: string;
           updated_at?: string;
         };
@@ -58,6 +61,7 @@ export interface Database {
           notification_email_pending_token_hash?: string | null;
           notification_email_pending_expires_at?: string | null;
           logo_url?: string | null;
+          onboarding_tour_status?: OnboardingTourStatus;
           created_at?: string;
           updated_at?: string;
         };
@@ -336,9 +340,22 @@ export interface Database {
         Args: {
           p_organization_id: number;
           p_email: string;
+        };
+        Returns: number;
+      };
+      issue_notification_email_change_token: {
+        Args: {
+          p_log_id: number;
           p_expires_in_minutes?: number;
         };
         Returns: string;
+      };
+      finalize_notification_email_change_send: {
+        Args: {
+          p_log_id: number;
+          p_delivered: boolean;
+        };
+        Returns: undefined;
       };
       clear_notification_email: {
         Args: {

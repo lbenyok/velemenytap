@@ -19,6 +19,9 @@ const PUBLIC_PATHS = [
   // Round-3 R3-03: the notification-email confirmation link is clicked
   // from an email, possibly in a browser/device with no session at all.
   "/api/notification-email/confirm",
+  // Round-4 R4-01: polled by CI's post-deploy verification job and by the
+  // rollout script (scripts/rollout.mjs), neither of which has a session.
+  "/api/health",
 ];
 
 function isPublicPath(pathname: string): boolean {

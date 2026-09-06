@@ -130,6 +130,49 @@ test("R3-02: an organization-wide budget of one under REAL concurrent claims for
   expect(new Set(claimedIds).size).toBe(BUDGET);
 });
 
+/**
+ * Round-7 finding R7-05 (MEDIUM). claim_negative_alert_send() used now()
+ * (frozen at this transaction's own START) for its cooldown check, budget
+ * cutoff, and the timestamp it writes -- all evaluated AFTER acquiring a
+ * per-organization advisory lock. Under genuine concurrency, a transaction
+ * queued behind another can resume with real wall-clock time well past its
+ * own frozen now(), so its checks (and the value it writes) reflect a
+ * stale instant rather than the moment it actually runs. This is the same
+ * class of bug round-6 R6-04 fixed in request_notification_email_change --
+ * confirmed there as a real, reproducible, intermittent test failure
+ * before the fix (see that migration's own comment) -- so this test uses
+ * the identical shape: concurrent claims for the SAME card with
+ * p_cooldown_minutes: 0 (meaning "no cooldown restriction at all") must
+ * ALL succeed. Before the clock_timestamp() fix, the queued claim(s) could
+ * spuriously see the card as still "on cooldown" and be incorrectly
+ * rejected, purely from timing, not from the cooldown actually being in
+ * effect.
+ */
+test("R7-05: concurrent claims for the SAME card with a zero-minute cooldown all succeed -- no spurious rejection from a frozen now()", async () => {
+  const admin = adminClient();
+  const results = await Promise.all(
+    Array.from({ length: 5 }, () =>
+      admin.rpc("claim_negative_alert_send", {
+        p_nfc_card_id: card.cardId,
+        p_cooldown_minutes: 0,
+        p_org_hourly_budget: 100,
+      }),
+    ),
+  );
+
+  for (const r of results) {
+    expect(r.error).toBeNull();
+  }
+  // Every one of the 5 concurrent claims must have succeeded (non-null) --
+  // a zero-minute cooldown means there is no cooldown restriction to
+  // reject any of them for, regardless of the order they actually run in
+  // once serialized through the advisory lock.
+  const claimedIds = results.map((r) => r.data).filter((id): id is number => id !== null);
+  expect(claimedIds).toHaveLength(5);
+  // Five genuinely distinct reservations, not the same one counted twice.
+  expect(new Set(claimedIds).size).toBe(5);
+});
+
 test("R2-08: an organization-wide hourly budget caps total claims regardless of how many different cards they come from", async () => {
   const admin = adminClient();
   const BUDGET = 5;

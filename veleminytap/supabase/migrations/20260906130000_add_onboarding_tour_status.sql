@@ -1,0 +1,62 @@
+-- First-time dashboard onboarding tour: server-side persisted state, not
+-- localStorage -- must survive a different device/browser, and must be
+-- readable server-side so the dashboard layout can decide whether to show
+-- it before the client ever renders.
+--
+-- Scoped to the ORGANIZATION, not the user. Rationale: the tour explains
+-- the dashboard's own areas and nudges toward "create your first location"
+-- -- that's a fact about whether the ORGANIZATION has been introduced to
+-- the product, not about one person's individual familiarity with it. If a
+-- future invite flow ships (see DECISIONS.md's "no invite flow yet" note),
+-- a newly-invited teammate joining an already-set-up organization should
+-- not be told to create a first location that already exists. This also
+-- matches the existing convention for other org-level configuration on
+-- this table (notification_email, logo_url) -- not per-member.
+--
+-- Same reasoning as every other status/enum column in this schema
+-- (locations.status, nfc_cards.status, feedback.status): a plain text
+-- column with an explicit CHECK constraint, not an app-trusted value
+-- inside the existing settings jsonb column -- database-level integrity
+-- regardless of what the application sends.
+--
+-- Found during an independent review, before this file ever reached
+-- production (still true as of this rewrite -- see STATUS.md/DEPLOYMENT.md;
+-- this is why editing it in place, not layering a correction on top, is
+-- safe, the same reasoning already established for migration 18): the
+-- original version of this migration added the column with
+-- `default 'not_started'` and then ran a separate `update ... set
+-- onboarding_tour_status = 'completed'` over every existing row. That
+-- UPDATE -- a real DML statement touching every pre-existing organization
+-- -- fires `organizations_set_updated_at` (migration 1), bumping
+-- `updated_at` on every organization that already existed, for a reason
+-- that has nothing to do with anything the organization itself changed.
+--
+-- Fixed with the standard two-step pattern instead: add the column with
+-- `default 'completed'` first -- for a NOT NULL column, Postgres 11+
+-- applies a constant DEFAULT as a fast, metadata-only catalog change, not
+-- a per-row rewrite, so no UPDATE ever runs against the rows that already
+-- exist and `updated_at` is never touched for them -- then change the
+-- column's default to `not_started` in a second statement, still inside
+-- this same migration's implicit transaction. Changing a column's default
+-- has no effect on rows that already have a stored value; it only changes
+-- what a FUTURE insert with no explicit value receives. Net effect,
+-- verified directly against the isolated project (see DATABASE_SCHEMA.md
+-- § "Onboarding tour state" for the exact verification):
+--   * every organization that existed before this migration reads
+--     'completed', with its updated_at completely unchanged;
+--   * every organization created_organization_atomic() creates after this
+--     migration applies gets 'not_started' from the column's own default,
+--     with no code in that function needing to know this column exists;
+--   * the CHECK constraint is unchanged, still exactly three values;
+--   * a clean replay from an empty database produces the same final
+--     schema (an empty table has no pre-existing rows to differ from a
+--     freshly-created one, so both migration forms are equivalent there --
+--     the difference only matters against a database that already has
+--     organizations in it, which is exactly the production case this
+--     rewrite is for).
+alter table public.organizations
+  add column onboarding_tour_status text not null default 'completed'
+  check (onboarding_tour_status in ('not_started', 'completed', 'skipped'));
+
+alter table public.organizations
+  alter column onboarding_tour_status set default 'not_started';

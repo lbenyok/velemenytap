@@ -1,13 +1,14 @@
 import "server-only";
 
 import { createClient } from "@/lib/supabase/server";
-import type { MembershipRole } from "@/lib/supabase/database.types";
+import type { MembershipRole, OnboardingTourStatus } from "@/lib/supabase/database.types";
 
 export type CurrentOrganization = {
   id: number;
   name: string;
   slug: string;
   role: MembershipRole;
+  onboardingTourStatus: OnboardingTourStatus;
 };
 
 /**
@@ -19,7 +20,7 @@ export async function getCurrentOrganization(): Promise<CurrentOrganization | nu
   const supabase = await createClient();
   const { data } = await supabase
     .from("organization_memberships")
-    .select("role, organizations(id, name, slug)")
+    .select("role, organizations(id, name, slug, onboarding_tour_status)")
     .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle();
@@ -33,5 +34,6 @@ export async function getCurrentOrganization(): Promise<CurrentOrganization | nu
     name: data.organizations.name,
     slug: data.organizations.slug,
     role: data.role,
+    onboardingTourStatus: data.organizations.onboarding_tour_status,
   };
 }

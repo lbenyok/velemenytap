@@ -32,6 +32,7 @@ VéleményTap ("Opinion Tap") is a SaaS product for physical businesses — caf�
 - **Negative-feedback email alerts** — ratings ≤ 2 trigger a non-blocking email to the org's notification address (or all owner/admin/manager members if none is configured).
 - **Analytics & Overview** — total feedback, average rating, today/this-week counts, unresolved-negative count, rating distribution, recent feedback, volume-over-time and location/card comparisons on the Analytics page.
 - **Settings** — business name, notification email, logo URL.
+- **First-time dashboard tour** — an optional, dismissible welcome dialog plus a short step-by-step tour of the dashboard's own areas, shown automatically the first time a brand-new organization's dashboard loads; reopenable anytime from the header. Never a hard requirement for using the product. See `DATABASE_SCHEMA.md` § "Onboarding tour state."
 
 ## Explicitly out of scope for MVP
 
