@@ -267,6 +267,24 @@ export function redactSensitiveData<T extends ErrorEvent | TransactionEvent>(eve
   if (typeof event.transaction === "string") {
     event.transaction = sanitizeUrl(event.transaction);
   }
+  // Found during this round's own independent adversarial self-review:
+  // nothing above ever touched event.exception -- the actual error message
+  // text Sentry captures for every crash. No current code path in this app
+  // embeds a token/URL in a thrown Error's message (checked directly), so
+  // this isn't a live leak today, but it's exactly the kind of structural
+  // gap this file exists to close defensively -- a future `throw new
+  // Error(\`failed for ${url}\`)` anywhere in the app would otherwise ship
+  // a live confirmation token to Sentry with no redaction pass in its way
+  // at all. Same treatment as event.transaction/span.description above:
+  // sanitizeUrl catches a token embedded in a URL-shaped message, and the
+  // JSON-string check catches one embedded in a serialized object.
+  if (event.exception?.values) {
+    for (const value of event.exception.values) {
+      if (typeof value.value === "string") {
+        value.value = redactJsonStringIfSensitive(sanitizeUrl(value.value), new Set<object>(), 0);
+      }
+    }
+  }
   return event;
 }
 
@@ -274,31 +292,52 @@ export function redactSensitiveData<T extends ErrorEvent | TransactionEvent>(eve
  * Round-6 finding R6-02: `beforeSend`/`beforeSendTransaction` never see
  * individual spans within a transaction -- Sentry's HTTP instrumentation
  * attaches the full request URL (query string included) to span data under
- * `url.full` (current semantic-convention attribute name) and `http.url`
- * (the older name, still emitted by some integrations), so a live token
- * could reach Sentry through a transaction's child spans even with
+ * various semantic-convention attribute names, so a live token could reach
+ * Sentry through a transaction's child spans even with
  * `beforeSend`/`beforeSendTransaction` fully redacting the transaction
  * event itself. Wired up as `beforeSendSpan` in every Sentry config
  * (client/server/edge) alongside the other two hooks -- this is the one
  * hook that can actually reach span-level data in this SDK version.
+ *
+ * Round-7 finding R7-01 (HIGH): this originally covered only `url.full` and
+ * `http.url`. `http.target` (the OpenTelemetry HTTP semantic-convention
+ * attribute for a server span's raw `pathname + search`, confirmed present
+ * as a real constant in the installed @sentry/vercel-edge 10.73.0 bundle,
+ * which sentry.edge.config.ts uses for this app's own Edge-runtime
+ * middleware) was not covered, and reproduced leaking a canary unchanged.
+ * `url.original` (another semantic-convention alias for the same shape) is
+ * covered for the same defensive reason `http.url` already was -- "the
+ * older/alternate name, still emitted by some integrations." Full
+ * path-plus-query values use `sanitizeUrl` (it already handles a bare
+ * `pathname?query` string, the exact shape `http.target`/`url.original`
+ * carry); bare-query-string attributes use `sanitizeQueryParams`.
  */
-const SPAN_URL_ATTRIBUTE_KEYS = ["url.full", "http.url"];
+const SPAN_URL_ATTRIBUTE_KEYS = ["url.full", "http.url", "http.target", "url.original"];
+const SPAN_QUERY_ATTRIBUTE_KEYS = ["url.query", "http.query"];
 
 export function redactSpan(span: SpanJSON): SpanJSON {
-  if (!span.data) {
-    return span;
-  }
-  const data = { ...span.data };
-  for (const key of SPAN_URL_ATTRIBUTE_KEYS) {
-    const value = data[key];
-    if (typeof value === "string") {
-      data[key] = sanitizeUrl(value);
+  const data = span.data ? { ...span.data } : span.data;
+  if (data) {
+    for (const key of SPAN_URL_ATTRIBUTE_KEYS) {
+      const value = data[key];
+      if (typeof value === "string") {
+        data[key] = sanitizeUrl(value);
+      }
+    }
+    for (const key of SPAN_QUERY_ATTRIBUTE_KEYS) {
+      const value = data[key];
+      // Sentry's own `url.query` is stored WITH its leading "?"
+      // (URL.prototype.search's own format) -- sanitizeQueryParams's
+      // string branch already handles that prefix itself.
+      if (typeof value === "string") {
+        data[key] = sanitizeQueryParams(value) as string;
+      }
     }
   }
-  if (typeof data["url.query"] === "string") {
-    // Stored WITH its leading "?" (URL.prototype.search's own format) --
-    // sanitizeQueryParams's string branch handles that prefix itself.
-    data["url.query"] = sanitizeQueryParams(data["url.query"] as string) as string;
-  }
-  return { ...span, data };
+  // Defensive, same reasoning as event.transaction in redactSensitiveData:
+  // Sentry's own span-naming strips query strings from `description`
+  // already, but a future SDK change or manually-instrumented span isn't
+  // guaranteed to.
+  const description = typeof span.description === "string" ? sanitizeUrl(span.description) : span.description;
+  return { ...span, ...(data ? { data } : {}), description };
 }

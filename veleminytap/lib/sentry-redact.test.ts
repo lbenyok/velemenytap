@@ -161,6 +161,70 @@ describe("redactSensitiveData", () => {
     });
   });
 
+  /**
+   * Found during this round's own independent adversarial self-review, not
+   * one of R7-01's originally-named URL/query carriers: event.exception --
+   * the actual error message text -- was never touched by any redaction
+   * pass. No current code path in this app embeds a token/URL in a thrown
+   * Error's message, so this wasn't a live leak, but a future `throw new
+   * Error(\`failed for ${url}\`)` anywhere in the app would otherwise reach
+   * Sentry with no redaction in its way at all.
+   */
+  describe("event.exception (found during this round's own self-review, not an originally-named finding)", () => {
+    it("redacts a live token embedded in a URL inside an exception value's message", () => {
+      const result = redactSensitiveData(
+        event({
+          exception: {
+            values: [
+              {
+                type: "Error",
+                value: `failed to fetch https://app.example.com/api/notification-email/confirm?token=${CANARY}`,
+              },
+            ],
+          },
+        }),
+      );
+      expect(serialized(result)).not.toContain(CANARY);
+    });
+
+    it("redacts a canary embedded in a JSON-serialized exception message under a sensitive key", () => {
+      const result = redactSensitiveData(
+        event({
+          exception: {
+            values: [{ type: "Error", value: JSON.stringify({ feedback_text: CANARY }) }],
+          },
+        }),
+      );
+      expect(serialized(result)).not.toContain(CANARY);
+    });
+
+    it("leaves a plain, non-sensitive exception message untouched", () => {
+      const result = redactSensitiveData(
+        event({ exception: { values: [{ type: "TypeError", value: "Cannot read properties of null" }] } }),
+      );
+      expect(result.exception?.values?.[0]?.value).toBe("Cannot read properties of null");
+    });
+
+    it("handles multiple exception values (a chained/cause error) redacting each one", () => {
+      const result = redactSensitiveData(
+        event({
+          exception: {
+            values: [
+              { type: "Error", value: `outer: /auth/confirm?token_hash=${CANARY}` },
+              { type: "Error", value: `inner: /auth/confirm?token_hash=${CANARY}` },
+            ],
+          },
+        }),
+      );
+      expect(serialized(result)).not.toContain(CANARY);
+    });
+
+    it("does not throw when event.exception is present but empty/malformed", () => {
+      expect(() => redactSensitiveData(event({ exception: {} }))).not.toThrow();
+      expect(() => redactSensitiveData(event({ exception: { values: [] } }))).not.toThrow();
+    });
+  });
+
   describe("transaction events (round-6 R6-02: beforeSend alone never sees these)", () => {
     it("redacts a live token from a transaction event's request.url the same way as an error event", () => {
       const txn: TransactionEvent = {
@@ -210,6 +274,63 @@ describe("redactSensitiveData", () => {
 
     it("does not throw on a span with no data at all", () => {
       expect(() => redactSpan(span({}))).not.toThrow();
+    });
+
+    /**
+     * Round-7 finding R7-01 (HIGH): this is the exact reproduction from the
+     * finding -- http.target (OpenTelemetry's "pathname + search" server-span
+     * attribute, confirmed present in the installed @sentry/vercel-edge
+     * 10.73.0 bundle this app's own Edge-runtime middleware config uses)
+     * leaked a canary unchanged through the pre-fix redactSpan.
+     */
+    it("redacts a live token from a span's http.target attribute (the R7-01 reproduction)", () => {
+      const result = redactSpan(span({ data: { "http.target": `/auth/confirm?token_hash=${CANARY}` } }));
+      expect(JSON.stringify(result)).not.toContain(CANARY);
+      expect(result.data?.["http.target"]).toContain("/auth/confirm");
+    });
+
+    it("redacts a live token from a span's url.original attribute", () => {
+      const result = redactSpan(
+        span({ data: { "url.original": `https://app.example.com/api/notification-email/confirm?token=${CANARY}` } }),
+      );
+      expect(JSON.stringify(result)).not.toContain(CANARY);
+    });
+
+    it("redacts a live token from a span's http.query attribute", () => {
+      const result = redactSpan(span({ data: { "http.query": `token=${CANARY}` } }));
+      expect(JSON.stringify(result)).not.toContain(CANARY);
+    });
+
+    it("redacts a live token from a span's description, defensively", () => {
+      const result = redactSpan(
+        span({ description: `GET /auth/confirm?token_hash=${CANARY}`, data: {} }),
+      );
+      expect(JSON.stringify(result)).not.toContain(CANARY);
+    });
+
+    it("redacts every URL-bearing field at once on a realistic incoming HTTP server span", () => {
+      // A best-effort approximation of a real Node HTTP server span's shape
+      // (method + multiple semantic-convention aliases for the same URL),
+      // asserting the canary appears NOWHERE in the fully serialized span,
+      // not just under the one key a narrower test happens to check. Uses
+      // "token" (an actually-sensitive param name -- sanitizeUrl/
+      // sanitizeQueryParams redact by known-sensitive key, not every param).
+      const result = redactSpan(
+        span({
+          description: `GET /auth/confirm?token_hash=${CANARY}`,
+          data: {
+            "http.request.method": "GET",
+            "http.target": `/auth/confirm?token_hash=${CANARY}`,
+            "http.url": `https://app.example.com/auth/confirm?token_hash=${CANARY}`,
+            "url.full": `https://app.example.com/auth/confirm?token_hash=${CANARY}`,
+            "url.original": `https://app.example.com/auth/confirm?token_hash=${CANARY}`,
+            "url.query": `?token_hash=${CANARY}`,
+            "http.query": `token_hash=${CANARY}`,
+            "url.path": "/auth/confirm",
+          },
+        }),
+      );
+      expect(JSON.stringify(result)).not.toContain(CANARY);
     });
   });
 

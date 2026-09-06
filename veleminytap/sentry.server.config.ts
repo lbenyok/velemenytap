@@ -7,16 +7,33 @@ import { redactSensitiveData, redactSpan } from "@/lib/sentry-redact";
 // even with beforeSend fully redacting plain error events. beforeSendSpan
 // is the hook that can actually reach span-level data in this SDK version;
 // see lib/sentry-redact.ts's redactSpan for what it covers.
-// sendDefaultPii is left explicitly false (the SDK default) rather than
-// implicit-by-omission -- per the finding's "prefer disabling query-string
-// collection when possible in addition to redaction": true would ask
-// Sentry's own instrumentation to collect more (cookies, full headers, URL
-// query params) than this app ever wants sent, as a second layer beneath
-// the explicit redaction above, not a replacement for it.
+//
+// Round-7 finding R7-01: `sendDefaultPii: false` (round 6's choice) is
+// itself `@deprecated` in this exact installed SDK version
+// (@sentry/core@10.73.0's own type definition says so) in favor of the
+// `dataCollection` option -- confirmed by reading resolveDataCollectionOptions.js
+// directly: passing `dataCollection` at all switches the SDK's *base*
+// defaults away from whatever `sendDefaultPii` would have implied, back to
+// its own fully-permissive defaults (collect all cookies/headers/bodies).
+// Setting only `dataCollection.urlQueryParams: false` without also
+// re-stating the other fields would therefore have been a silent
+// *regression* from round 6's posture, not just an incomplete fix -- every
+// field below is explicit for that reason, not merely urlQueryParams.
+// `urlQueryParams: false` disables Sentry's own query-string collection at
+// the source (per its own type: "false: Do not collect any data"), which
+// is what actually closes the `http.target`/`url.full` query-string leak
+// this finding reproduced -- lib/sentry-redact.ts's explicit redaction
+// remains as defense-in-depth underneath this, not a replacement for it.
 Sentry.init({
   dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
   tracesSampleRate: process.env.NODE_ENV === "development" ? 1.0 : 0.1,
-  sendDefaultPii: false,
+  dataCollection: {
+    urlQueryParams: false,
+    cookies: false,
+    httpHeaders: { request: false, response: false },
+    httpBodies: [],
+    databaseQueryData: false,
+  },
   beforeSend: redactSensitiveData,
   beforeSendTransaction: redactSensitiveData,
   beforeSendSpan: redactSpan,
