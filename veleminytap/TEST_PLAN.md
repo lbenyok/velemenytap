@@ -13,12 +13,13 @@ Pure logic only — nothing that needs a database, a browser, or Next.js's serve
 - **`e2e/support/env.test.ts`** — e2e credential resolution (round-2 R2-06, round-3 R3-01): fail-closed on missing config, single-source resolution (never a file/process-env mix), the approved-project allowlist, force-disabled email/telemetry keys.
 - **`e2e/support/db-connection.test.ts`** — round-4 R4-04: `SUPABASE_DB_URL`'s CI-mandatory/local-optional split, the approved-project-ref check, unreachable-in-CI failing loud.
 - **`app/api/health/route.test.ts`** — round-4 R4-01: `/api/health` reports `ok:false`/503 when release metadata (`VERCEL_GIT_COMMIT_SHA`) is missing in a production/preview environment, `ok:true` locally and whenever a commit SHA is present.
+- **`features/onboarding-tour/actions.test.ts`** — found during an independent review that no e2e test could deterministically exercise `setOnboardingTourStatusAction`'s own zero-affected-row disambiguation (the UPDATE and its follow-up read are two calls inside one server-side function, with no black-box hook to steer what either returns mid-flight). Mocks `@/lib/supabase/server` and `@/features/organizations/current` (`vi.hoisted` + `vi.mock`, a chainable mock query builder standing in for the real Supabase client's fluent API) and drives every branch directly: one-row success, each zero-row outcome (confirmed-completed success; readable-but-not-completed error; unreadable error; a read-back database error), the initial UPDATE erroring, and the invalid-status guard. First Server-Action unit test in this codebase — see its own file comment for why this specific function is the exception to the rule below.
 
 `npm run typecheck` and `npm run lint` run clean on every change — part of the same verification gate as the test suites, not test suites themselves.
 
 ### What's deliberately not covered by Vitest
 
-Anything that touches Supabase, RLS, Server Actions, cookies, or rendered UI needs a real database and/or a real browser, which Vitest (plain Node, no `react-server` condition) can't provide — that's what the e2e suite below is for.
+Anything that needs a *real* database, RLS enforcement, cookies, or rendered UI needs a real browser and a real Supabase project, which Vitest (plain Node, no `react-server` condition) can't provide — that's what the e2e suite below is for. A Server Action's own internal logic is a narrower exception (`actions.test.ts` above): mocking its Supabase/lookup collaborators can exercise branches no e2e test can reach deterministically, but it proves nothing about RLS, real query behavior, or the action's actual database access — that half of the picture still needs e2e coverage alongside it, not instead of it.
 
 ## Automated: Playwright e2e (`npm run test:e2e`)
 

@@ -612,9 +612,19 @@ test.describe("setOnboardingTourStatusAction's zero-affected-row disambiguation"
   // not the only way: a membership that no longer permits the write (RLS)
   // also produces zero affected rows, and is a real failure, not a no-op.
   // actions.ts now reads the row back through the same RLS-bound client
-  // before deciding, and these three tests cover the disambiguation's own
-  // three outcomes directly, on top of the many other tests in this file
+  // before deciding.
+  //
+  // Correction from a later independent review: these three tests do NOT
+  // each exercise the disambiguation's own branches directly, and the
+  // third one below does not reach the zero-row code path at all (see its
+  // own comment). What they DO cover, honestly: two real UI flows ending
+  // in the correct externally-observable outcome (silent success / a
+  // membership-loss error), on top of the many other tests in this file
   // that already exercise ordinary single-row success incidentally.
+  // `features/onboarding-tour/actions.test.ts` is what actually drives
+  // every branch of the disambiguation itself, deterministically, via
+  // mocked Supabase calls -- these e2e tests are real-flow coverage
+  // alongside that, not a substitute for it.
   test.beforeEach(async () => {
     member = await seedOrgWithMember("tour-zero-row", "owner", "not_started");
   });
@@ -670,23 +680,28 @@ test.describe("setOnboardingTourStatusAction's zero-affected-row disambiguation"
     expect(data?.onboarding_tour_status).toBe("completed");
   });
 
-  test("a zero-row result because the organization is no longer accessible returns a real error, not success", async ({
+  test("membership removed before the close attempt returns a real error, not silent success (does not itself reach the zero-row UPDATE branch)", async ({
     page,
   }) => {
     await signIn(page);
     await expect(page.getByRole("dialog")).toBeVisible();
 
-    // Removes this user's membership entirely before they act -- the most
-    // realistic real-world trigger for "the row this session could act on
-    // a moment ago is no longer readable or writable," which is the same
-    // failure category the disambiguation's "unreadable" branch exists
-    // for. (The exact single-function-call race the review describes --
-    // membership vanishing between the action's own organization lookup
-    // and its UPDATE call, microseconds apart -- has no black-box hook to
-    // trigger from an e2e test; this reaches the action's earlier
-    // "no organization" guard rather than the UPDATE's own zero-row branch
-    // specifically, but proves the same required outcome: persistence
-    // that didn't happen is never reported as success.)
+    // Removes this user's membership entirely BEFORE they act. This is
+    // useful, realistic broad coverage for "membership loss must never be
+    // silently treated as success" -- but it does NOT exercise the
+    // disambiguation's own zero-row-then-read-back branch: with the
+    // membership already gone, the action's own `getCurrentOrganization()`
+    // call returns null immediately, and the function returns from that
+    // earlier, separate guard (`if (!organization) return { error: ... }`)
+    // without ever reaching the `.update()` call, let alone a zero-row
+    // result from it. The actual single-function-call race the original
+    // review finding describes -- membership vanishing BETWEEN the
+    // action's own organization lookup and its UPDATE call, microseconds
+    // apart, so the UPDATE itself is what returns zero rows -- has no
+    // black-box hook to trigger from an e2e test (no way to interrupt a
+    // server-side function mid-execution from here); that branch is
+    // covered deterministically instead by
+    // `features/onboarding-tour/actions.test.ts`'s mocked unit tests.
     const admin = adminClient();
     await admin.from("organization_memberships").delete().eq("organization_id", member.orgId).eq("user_id", member.userId);
 

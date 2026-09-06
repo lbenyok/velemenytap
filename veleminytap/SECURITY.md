@@ -108,7 +108,7 @@ Verified without sending a single real email (`e2e/negative-feedback-alert-abuse
 
 ### Rollout ordering (round 3, R3-05)
 
-The alert-cooldown trigger and the notification-email-change trigger (below) are each installed by a migration deliberately separate from the one that introduces the RPCs they protect. Applying both together to production in one step would break the *currently deployed* application code, which still performs a direct `UPDATE` to the column(s) the trigger would then reject — a real outage window (every negative-feedback alert, or every settings save touching the notification email, failing) between the migration landing and new application code deploying. See `DATABASE_SCHEMA.md` § "Rollout ordering" and `REVIEW_REQUEST.md`'s rollout plan for the concrete expand → deploy → enforce sequence.
+The alert-cooldown trigger and the notification-email-change trigger (below) are each installed by a migration deliberately separate from the one that introduces the RPCs they protect. Applying both together to production in one step would break the *currently deployed* application code, which still performs a direct `UPDATE` to the column(s) the trigger would then reject — a real outage window (every negative-feedback alert, or every settings save touching the notification email, failing) between the migration landing and new application code deploying. See `DATABASE_SCHEMA.md` § "Rollout ordering" and `DEPLOYMENT.md` § 7 for the concrete, current expand → deploy → enforce sequence.
 
 ### Rollout target trust (round 6, R6-07)
 
