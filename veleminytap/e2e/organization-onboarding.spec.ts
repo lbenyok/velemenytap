@@ -121,17 +121,25 @@ test("per-user serialization: two concurrent calls for the same user still creat
 
 test("slug collision falls back to a suffixed slug instead of failing", async () => {
   const admin = adminClient();
-  const { error: seedError } = await admin
-    .from("organizations")
-    .insert({ name: "Taken", slug: "taken" });
-  expect(seedError).toBeNull();
+  // Found during this round's own verification, not a review finding: the
+  // cleanup below used to run only on the happy path -- an earlier
+  // assertion failing (including an unrelated Auth rate-limit error from
+  // userClient, observed directly this session) left this seeded 'taken'
+  // org behind, breaking every subsequent run of this test until someone
+  // noticed and deleted it by hand. try/finally makes cleanup unconditional.
+  try {
+    const { error: seedError } = await admin
+      .from("organizations")
+      .insert({ name: "Taken", slug: "taken" });
+    expect(seedError).toBeNull();
 
-  const client = await userClient(user.email, user.password);
-  const { data, error } = await client.rpc("create_organization_atomic", { p_name: "Taken" }).single();
+    const client = await userClient(user.email, user.password);
+    const { data, error } = await client.rpc("create_organization_atomic", { p_name: "Taken" }).single();
 
-  expect(error).toBeNull();
-  expect(data?.organization_slug).not.toBe("taken");
-  expect(data?.organization_slug?.startsWith("taken-")).toBe(true);
-
-  await admin.from("organizations").delete().eq("slug", "taken");
+    expect(error).toBeNull();
+    expect(data?.organization_slug).not.toBe("taken");
+    expect(data?.organization_slug?.startsWith("taken-")).toBe(true);
+  } finally {
+    await admin.from("organizations").delete().eq("slug", "taken");
+  }
 });

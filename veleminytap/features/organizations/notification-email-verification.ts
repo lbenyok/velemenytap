@@ -52,12 +52,21 @@ export async function sendNotificationEmailConfirmation(params: {
       `,
     });
     if (error) {
-      console.error("Failed to send notification email confirmation:", error);
+      // Logs only name/message, not the whole SDK error object -- found
+      // during this round's own self-review: Resend's documented error
+      // shape doesn't echo back submitted content, but that's not a
+      // contract this file should rely on staying true forever, and the
+      // token/HTML body live in this same function's closure, not in the
+      // error object itself, so there's no debugging value lost.
+      console.error("Failed to send notification email confirmation:", { name: error.name, message: error.message });
       return false;
     }
     return true;
   } catch (error) {
-    console.error("Failed to send notification email confirmation:", error);
+    console.error(
+      "Failed to send notification email confirmation:",
+      error instanceof Error ? { name: error.name, message: error.message } : error,
+    );
     return false;
   }
 }
