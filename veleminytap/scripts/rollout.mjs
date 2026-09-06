@@ -28,42 +28,109 @@
 //   - No more shell:true (a real command-injection surface given --db-url
 //     carries a password this script doesn't control the contents of).
 //
-// Usage:
-//   node scripts/rollout.mjs \
-//     --target production \
-//     --db-url "$PROD_DB_URL" \
-//     --expand 20260904194200_validate_analytics_period_days.sql,20260904194300_restrict_service_role_and_enable_alert_log_rls.sql,20260904194400_notification_email_verification.sql \
-//     --enforce 20260904194100_enforce_alert_cooldown_trigger.sql,20260904194500_enforce_notification_email_change_trigger.sql \
-//     --expected-sha "$(git rev-parse HEAD)" \
-//     [--drain-seconds 60] [--deploy-timeout-seconds 300] [--dry-run]
-//
-// Either list may be passed as an empty string (--expand "") if that
-// phase genuinely has nothing pending -- but the flag itself must always
-// be given, so "I forgot to list something" and "there's genuinely
-// nothing" are never the same code path.
-//
 // Round-6 finding R6-07: --allowed-origin and --health-url used to be
 // caller-supplied arguments, cross-checked only against EACH OTHER (round-5
 // R5-05) -- which proves nothing about whether --db-url actually points at
-// the database belonging to that same application. A caller could point
-// --db-url at one project while --allowed-origin/--health-url named a
-// totally different, unrelated (if legitimate-looking) application, and
-// the script would happily authorize a production migration on the
-// strength of two mutually-agreeing but otherwise ungrounded arguments.
-// --target now selects a fixed, committed, reviewed entry from
-// rollout-environments.json binding the Supabase project ref, the
-// application's exact origin, its health URL, and its expected `environment`
-// value together -- --allowed-origin/--health-url are no longer accepted as
-// arguments at all, and --db-url's own project ref is verified against the
-// manifest's ref before phase 0 runs, so a --db-url/--target mismatch is
-// rejected immediately rather than silently trusted.
+// the database belonging to that same application. --target now selects a
+// fixed, committed, reviewed entry from rollout-environments.json binding
+// the Supabase project ref, the application's exact origin, its health URL,
+// and its expected `environment` value together.
+//
+// Found during an independent review, after this script's own single-
+// command design nearly caused a real production incident: the original
+// usage assumed the caller already knew --expected-sha BEFORE running
+// anything, because the script's own phase 1 (apply expand migrations)
+// happened AFTER that commit was supposed to already be live. Two real
+// problems followed from that:
+//   1. THE RACE: Vercel's automatic deploy from `master` starts the moment
+//      a merge lands, completely independent of whether or when this
+//      script happens to run. If the operator merges first and only then
+//      starts this script, the new application code -- which reads a
+//      column an expand migration hasn't added yet -- can go live before
+//      phase 1 even begins, breaking every request that touches it. There
+//      is no Vercel Deployment Check configured to make Vercel wait for
+//      anything (see DEPLOYMENT.md); nothing external prevents this.
+//   2. THE WRONG SHA: a squash merge (or an ordinary merge commit) produces
+//      a brand-new commit SHA on `master`, different from the PR branch's
+//      own HEAD. Pre-computing --expected-sha from the branch before
+//      merging names a commit that will never actually appear in
+//      /api/health's response -- the script would poll until
+//      --deploy-timeout-seconds expired and fail, even against a
+//      perfectly healthy deployment, just checking the wrong value.
+//
+// Fixed by splitting the single command into two, run at genuinely
+// different times, with the merge/deploy happening in between:
+//
+//   node scripts/rollout.mjs prepare \
+//     --target production \
+//     --db-url "$PRODUCTION_DB_URL" \
+//     --expand 20260905193325_....sql,20260906110000_....sql,20260906120000_....sql,20260906130000_....sql \
+//     --enforce 20260906090000_....sql,20260906100000_....sql \
+//     [--dry-run]
+//
+//   -- prepare applies ONLY the expand migrations (safe by construction:
+//   expand migrations are additive/backward-compatible, so applying them
+//   before any new code deploys never breaks the currently-live old code)
+//   and verifies exactly the --enforce set remains pending. It needs no
+//   commit SHA at all, and is therefore safe to run BEFORE merging --
+//   which is the whole point: by the time the merge happens and Vercel
+//   starts deploying, the column/function/trigger the new code depends on
+//   already exists. This closes the race in problem 1 by construction,
+//   not by timing the two scripts more carefully.
+//
+//   -- the owner then merges/deploys by hand, through GitHub/Vercel as
+//   normal, and reads the ACTUAL resulting `master` SHA back from GitHub
+//   (e.g. `git rev-parse origin/master` after the merge, or the merge
+//   commit GitHub reports) -- never a SHA computed before the merge
+//   happened, which solves problem 2: the value passed to finalize is
+//   never speculative.
+//
+//   -- BEFORE running finalize, APP_ENV must already be set in Vercel for
+//   this target's environment (Project Settings -> Environment Variables,
+//   see DEPLOYMENT.md § 3). This is a REQUIRED human prerequisite, not an
+//   optional nicety: /api/health returns 503 (ok:false) without it, and
+//   finalize's own health poll can never succeed against a 503 -- it isn't
+//   something this script can set or detect in advance, only wait on and
+//   eventually time out against, less helpfully than simply doing it first.
+//
+//   node scripts/rollout.mjs finalize \
+//     --target production \
+//     --db-url "$PRODUCTION_DB_URL" \
+//     --enforce 20260906090000_....sql,20260906100000_....sql \
+//     --expected-sha "<the ACTUAL resulting master SHA, read after merging>" \
+//     [--drain-seconds 60] [--deploy-timeout-seconds 300] [--dry-run]
+//
+//   -- finalize FIRST verifies that only the --enforce migrations are
+//   still pending (refusing outright if any expand migration is still
+//   pending -- that means prepare was never run, ran against a different
+//   database, or something else is wrong; finalize will not guess), then
+//   waits for /api/health to report --expected-sha in the target's
+//   expected environment, drains, re-checks, and only then applies the
+//   enforce migrations.
+//
+// Both phases are safely resumable: re-running `prepare` after it already
+// fully (or partially) succeeded is a no-op for whatever already applied
+// and simply finishes whatever didn't -- it never demands that an expand
+// migration still be pending just because that's what a fresh run would
+// see. Re-running `finalize` after it already fully succeeded is likewise
+// a no-op (nothing pending, nothing to apply) rather than an error. What
+// remains a hard failure in both phases is anything UNEXPECTED being
+// pending or already-applied -- an --enforce migration that's somehow
+// already gone during prepare (enforce migrations are staged out of the
+// directory before prepare's own `db push` runs, so this can only mean
+// something touched it out of band), or anything pending during finalize
+// that isn't in --enforce (an expand migration that never finished, or an
+// unplanned migration neither phase accounted for).
+//
+// Either list may be passed as an empty string (--expand "" / --enforce "")
+// if that phase genuinely has nothing pending -- but the flag itself must
+// always be given to prepare/finalize respectively, so "I forgot to list
+// something" and "there's genuinely nothing" are never the same code path.
 //
 // Exits non-zero and leaves the database in whatever state the last
-// successfully-completed phase left it in if any gate fails -- it never
-// silently continues past a failed check. Does not deploy or merge
-// anything itself; it assumes the commit named by --expected-sha has
-// already been pushed to the branch Vercel deploys from, and only WAITS
-// for that deployment to become live before proceeding.
+// successfully-completed step left it in if any gate fails -- it never
+// silently continues past a failed check. Neither phase deploys or merges
+// anything itself.
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, renameSync, mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
@@ -176,9 +243,10 @@ export function projectRefFromDbUrl(dbUrl) {
   return null;
 }
 
-// Round-7 finding R7-04: every recognized flag, explicit -- see parseArgs's
-// unknown-argument check below.
-const KNOWN_FLAGS = new Set(["db-url", "expand", "enforce", "expected-sha", "target", "drain-seconds", "deploy-timeout-seconds"]);
+const COMMON_FLAGS = new Set(["db-url", "target"]);
+const PREPARE_ONLY_FLAGS = new Set(["expand", "enforce"]);
+const FINALIZE_ONLY_FLAGS = new Set(["enforce", "expected-sha", "drain-seconds", "deploy-timeout-seconds"]);
+const REMOVED_FLAGS = new Set(["allowed-origin", "health-url"]);
 
 function parseMigrationList(value, flagName) {
   if (value === undefined) {
@@ -198,8 +266,30 @@ function parseMigrationList(value, flagName) {
   return list;
 }
 
+/**
+ * Found during an independent review (see this file's own header comment
+ * for the full incident this closes): the original single-command design
+ * required --expected-sha to already be known before the migration this
+ * whole invocation exists to protect against had even happened. Split
+ * into two commands, `prepare` and `finalize`, run at genuinely different
+ * times with the merge/deploy happening in between -- each accepts and
+ * requires only the arguments that make sense for what it actually does.
+ */
 export function parseArgs(argv, environments) {
+  const command = argv[0];
+  if (command !== "prepare" && command !== "finalize") {
+    throw new Error(
+      `First argument must be "prepare" or "finalize" -- got ${command ? `"${command}"` : "nothing"}. ` +
+        "See this script's own header comment for the full two-phase workflow and why it's split this way.",
+    );
+  }
+  const commandFlags = command === "prepare"
+    ? new Set([...COMMON_FLAGS, ...PREPARE_ONLY_FLAGS])
+    : new Set([...COMMON_FLAGS, ...FINALIZE_ONLY_FLAGS]);
+  const otherCommandOnlyFlags = command === "prepare" ? FINALIZE_ONLY_FLAGS : PREPARE_ONLY_FLAGS;
+
   const args = {
+    command,
     drainSeconds: 60,
     deployTimeoutSeconds: 300,
     dryRun: false,
@@ -214,29 +304,25 @@ export function parseArgs(argv, environments) {
     environment: /** @type {string} */ (""),
   };
   const raw = {};
-  for (let i = 0; i < argv.length; i++) {
+  for (let i = 1; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--dry-run") {
       args.dryRun = true;
       continue;
     }
     if (!arg.startsWith("--")) {
-      throw new Error(`Unexpected argument "${arg}" -- every argument must be a --flag.`);
+      throw new Error(`Unexpected argument "${arg}" -- every argument after the command must be a --flag.`);
     }
     const key = arg.replace(/^--/, "");
-    // Round-7 finding R7-04: an unrecognized flag used to be silently
-    // accepted and simply ignored (stored in `raw` under a key nothing
-    // ever reads) -- including, after round-6 R6-07 removed them,
-    // --allowed-origin/--health-url themselves. Silently ignoring a
-    // safety-related flag a caller believes they're setting is worse than
-    // rejecting it outright.
-    if (!KNOWN_FLAGS.has(key)) {
-      const removedFlagHint =
-        key === "allowed-origin" || key === "health-url"
-          ? " This flag was removed (round-6 R6-07) -- --target now selects both this and the origin from the committed rollout-environments.json manifest."
-          : "";
+    if (!commandFlags.has(key)) {
+      let hint = "";
+      if (REMOVED_FLAGS.has(key)) {
+        hint = " This flag was removed (round-6 R6-07) -- --target now selects both this and the origin from the committed rollout-environments.json manifest.";
+      } else if (otherCommandOnlyFlags.has(key)) {
+        hint = ` --${key} belongs to "${command === "prepare" ? "finalize" : "prepare"}", not "${command}".`;
+      }
       throw new Error(
-        `Unknown argument --${key}.${removedFlagHint} Known arguments: --dry-run, ${[...KNOWN_FLAGS].map((f) => `--${f}`).join(", ")}.`,
+        `Unknown argument --${key} for "${command}".${hint} Known arguments for "${command}": --dry-run, ${[...commandFlags].map((f) => `--${f}`).join(", ")}.`,
       );
     }
     const value = argv[++i];
@@ -246,33 +332,51 @@ export function parseArgs(argv, environments) {
   if (!raw["db-url"]) throw new Error("Missing required argument: --db-url");
   args.dbUrl = raw["db-url"];
 
-  args.expand = parseMigrationList(raw["expand"], "expand");
-  args.enforce = parseMigrationList(raw["enforce"], "enforce");
-  for (const name of args.expand) {
-    if (args.enforce.includes(name)) {
-      throw new Error(`"${name}" is listed in both --expand and --enforce -- a migration can only be one or the other.`);
+  if (command === "prepare") {
+    args.expand = parseMigrationList(raw["expand"], "expand");
+    args.enforce = parseMigrationList(raw["enforce"], "enforce");
+    for (const name of args.expand) {
+      if (args.enforce.includes(name)) {
+        throw new Error(`"${name}" is listed in both --expand and --enforce -- a migration can only be one or the other.`);
+      }
+    }
+  } else {
+    args.enforce = parseMigrationList(raw["enforce"], "enforce");
+
+    if (!raw["expected-sha"]) throw new Error("Missing required argument: --expected-sha");
+    // Round-6 finding R6-11: this used to accept 7-40 hex characters, but
+    // /api/health's own commitSha is always the FULL 40-character SHA
+    // (VERCEL_GIT_COMMIT_SHA), and pollHealth compares it with exact string
+    // equality -- a short SHA can never match, but that failure was only
+    // ever discovered after phase 1 (the expand migrations) had already run
+    // and the full deploy-timeout had elapsed. Requiring the full SHA here
+    // catches a short --expected-sha immediately. The caller already has
+    // the ACTUAL post-merge SHA trivially available ($(git rev-parse
+    // origin/master) after merging, never the pre-merge branch HEAD -- see
+    // this file's own header comment for why those two are not the same
+    // value).
+    if (!/^[0-9a-f]{40}$/i.test(raw["expected-sha"])) {
+      throw new Error(
+        `--expected-sha "${raw["expected-sha"]}" must be a full 40-character git commit SHA, not a short/abbreviated ` +
+          "one -- /api/health always reports the full SHA and this script compares it exactly. Use the ACTUAL " +
+          'resulting SHA on the target branch after merging/deploying, e.g. "$(git rev-parse origin/master)" -- ' +
+          "never a SHA computed before the merge, which a squash or merge commit will not match.",
+      );
+    }
+    args.expectedSha = raw["expected-sha"];
+
+    for (const [flag, key] of [
+      ["drain-seconds", "drainSeconds"],
+      ["deploy-timeout-seconds", "deployTimeoutSeconds"],
+    ]) {
+      if (raw[flag] === undefined) continue;
+      const n = Number(raw[flag]);
+      if (!Number.isFinite(n) || n < 0) {
+        throw new Error(`--${flag} must be a finite, non-negative number -- got "${raw[flag]}".`);
+      }
+      args[key] = n;
     }
   }
-
-  if (!raw["expected-sha"]) throw new Error("Missing required argument: --expected-sha");
-  // Round-6 finding R6-11: this used to accept 7-40 hex characters, but
-  // /api/health's own commitSha is always the FULL 40-character SHA
-  // (VERCEL_GIT_COMMIT_SHA), and pollHealth compares it with exact string
-  // equality -- a short SHA can never match, but that failure was only
-  // ever discovered after phase 1 (the expand migrations) had already run
-  // and the full deploy-timeout had elapsed. Requiring the full SHA here,
-  // before phase 0, catches a short --expected-sha immediately instead of
-  // after an irreversible-by-this-script step and a multi-minute wait. The
-  // caller already has the full SHA trivially available ($(git rev-parse
-  // HEAD), as this script's own usage example uses) -- there's no
-  // legitimate case for passing a short one.
-  if (!/^[0-9a-f]{40}$/i.test(raw["expected-sha"])) {
-    throw new Error(
-      `--expected-sha "${raw["expected-sha"]}" must be a full 40-character git commit SHA, not a short/abbreviated ` +
-        'one -- /api/health always reports the full SHA and this script compares it exactly. Use "$(git rev-parse HEAD)".',
-    );
-  }
-  args.expectedSha = raw["expected-sha"];
 
   // Round-6 finding R6-07: --allowed-origin/--health-url used to be
   // caller-supplied, cross-checked only against each other -- proving
@@ -310,30 +414,19 @@ export function parseArgs(argv, environments) {
     );
   }
 
-  for (const [flag, key] of [
-    ["drain-seconds", "drainSeconds"],
-    ["deploy-timeout-seconds", "deployTimeoutSeconds"],
-  ]) {
-    if (raw[flag] === undefined) continue;
-    const n = Number(raw[flag]);
-    if (!Number.isFinite(n) || n < 0) {
-      throw new Error(`--${flag} must be a finite, non-negative number -- got "${raw[flag]}".`);
-    }
-    args[key] = n;
-  }
-
   return args;
 }
 
 /**
- * Round-5 R5-03/R5-04: validates the EXACT set of pending migrations
- * against explicit --expand/--enforce manifests before anything is
- * applied. This is what actually catches a typo -- e.g. a misspelled
- * --enforce filename means the real (correctly-named) pending enforce
- * migration is accounted for in NEITHER list, so it's flagged here as
- * "unexpected pending migration" and the whole run aborts, rather than
- * silently falling into the expand phase because "not in --enforce" used
- * to be treated as "must be expand."
+ * General-purpose, strict plan validation: every named migration must
+ * exist as a real file AND currently be pending, and every currently
+ * pending migration must be named by one of the two lists. Retained
+ * exactly as-is (still exported, still covers a fresh, from-scratch
+ * rollout) -- `prepare`/`finalize` below use their own, phase-appropriate
+ * variants instead, tolerant of a migration this SAME phase already
+ * applied on an earlier, interrupted run (see validatePreparePlan/
+ * validateFinalizePlan for why "already done" must not be indistinguishable
+ * from "never was going to happen").
  */
 export function validateMigrationPlan(pending, expandList, enforceList, allFiles) {
   const allFilesSet = new Set(allFiles);
@@ -364,6 +457,89 @@ export function validateMigrationPlan(pending, expandList, enforceList, allFiles
         "Refusing to guess which phase they belong to -- name every pending migration explicitly.",
     );
   }
+}
+
+/**
+ * Prepare-phase validation. Unlike validateMigrationPlan above, this
+ * tolerates an --expand migration that's already been applied -- required
+ * for `prepare` to be safely re-runnable after a prior run of ITSELF
+ * fully or partially succeeded (a real interruption scenario: a network
+ * drop mid-`db push`, applying migration 2 of 4). An --enforce migration
+ * NOT being pending here is a different matter and stays a hard failure:
+ * prepare's own `db push` explicitly stages enforce migrations out of the
+ * directory before running, so one becoming non-pending during prepare
+ * can only mean it was applied out of band -- most likely `finalize`
+ * already ran, in which case prepare has nothing left to usefully do, but
+ * that's worth surfacing, not silently absorbing. Every currently pending
+ * migration must still be named by one of the two lists, unconditionally
+ * -- that property doesn't get weaker just because this phase tolerates
+ * partial completion of its own prior work.
+ */
+export function validatePreparePlan(pending, expandList, enforceList, allFiles) {
+  const allFilesSet = new Set(allFiles);
+  const pendingSet = new Set(pending);
+  const plannedSet = new Set([...expandList, ...enforceList]);
+
+  for (const name of expandList) {
+    if (!allFilesSet.has(name)) {
+      throw new Error(`--expand names "${name}", which does not exist in supabase/migrations/.`);
+    }
+  }
+  for (const name of enforceList) {
+    if (!allFilesSet.has(name)) {
+      throw new Error(`--enforce names "${name}", which does not exist in supabase/migrations/.`);
+    }
+    if (!pendingSet.has(name)) {
+      throw new Error(
+        `--enforce names "${name}", but it is not currently pending against this database. It should never become ` +
+          "applied during the prepare phase (enforce migrations are staged out of supabase/migrations/ before this " +
+          "phase's own `db push` runs) -- if `finalize` has already run, prepare has nothing left to do.",
+      );
+    }
+  }
+
+  const unaccounted = pending.filter((name) => !plannedSet.has(name));
+  if (unaccounted.length > 0) {
+    throw new Error(
+      `${unaccounted.length} pending migration(s) are not listed in --expand or --enforce: ${unaccounted.join(", ")}. ` +
+        "Refusing to guess which phase they belong to -- name every pending migration explicitly.",
+    );
+  }
+}
+
+/**
+ * Finalize-phase validation: the mirror case of validatePreparePlan.
+ * Tolerates --enforce migrations that are already fully (or partially)
+ * applied -- required for `finalize` to be safely re-runnable after a
+ * prior run of ITSELF succeeded or was interrupted mid-way. What it will
+ * never tolerate is anything ELSE pending that isn't in --enforce: an
+ * expand migration that never finished (prepare didn't run, ran against a
+ * different database, or was itself interrupted before completing) is
+ * exactly the condition the task requires finalize to refuse outright,
+ * not attempt to apply alongside the reviewed enforce set.
+ */
+export function validateFinalizePlan(pending, enforceList, allFiles) {
+  const allFilesSet = new Set(allFiles);
+  const pendingSet = new Set(pending);
+  const enforceSet = new Set(enforceList);
+
+  for (const name of enforceList) {
+    if (!allFilesSet.has(name)) {
+      throw new Error(`--enforce names "${name}", which does not exist in supabase/migrations/.`);
+    }
+  }
+
+  const unexpectedlyPending = pending.filter((name) => !enforceSet.has(name));
+  if (unexpectedlyPending.length > 0) {
+    throw new Error(
+      `${unexpectedlyPending.length} migration(s) are pending that are not in --enforce: ${unexpectedlyPending.join(", ")}. ` +
+        "Refusing to continue -- this most likely means an expand migration never finished (the prepare phase " +
+        "didn't run, ran against a different database, or was itself interrupted before completing). Run `prepare` " +
+        "again first and confirm it succeeds before retrying finalize.",
+    );
+  }
+
+  return { remaining: enforceList.filter((name) => pendingSet.has(name)) };
 }
 
 /**
@@ -485,8 +661,8 @@ export function getPendingMigrations(dbUrl) {
       // Round-5 R5-04: this used to be `.find(...) ` piped straight into
       // `.filter(Boolean)` -- an unrecognized local version silently
       // vanished from the result instead of being surfaced, so it could
-      // disappear from both "what will phase 1 apply" and "did phase 6's
-      // final check actually cover everything."
+      // disappear from both "what will phase 1 apply" and "did the final
+      // check actually cover everything."
       const file = knownFiles.find((f) => f.startsWith(m.local));
       if (!file) {
         throw new Error(
@@ -527,8 +703,17 @@ export async function pollHealth(healthUrl, expectedSha, expectedEnvironment, ti
       if (res.ok && body.ok && body.commitSha === expectedSha && body.environment === expectedEnvironment) {
         return body;
       }
+      // Found during an independent review: /api/health's own 503 response
+      // already carries a specific, actionable `error` field (e.g. "APP_ENV
+      // is not set") -- previously only ok/commitSha/environment were
+      // logged, so an operator whose deployment was healthy in every way
+      // EXCEPT a missing APP_ENV saw the exact same "not yet" line as a
+      // deployment that simply hadn't finished building yet, with no hint
+      // that APP_ENV specifically was the blocker. Surfacing it here is the
+      // difference between "wait longer" and "go set this one thing."
       console.log(
-        `  not yet -- commitSha=${body.commitSha} ok=${body.ok} environment=${body.environment} (want ${expectedSha}, ${expectedEnvironment})`,
+        `  not yet -- commitSha=${body.commitSha} ok=${body.ok} environment=${body.environment} (want ${expectedSha}, ${expectedEnvironment})` +
+          (body.error ? `\n    /api/health says: ${body.error}` : ""),
       );
     } catch (err) {
       console.log(`  health check request failed: ${err instanceof Error ? err.message : err}`);
@@ -537,132 +722,144 @@ export async function pollHealth(healthUrl, expectedSha, expectedEnvironment, ti
   }
   throw new Error(
     `Timed out after ${timeoutSeconds}s waiting for ${healthUrl} to report commit ${expectedSha} in ${expectedEnvironment}. ` +
-      `Last response: ${JSON.stringify(lastBody)}. This does not necessarily mean the deployment is ` +
-      "broken -- check the Vercel Deployments dashboard directly. Refusing to apply the enforce " +
-      "migrations against unverified application code.",
+      `Last response: ${JSON.stringify(lastBody)}.` +
+      (lastBody?.error ? ` /api/health's own last reported reason: ${lastBody.error}` : "") +
+      " This does not necessarily mean the deployment is broken -- check the Vercel Deployments dashboard directly, " +
+      "and confirm APP_ENV is set in Vercel for this environment (DEPLOYMENT.md § 3) if /api/health has never once " +
+      "reported ok:true. Refusing to apply the enforce migrations against unverified application code.",
   );
 }
 
-function applyExpandMigrations(dbUrl, expandList, enforceList, dryRun) {
-  if (expandList.length === 0) {
-    console.log("No expand migrations to apply -- skipping this phase.");
+/**
+ * `prepare` phase: applies ONLY the expand migrations. Safe to run before
+ * any merge or deploy -- expand migrations are additive/backward-
+ * compatible by construction, so applying them ahead of new application
+ * code never breaks the currently-live old code. Needs no commit SHA and
+ * does not touch /api/health at all.
+ */
+function runPrepare(args) {
+  console.log(`Target: "${args.target}" (${args.environment}) -- ${args.allowedOrigin}, project ref ${args.supabaseProjectRef}`);
+  console.log("=== Prepare: validate the plan against the database ===");
+  const pendingAtStart = getPendingMigrations(args.dbUrl);
+  console.log(`Pending: ${pendingAtStart.length} total (${args.expand.length} expand, ${args.enforce.length} enforce planned)`);
+  validatePreparePlan(pendingAtStart, args.expand, args.enforce, listMigrationFiles());
+  console.log("Plan matches the database: every pending migration is accounted for.");
+
+  if (args.expand.length === 0) {
+    console.log("No expand migrations to apply -- nothing for prepare to do.");
+  } else {
+    const stagingDir = mkdtempSync(path.join(tmpdir(), "rollout-enforce-staging-"));
+    const moved = [];
+    try {
+      for (const file of args.enforce) {
+        renameSync(path.join(migrationsDir, file), path.join(stagingDir, file));
+        moved.push(file);
+      }
+      console.log(`Staged ${moved.length} enforce migration(s) out of the way: ${moved.join(", ") || "(none)"}`);
+
+      // Round-5 R5-04: --include-all is required whenever an already-staged
+      // -out enforce migration's timestamp sorts earlier than one that gets
+      // applied while it's out of the way -- this is not hypothetical, it's
+      // exactly what happened applying this project's own round-2/3 enforce
+      // migrations in production (STATUS.md). Without it, `supabase db
+      // push` refuses to apply an out-of-order migration at all.
+      const pushArgs = ["supabase", "db", "push", "--db-url", args.dbUrl, "--include-all"];
+      if (args.dryRun) pushArgs.push("--dry-run");
+      else pushArgs.push("--yes");
+      sh(NPX, pushArgs);
+    } finally {
+      for (const file of moved) {
+        renameSync(path.join(stagingDir, file), path.join(migrationsDir, file));
+      }
+      rmSync(stagingDir, { recursive: true, force: true });
+      console.log(`Restored ${moved.length} staged migration file(s) to supabase/migrations/.`);
+    }
+  }
+
+  if (args.dryRun) {
+    console.log("\n--dry-run: nothing was actually applied.");
     return;
   }
 
-  const stagingDir = mkdtempSync(path.join(tmpdir(), "rollout-enforce-staging-"));
-  const moved = [];
-  try {
-    for (const file of enforceList) {
-      renameSync(path.join(migrationsDir, file), path.join(stagingDir, file));
-      moved.push(file);
-    }
-    console.log(`Staged ${moved.length} enforce migration(s) out of the way: ${moved.join(", ") || "(none)"}`);
-
-    // Round-5 R5-04: --include-all is required whenever an already-staged
-    // -out enforce migration's timestamp sorts earlier than one that gets
-    // applied while it's out of the way -- this is not hypothetical, it's
-    // exactly what happened applying this project's own round-2/3 enforce
-    // migrations in production (STATUS.md). Without it, `supabase db
-    // push` refuses to apply an out-of-order migration at all.
-    const pushArgs = ["supabase", "db", "push", "--db-url", dbUrl, "--include-all"];
-    if (dryRun) pushArgs.push("--dry-run");
-    else pushArgs.push("--yes");
-    sh(NPX, pushArgs);
-  } finally {
-    for (const file of moved) {
-      renameSync(path.join(stagingDir, file), path.join(migrationsDir, file));
-    }
-    rmSync(stagingDir, { recursive: true, force: true });
-    console.log(`Restored ${moved.length} staged migration file(s) to supabase/migrations/.`);
-  }
-
-  if (dryRun) return;
-
   // Verify the exact expected residual: everything named in --expand is
-  // now applied, and nothing else moved -- pending should be exactly
-  // enforceList, no more, no less.
-  const stillPending = new Set(getPendingMigrations(dbUrl));
-  const enforceSet = new Set(enforceList);
-  const unexpectedlyApplied = enforceList.filter((f) => !stillPending.has(f));
+  // now applied (or already was, on a resumed run), and nothing else
+  // moved -- pending should be exactly --enforce (or a subset of it, on a
+  // resumed run partway through prepare itself), never more.
+  const stillPending = new Set(getPendingMigrations(args.dbUrl));
+  const enforceSet = new Set(args.enforce);
+  const unexpectedlyApplied = args.enforce.filter((f) => !stillPending.has(f));
   const unexpectedlyPending = [...stillPending].filter((f) => !enforceSet.has(f));
   if (unexpectedlyApplied.length > 0) {
-    throw new Error(`Expand phase unexpectedly applied enforce migration(s): ${unexpectedlyApplied.join(", ")}.`);
+    throw new Error(`Prepare unexpectedly applied enforce migration(s): ${unexpectedlyApplied.join(", ")}.`);
   }
   if (unexpectedlyPending.length > 0) {
     throw new Error(
-      `After the expand phase, ${unexpectedlyPending.length} migration(s) are pending that aren't in --enforce: ` +
-        `${unexpectedlyPending.join(", ")}. Aborting before the enforce phase would apply them unreviewed.`,
+      `After prepare, ${unexpectedlyPending.length} migration(s) are pending that aren't in --enforce: ` +
+        `${unexpectedlyPending.join(", ")}. This should not be possible -- investigate before running finalize.`,
     );
   }
+  console.log(
+    `\nPrepare complete. Exactly the --enforce set remains pending: ${args.enforce.join(", ") || "(none)"}. ` +
+      "Merge/deploy now, then run `finalize` with the ACTUAL resulting commit SHA.",
+  );
 }
 
-function applyEnforceMigrations(dbUrl, enforceList, dryRun) {
-  if (enforceList.length === 0) {
-    console.log("No enforce migrations to apply -- nothing to enforce.");
+/**
+ * `finalize` phase: waits for the actual, already-merged commit to be
+ * live, drains, re-checks, and applies ONLY the enforce migrations.
+ * Refuses outright if anything other than --enforce is still pending.
+ */
+async function runFinalize(args) {
+  console.log(`Target: "${args.target}" (${args.environment}) -- ${args.allowedOrigin}, project ref ${args.supabaseProjectRef}`);
+  console.log("=== Finalize, step 1: confirm only --enforce is pending ===");
+  const pendingAtStart = getPendingMigrations(args.dbUrl);
+  const { remaining } = validateFinalizePlan(pendingAtStart, args.enforce, listMigrationFiles());
+  if (remaining.length === 0) {
+    console.log("Nothing pending at all -- finalize already completed on a prior run. Nothing further to do.");
+    return;
+  }
+  console.log(`Confirmed: ${remaining.length} of ${args.enforce.length} --enforce migration(s) remain pending: ${remaining.join(", ")}.`);
+
+  if (args.dryRun) {
+    console.log("\n--dry-run: previewing the enforce push without waiting for health or applying anything.");
+    sh(NPX, ["supabase", "db", "push", "--db-url", args.dbUrl, "--include-all", "--dry-run"]);
     return;
   }
 
-  const pendingBefore = new Set(getPendingMigrations(dbUrl));
-  const missing = enforceList.filter((f) => !pendingBefore.has(f));
-  if (missing.length > 0) {
-    throw new Error(`Expected to enforce ${missing.join(", ")}, but they are no longer pending.`);
-  }
-  const extra = [...pendingBefore].filter((f) => !enforceList.includes(f));
-  if (extra.length > 0) {
-    throw new Error(
-      `${extra.length} migration(s) are pending that aren't in --enforce: ${extra.join(", ")}. Refusing to apply ` +
-        "them alongside the reviewed enforce set.",
-    );
-  }
+  console.log(`\n=== Finalize, step 2: wait for the expected commit to be live in ${args.environment} ===`);
+  console.log(`Polling ${args.healthUrl} for commitSha=${args.expectedSha} (timeout ${args.deployTimeoutSeconds}s)...`);
+  console.log("(APP_ENV must already be set in Vercel for this environment -- DEPLOYMENT.md § 3 -- or this can never succeed.)");
+  await pollHealth(args.healthUrl, args.expectedSha, args.environment, args.deployTimeoutSeconds);
+  console.log(`Confirmed: ${args.environment} is serving the expected commit.`);
 
-  console.log(`Applying ${enforceList.length} enforce migration(s): ${enforceList.join(", ")}`);
-  const pushArgs = ["supabase", "db", "push", "--db-url", dbUrl, "--include-all"];
-  if (dryRun) pushArgs.push("--dry-run");
-  else pushArgs.push("--yes");
-  sh(NPX, pushArgs);
+  console.log(`\n=== Finalize, step 3: drain window (${args.drainSeconds}s) ===`);
+  await new Promise((resolve) => setTimeout(resolve, args.drainSeconds * 1000));
+
+  console.log("\n=== Finalize, step 4: compatibility smoke check ===");
+  const health = await pollHealth(args.healthUrl, args.expectedSha, args.environment, 30);
+  console.log(`Smoke check passed: ${JSON.stringify(health)}`);
+
+  console.log("\n=== Finalize, step 5: apply enforce migrations ===");
+  console.log(`Applying ${remaining.length} migration(s): ${remaining.join(", ")}`);
+  sh(NPX, ["supabase", "db", "push", "--db-url", args.dbUrl, "--include-all", "--yes"]);
+
+  console.log("\n=== Finalize, step 6: final verification ===");
+  const stillPending = getPendingMigrations(args.dbUrl);
+  if (stillPending.length > 0) {
+    throw new Error(`Finalize finished but migrations are still pending: ${stillPending.join(", ")}`);
+  }
+  console.log("All migrations applied. Rollout complete.");
 }
 
 async function main() {
   const environments = loadEnvironments(readFileSync(environmentsPath, "utf-8"));
   const args = parseArgs(process.argv.slice(2), environments);
 
-  console.log(`Target: "${args.target}" (${args.environment}) -- ${args.allowedOrigin}, project ref ${args.supabaseProjectRef}`);
-
-  console.log("=== Phase 0: validate the migration plan against the database ===");
-  const pendingAtStart = getPendingMigrations(args.dbUrl);
-  console.log(`Pending: ${pendingAtStart.length} total (${args.expand.length} expand, ${args.enforce.length} enforce planned)`);
-  validateMigrationPlan(pendingAtStart, args.expand, args.enforce, listMigrationFiles());
-  console.log("Plan matches the database exactly: every pending migration is accounted for.");
-
-  console.log("\n=== Phase 1: apply expand migrations ===");
-  applyExpandMigrations(args.dbUrl, args.expand, args.enforce, args.dryRun);
-
-  if (args.dryRun) {
-    console.log("\n--dry-run: stopping after phase 1 (no deployment to wait for, nothing to enforce).");
-    return;
+  if (args.command === "prepare") {
+    runPrepare(args);
+  } else {
+    await runFinalize(args);
   }
-
-  console.log(`\n=== Phase 2: wait for the expected commit to be live in ${args.environment} ===`);
-  console.log(`Polling ${args.healthUrl} for commitSha=${args.expectedSha} (timeout ${args.deployTimeoutSeconds}s)...`);
-  await pollHealth(args.healthUrl, args.expectedSha, args.environment, args.deployTimeoutSeconds);
-  console.log(`Confirmed: ${args.environment} is serving the expected commit.`);
-
-  console.log(`\n=== Phase 3: drain window (${args.drainSeconds}s) ===`);
-  await new Promise((resolve) => setTimeout(resolve, args.drainSeconds * 1000));
-
-  console.log("\n=== Phase 4: compatibility smoke check ===");
-  const health = await pollHealth(args.healthUrl, args.expectedSha, args.environment, 30);
-  console.log(`Smoke check passed: ${JSON.stringify(health)}`);
-
-  console.log("\n=== Phase 5: apply enforce migrations ===");
-  applyEnforceMigrations(args.dbUrl, args.enforce, args.dryRun);
-
-  console.log("\n=== Phase 6: final verification ===");
-  const stillPending = getPendingMigrations(args.dbUrl);
-  if (stillPending.length > 0) {
-    throw new Error(`Rollout finished but migrations are still pending: ${stillPending.join(", ")}`);
-  }
-  console.log("All migrations applied. Rollout complete.");
 }
 
 // Only run when executed directly (`node scripts/rollout.mjs ...`), not
