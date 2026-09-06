@@ -5,7 +5,7 @@ This is a response to a seventh-round independent review of PR #3, covering 8 fi
 **Reviewed PR head (what round 7 reviewed):** `799974d`.
 **Base:** `master` at `443ea98`.
 **Branch:** `fix/round4-review-findings` — **not merged, no production changes of any kind.**
-**This round's commit range:** `799974d..5010847` (8 commits, 26 files, +1638/-165).
+**This round's commit range:** `799974d..a7aa906` (9 commits, 27 files, +1736/-221) — the 9th commit is this document itself.
 **Four new migrations this round**, all applied only to the isolated Supabase test project, never production: `20260906100000` (drops the round-3 3-argument `request_notification_email_change` overload outright), `20260906110000` (fixes `claim_negative_alert_send`'s `now()`-under-concurrency bug), `20260906120000` (fixes the identical bug in `request_notification_email_change` itself, found by this round's own self-review, not the original 8 findings).
 **All 8 round-7 findings addressed, plus 5 additional defects found during this round's own work.** Verdict: **all 8 confirmed, none rejected** — see § 1. The 5 additional defects are in § 2.
 
@@ -75,17 +75,17 @@ supabase db advisors --type all                         — "No issues found", r
 
 **Targeted rollout failure/redirection tests:** all `scripts/rollout.test.ts` tests pass, including 5 tests against real local `node:http` servers (same-origin success, off-origin redirect, same-origin redirect, redirect loop, HTTP downgrade — each rejected) and the subprocess-credential-redaction tests for both `supabase migration list` and `supabase db push` failure paths.
 
-**Live GitHub Actions run for this exact commit (`5010847`):** [run #34033618052](https://github.com/lbenyok/velemenytap/actions/runs/34033618052) — completed, all applicable jobs **succeeded**:
+**Live GitHub Actions run for the true final commit (`a7aa906`, this document included):** [run #34034069855](https://github.com/lbenyok/velemenytap/actions/runs/34034069855) — completed, all applicable jobs **succeeded**:
 
 | Job | Result | Link |
 |---|---|---|
-| `check-e2e-secrets` | success | [job](https://github.com/lbenyok/velemenytap/actions/runs/34033618052/job/101487596837) |
-| `checks` (typecheck, lint, unit tests) | success | [job](https://github.com/lbenyok/velemenytap/actions/runs/34033618052/job/101487596994) |
-| `e2e` (Playwright, review-gating regression) | success, 5m51s | [job](https://github.com/lbenyok/velemenytap/actions/runs/34033618052/job/101487754326) |
-| `e2e-gate` ("E2E actually ran (required check)") | success | [job](https://github.com/lbenyok/velemenytap/actions/runs/34033618052/job/101488532838) |
-| `verify-production-deployment` | **skipped** | [job](https://github.com/lbenyok/velemenytap/actions/runs/34033618052/job/101488533332) |
+| `check-e2e-secrets` | success | [job](https://github.com/lbenyok/velemenytap/actions/runs/34034069855/job/101488812485) |
+| `checks` (typecheck, lint, unit tests) | success | [job](https://github.com/lbenyok/velemenytap/actions/runs/34034069855/job/101488812621) |
+| `e2e` (Playwright, review-gating regression) | success | [job](https://github.com/lbenyok/velemenytap/actions/runs/34034069855/job/101488966655) |
+| `e2e-gate` ("E2E actually ran (required check)") | success | [job](https://github.com/lbenyok/velemenytap/actions/runs/34034069855/job/101489722030) |
+| `verify-production-deployment` | **skipped** | [job](https://github.com/lbenyok/velemenytap/actions/runs/34034069855/job/101489722707) |
 
-The `verify-production-deployment` skip is expected and correct, not a gap: that job's own `if:` condition restricts it to pushes to `master` (`DEPLOYMENT.md` § 5) — this run is against the feature branch, so it has nothing to verify yet.
+The `verify-production-deployment` skip is expected and correct, not a gap: that job's own `if:` condition restricts it to pushes to `master` (`DEPLOYMENT.md` § 5) — this run is against the feature branch, so it has nothing to verify yet. (An earlier run, [#34033618052](https://github.com/lbenyok/velemenytap/actions/runs/34033618052) against commit `5010847` — everything except this handoff document itself — also passed all 5 jobs identically, including the `e2e` job succeeding in 5m51s.)
 
 **Could not be independently verified**: the exact per-test pass/fail/skip breakdown Playwright's own reporter printed inside the `e2e` job's log — GitHub's step-level log view for this run requires signing in to view (attempted via browser, blocked by a "Sign in to view logs" wall this session has no credentials for), and the REST API's log-download endpoint returned `403 Must have admin rights to Repository`. Only the job's overall pass/fail result and duration are independently confirmed from the CI run itself. The exact test counts reported in this section (236 unit / 108 e2e) come from running the identical suite locally against the same isolated Supabase test project CI itself uses (`e2e/support/env.ts`'s allowlisted project ref), not from parsing the CI log — a reviewer with repository access should confirm the CI job's own printed count matches.
 
