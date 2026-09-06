@@ -1,6 +1,18 @@
 # Status
 
-Last updated: 2026-09-06, after implementing and testing (not yet merging) the response to a seventh-round independent review of PR #3 — see "Round-7 review-response pass" below and `REVIEW_REQUEST.md` for the full handoff. Branch `fix/round4-review-findings`, still not merged; it now also carries round-5's, round-6's, and round-7's fixes on top of round 4's (below). Prior entry: 2026-09-06 (round 6).
+Last updated: 2026-09-06, after building the first-time dashboard onboarding tour (below) on top of the round-4–8 security review work. Branch `fix/round4-review-findings`, still not merged.
+
+## First-time dashboard onboarding tour (2026-09-06, not yet merged)
+
+A short, optional, dismissible guided tour that auto-opens the first time a brand-new organization's dashboard loads: a welcome dialog, then 7 steps (Áttekintés, Helyszínek, NFC-kártyák, Vélemények, Elemzés, Beállítások, and a final step nudging toward creating the first location), each highlighting its real nav link via a `data-tour` attribute — never text-matching, and never pointing at a link the responsive nav has actually hidden (below the `xl` breakpoint, the same step renders as a plain centered dialog instead). Built entirely from this project's own existing UI primitives (`Dialog`, `Button`) — no new UI library.
+
+State (`organizations.onboarding_tour_status`: `not_started` | `completed` | `skipped`, migration `20260906130000`) is persisted server-side, scoped to the organization (not the signed-in user — see `DATABASE_SCHEMA.md` § "Onboarding tour state" for why), so it survives a different device or browser and correctly protects every organization that already existed before this shipped (backfilled to `completed` in the same migration) from ever seeing it appear unprompted. A small "Útmutató megnyitása" button in the dashboard header reopens it anytime without touching the persisted state.
+
+Building this surfaced and fixed a real, pre-existing test-fixture gap: `e2e/support/seed.ts`'s `seedOrgWithMember()` — used by dozens of unrelated specs that sign in and interact with the dashboard immediately — now defaults every seeded organization's tour status to `completed` rather than the column's own `not_started` default, specifically so those pre-existing specs don't get a modal dialog they never anticipated sitting on top of the page. Only `e2e/onboarding-tour.spec.ts` itself, and the one real-onboarding-flow test in `organization-onboarding.spec.ts` that goes through the actual signup UI (and therefore gets a genuinely fresh organization from `create_organization_atomic`, not the test helper), opt into or account for the `not_started` case.
+
+**Verification**: `npm run typecheck`/`npm run lint` clean, `npm run test` 236/236, `npm run build` clean (19 routes, unchanged), `supabase db advisors` clean against the isolated project. `npm run test:e2e`: 123/123 across 17 files (up from 122/16 — one new spec, `onboarding-tour.spec.ts`, 15 tests), including a full re-run of `review-gating.spec.ts` (6/6, all five ratings plus the duplicate-submission test) confirming no regression to the Google-review no-gating invariant, and `dashboard-nav-accessibility.spec.ts` (10/10) confirming the pre-existing responsive-nav tests still pass now that the seed helper no longer triggers the tour by accident.
+
+**Not part of this pass**: merging, applying anything to production, or deploying.
 
 ## Round-7 review-response pass (2026-09-06, not yet merged)
 
