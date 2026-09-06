@@ -1,5 +1,19 @@
-import { describe, it, expect } from "vitest";
-import { parseArgs, validateMigrationPlan, loadEnvironments, projectRefFromDbUrl } from "./rollout.mjs";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { execFileSync } from "node:child_process";
+import http from "node:http";
+import {
+  parseArgs,
+  validateMigrationPlan,
+  loadEnvironments,
+  projectRefFromDbUrl,
+  sh,
+  redactConnectionStrings,
+  credentialSecretsFromArgs,
+  pollHealth,
+  getPendingMigrations,
+} from "./rollout.mjs";
+
+vi.mock("node:child_process", () => ({ execFileSync: vi.fn() }));
 
 const TEST_REF = "abcdefghijklmnopqrst";
 const TEST_ENVIRONMENTS = loadEnvironments(
@@ -53,6 +67,95 @@ describe("loadEnvironments", () => {
         }),
       ),
     ).toThrow(/missing a valid "healthUrl"/);
+  });
+
+  /**
+   * Round-7 finding R7-04 (MEDIUM): allowedOrigin was stored in the
+   * manifest but never actually checked against healthUrl -- a mismatched,
+   * malformed, credentialed, or query/fragment-carrying entry would have
+   * been silently accepted and trusted. These are now load-time validation
+   * failures, not runtime surprises.
+   */
+  describe("R7-04: allowedOrigin/healthUrl are enforced, not just stored", () => {
+    const base = { supabaseProjectRef: "x", environment: "production" };
+
+    it("rejects a healthUrl whose origin doesn't match allowedOrigin", () => {
+      expect(() =>
+        loadEnvironments(
+          JSON.stringify({
+            production: { ...base, allowedOrigin: "https://real.example.com", healthUrl: "https://attacker.example.com/api/health" },
+          }),
+        ),
+      ).toThrow(/does not match its own allowedOrigin/);
+    });
+
+    it("rejects a non-https allowedOrigin", () => {
+      expect(() =>
+        loadEnvironments(
+          JSON.stringify({ production: { ...base, allowedOrigin: "http://real.example.com", healthUrl: "http://real.example.com/api/health" } }),
+        ),
+      ).toThrow(/allowedOrigin must be https/);
+    });
+
+    it("rejects a non-https healthUrl even when allowedOrigin is https", () => {
+      // Different origins anyway (scheme is part of origin), but assert
+      // the specific https-only message fires, not just the origin-match one.
+      expect(() =>
+        loadEnvironments(
+          JSON.stringify({ production: { ...base, allowedOrigin: "https://real.example.com", healthUrl: "http://real.example.com/api/health" } }),
+        ),
+      ).toThrow(/healthUrl must be https|does not match/);
+    });
+
+    it("rejects a healthUrl carrying credentials", () => {
+      expect(() =>
+        loadEnvironments(
+          JSON.stringify({
+            production: { ...base, allowedOrigin: "https://real.example.com", healthUrl: "https://user:pw@real.example.com/api/health" },
+          }),
+        ),
+      ).toThrow(/must not carry credentials/);
+    });
+
+    it("rejects a healthUrl carrying a fragment", () => {
+      expect(() =>
+        loadEnvironments(
+          JSON.stringify({
+            production: { ...base, allowedOrigin: "https://real.example.com", healthUrl: "https://real.example.com/api/health#x" },
+          }),
+        ),
+      ).toThrow(/must not carry a fragment/);
+    });
+
+    it("rejects a healthUrl carrying a query string", () => {
+      expect(() =>
+        loadEnvironments(
+          JSON.stringify({
+            production: { ...base, allowedOrigin: "https://real.example.com", healthUrl: "https://real.example.com/api/health?x=1" },
+          }),
+        ),
+      ).toThrow(/must not carry a query string/);
+    });
+
+    it("rejects a malformed allowedOrigin", () => {
+      expect(() =>
+        loadEnvironments(JSON.stringify({ production: { ...base, allowedOrigin: "not a url", healthUrl: "https://real.example.com/api/health" } })),
+      ).toThrow(/is not a valid URL/);
+    });
+
+    it("rejects a malformed healthUrl", () => {
+      expect(() =>
+        loadEnvironments(JSON.stringify({ production: { ...base, allowedOrigin: "https://real.example.com", healthUrl: "not a url" } })),
+      ).toThrow(/is not a valid URL/);
+    });
+
+    it("accepts a genuinely matching, well-formed pair", () => {
+      expect(() =>
+        loadEnvironments(
+          JSON.stringify({ production: { ...base, allowedOrigin: "https://real.example.com", healthUrl: "https://real.example.com/api/health" } }),
+        ),
+      ).not.toThrow();
+    });
   });
 });
 
@@ -204,14 +307,32 @@ describe("parseArgs", () => {
       expect(args.environment).toBe("preview");
     });
 
-    it("no longer accepts --allowed-origin/--health-url as arguments at all -- they're silently ignored, not honored", () => {
-      const argv = [...VALID_ARGV, "--allowed-origin", "https://attacker.example.com", "--health-url", "https://attacker.example.com/api/health"];
-      const args = parseArgs(argv, TEST_ENVIRONMENTS);
-      // The manifest's values win regardless of what an attacker-controlled
-      // caller tries to pass for these -- there is no code path left that
-      // reads raw["allowed-origin"]/raw["health-url"] into the result at all.
-      expect(args.allowedOrigin).toBe("https://veleminytap.vercel.app");
-      expect(args.healthUrl).toBe("https://veleminytap.vercel.app/api/health");
+    /**
+     * Round-7 finding R7-04: this used to silently ACCEPT and ignore
+     * --allowed-origin/--health-url (they were parsed into `raw` but
+     * nothing ever read them out again) -- a caller who believed they were
+     * still setting a safety-related flag got no error and no effect.
+     * Unknown flags, these two specifically included, are now rejected
+     * outright.
+     */
+    it("rejects the removed --allowed-origin flag outright, not silently", () => {
+      const argv = [...VALID_ARGV, "--allowed-origin", "https://attacker.example.com"];
+      expect(() => parseArgs(argv, TEST_ENVIRONMENTS)).toThrow(/Unknown argument --allowed-origin[\s\S]*removed/);
+    });
+
+    it("rejects the removed --health-url flag outright, not silently", () => {
+      const argv = [...VALID_ARGV, "--health-url", "https://attacker.example.com/api/health"];
+      expect(() => parseArgs(argv, TEST_ENVIRONMENTS)).toThrow(/Unknown argument --health-url[\s\S]*removed/);
+    });
+
+    it("rejects any other unrecognized flag too", () => {
+      const argv = [...VALID_ARGV, "--totally-made-up-flag", "value"];
+      expect(() => parseArgs(argv, TEST_ENVIRONMENTS)).toThrow(/Unknown argument --totally-made-up-flag/);
+    });
+
+    it("rejects a bare positional argument that isn't a --flag", () => {
+      const argv = [...VALID_ARGV, "some-stray-value"];
+      expect(() => parseArgs(argv, TEST_ENVIRONMENTS)).toThrow(/every argument must be a --flag/);
     });
   });
 });
@@ -300,4 +421,285 @@ describe("validateMigrationPlan", () => {
   it("passes with empty expand/enforce lists when nothing is pending", () => {
     expect(() => validateMigrationPlan([], [], [], ALL_FILES)).not.toThrow();
   });
+});
+
+/**
+ * Round-7 finding R7-02 (HIGH): execFileSync's own thrown Error embeds the
+ * complete command line (including --db-url's real password) in its
+ * `.message`, plus separate `.stdout`/`.stderr` -- none of which sh()'s own
+ * redacted console.log line ever protected, since that only covers the
+ * happy-path log line, never a thrown failure. The top-level catch in
+ * main() prints exactly this message unchanged, which would disclose a
+ * production database password to whatever captures this script's stderr.
+ */
+describe("R7-02: subprocess failures never disclose connection-string credentials", () => {
+  const USERNAME_CANARY = "postgres.CANARY_USER_R7";
+  const PASSWORD_CANARY = "CANARY_PW_R7_super_secret";
+  const DB_URL = `postgresql://${USERNAME_CANARY}:${PASSWORD_CANARY}@aws-1-eu-west-1.pooler.supabase.com:6543/postgres`;
+
+  beforeEach(() => {
+    vi.mocked(execFileSync).mockReset();
+  });
+
+  function mockFailure({ message, stdout, stderr }: { message: string; stdout?: string; stderr?: string }) {
+    const err = new Error(message) as Error & { status: number; stdout: string; stderr: string };
+    err.status = 1;
+    err.stdout = stdout ?? "";
+    err.stderr = stderr ?? "";
+    vi.mocked(execFileSync).mockImplementation(() => {
+      throw err;
+    });
+  }
+
+  describe("redactConnectionStrings", () => {
+    it("redacts the userinfo of any postgres(ql):// URL found in text, generically", () => {
+      const text = `Connection failed: ${DB_URL}`;
+      const result = redactConnectionStrings(text);
+      expect(result).not.toContain(PASSWORD_CANARY);
+      expect(result).not.toContain(USERNAME_CANARY);
+      expect(result).toContain("aws-1-eu-west-1.pooler.supabase.com");
+      expect(result).toContain("[redacted]");
+    });
+
+    it("redacts a bare extracted secret even outside a full URL context", () => {
+      const result = redactConnectionStrings(`auth failed for user "${USERNAME_CANARY}" password "${PASSWORD_CANARY}"`, [
+        USERNAME_CANARY,
+        PASSWORD_CANARY,
+      ]);
+      expect(result).not.toContain(PASSWORD_CANARY);
+      expect(result).not.toContain(USERNAME_CANARY);
+    });
+
+    it("redacts a percent-decoded secret when only the encoded form is in the extracted list, and vice versa", () => {
+      const encoded = "pw%2Bwith%2Bplus";
+      const decoded = decodeURIComponent(encoded);
+      expect(redactConnectionStrings(`leaked: ${decoded}`, [encoded, decoded])).not.toContain(decoded);
+    });
+
+    it("leaves non-connection-string text untouched", () => {
+      expect(redactConnectionStrings("plain error, nothing sensitive here")).toBe(
+        "plain error, nothing sensitive here",
+      );
+    });
+
+    it("handles non-string input without throwing", () => {
+      expect(redactConnectionStrings(undefined)).toBeUndefined();
+      expect(redactConnectionStrings(null)).toBeNull();
+    });
+  });
+
+  describe("credentialSecretsFromArgs", () => {
+    it("extracts both username and password, encoded and decoded, from a db-url argument", () => {
+      const secrets = credentialSecretsFromArgs(["supabase", "db", "push", "--db-url", DB_URL]);
+      expect(secrets).toContain(USERNAME_CANARY);
+      expect(secrets).toContain(PASSWORD_CANARY);
+    });
+
+    it("ignores non-URL arguments without throwing", () => {
+      expect(() => credentialSecretsFromArgs(["supabase", "migration", "list", "--output-format", "json"])).not.toThrow();
+    });
+  });
+
+  describe("sh() sanitizes every failure path", () => {
+    it("never discloses the canary through a failed 'supabase migration list' call", () => {
+      mockFailure({
+        message: `Command failed: npx supabase migration list --db-url ${DB_URL} --output-format json`,
+        stderr: `connection to server failed: ${DB_URL}`,
+      });
+      let caught: (Error & { stdout?: string; stderr?: string }) | undefined;
+      try {
+        sh("npx", ["supabase", "migration", "list", "--db-url", DB_URL, "--output-format", "json"]);
+      } catch (err) {
+        caught = err as Error & { stdout?: string; stderr?: string };
+      }
+      expect(caught).toBeDefined();
+      const serialized = JSON.stringify({ message: caught?.message, stdout: caught?.stdout, stderr: caught?.stderr });
+      expect(serialized).not.toContain(PASSWORD_CANARY);
+      expect(serialized).not.toContain(USERNAME_CANARY);
+    });
+
+    it("never discloses the canary through a failed 'supabase db push' call", () => {
+      mockFailure({
+        message: `Command failed: npx supabase db push --db-url ${DB_URL} --include-all --yes`,
+        stdout: `applying migration...\nfailed: ${DB_URL}`,
+        stderr: `password authentication failed for user "${USERNAME_CANARY}"`,
+      });
+      let caught: (Error & { stdout?: string; stderr?: string }) | undefined;
+      try {
+        sh("npx", ["supabase", "db", "push", "--db-url", DB_URL, "--include-all", "--yes"]);
+      } catch (err) {
+        caught = err as Error & { stdout?: string; stderr?: string };
+      }
+      expect(caught).toBeDefined();
+      const serialized = JSON.stringify({ message: caught?.message, stdout: caught?.stdout, stderr: caught?.stderr });
+      expect(serialized).not.toContain(PASSWORD_CANARY);
+      expect(serialized).not.toContain(USERNAME_CANARY);
+    });
+
+    it("does not carry forward any un-sanitized property (e.g. .output) from the original error", () => {
+      const err = new Error(`Command failed: ... ${DB_URL}`) as Error & { status: number; output: unknown[] };
+      err.status = 1;
+      err.output = [null, `stdout with ${DB_URL}`, `stderr with ${DB_URL}`];
+      vi.mocked(execFileSync).mockImplementation(() => {
+        throw err;
+      });
+      let caught: (Error & { output?: unknown }) | undefined;
+      try {
+        sh("npx", ["supabase", "db", "push", "--db-url", DB_URL]);
+      } catch (e) {
+        caught = e as Error & { output?: unknown };
+      }
+      expect(caught?.output).toBeUndefined();
+    });
+
+    it("still returns the real output on success (sanitization only applies to the failure path)", () => {
+      vi.mocked(execFileSync).mockReturnValue('{"migrations":[]}');
+      expect(sh("npx", ["supabase", "migration", "list"])).toBe('{"migrations":[]}');
+    });
+  });
+
+  /**
+   * Found during this round's own independent adversarial self-review, not
+   * one of R7-01/02/04's named findings: getPendingMigrations() throws its
+   * own error (not an execFileSync failure, so sanitizeSubprocessError
+   * never runs) when the CLI's stdout doesn't contain a "{" -- and that
+   * error used to embed the raw, un-redacted stdout directly. A future CLI
+   * version mixing a warning/banner line containing --db-url into stdout
+   * on an otherwise-successful exit would leak the credential through this
+   * specific path, bypassing every other protection in this file.
+   */
+  describe("getPendingMigrations sanitizes even a non-execFileSync-failure error path", () => {
+    it("redacts the db-url canary from the 'Expected JSON' error when stdout isn't JSON at all", () => {
+      vi.mocked(execFileSync).mockReturnValue(`some banner mentioning ${DB_URL} then no json`);
+      expect(() => getPendingMigrations(DB_URL)).toThrow(/Expected JSON/);
+      try {
+        getPendingMigrations(DB_URL);
+        expect.unreachable();
+      } catch (err) {
+        const message = (err as Error).message;
+        expect(message).not.toContain(PASSWORD_CANARY);
+        expect(message).not.toContain(USERNAME_CANARY);
+      }
+    });
+  });
+});
+
+/**
+ * Round-7 finding R7-04 (MEDIUM): pollHealth used plain fetch(), which
+ * follows redirects by default -- a health URL redirected (by a
+ * compromised or misconfigured intermediary) to a different host could
+ * return a spoofed ok+matching-commitSha+matching-environment response and
+ * incorrectly authorize the enforce phase. Uses real local HTTP servers
+ * (node:http), not mocked fetch, per the finding's explicit ask -- these
+ * exercise fetch's actual redirect-following behavior, not an assumption
+ * about it. Each retry-exhaustion case takes >=5s (pollHealth's own fixed
+ * retry interval) since that isn't a round-7 finding to fix; timeouts are
+ * extended accordingly rather than the test weakened to avoid the wait.
+ */
+describe("R7-04: pollHealth rejects redirects instead of following them", () => {
+  const EXPECTED_SHA = "a".repeat(40);
+  let servers: http.Server[] = [];
+
+  afterEach(async () => {
+    await Promise.all(servers.map((s) => new Promise<void>((resolve) => s.close(() => resolve()))));
+    servers = [];
+  });
+
+  function startServer(handler: (req: http.IncomingMessage, res: http.ServerResponse) => void): Promise<http.Server> {
+    return new Promise((resolve) => {
+      const server = http.createServer(handler);
+      servers.push(server);
+      server.listen(0, "127.0.0.1", () => resolve(server));
+    });
+  }
+
+  function urlFor(server: http.Server) {
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    return `http://127.0.0.1:${port}/api/health`;
+  }
+
+  function healthyBody() {
+    return JSON.stringify({ ok: true, commitSha: EXPECTED_SHA, environment: "production" });
+  }
+
+  it("SUCCESS: a same-origin, non-redirecting response is accepted", async () => {
+    const server = await startServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(healthyBody());
+    });
+    const body = await pollHealth(urlFor(server), EXPECTED_SHA, "production", 5);
+    expect(body.ok).toBe(true);
+  });
+
+  it(
+    "OFF-ORIGIN REDIRECT: a redirect to a different host is rejected, never followed",
+    async () => {
+      const attacker = await startServer((_req, res) => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(healthyBody());
+      });
+      const legit = await startServer((_req, res) => {
+        res.writeHead(302, { Location: urlFor(attacker) });
+        res.end();
+      });
+      await expect(pollHealth(urlFor(legit), EXPECTED_SHA, "production", 1)).rejects.toThrow(/Timed out/);
+    },
+    10000,
+  );
+
+  it(
+    "SAME-ORIGIN REDIRECT: a redirect to the identical origin is ALSO rejected -- healthUrl should never need to redirect at all",
+    async () => {
+      const server = await startServer((req, res) => {
+        if (req.url === "/api/health") {
+          res.writeHead(302, { Location: "/api/health-v2" });
+          res.end();
+        } else {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(healthyBody());
+        }
+      });
+      await expect(pollHealth(urlFor(server), EXPECTED_SHA, "production", 1)).rejects.toThrow(/Timed out/);
+    },
+    10000,
+  );
+
+  it(
+    "REDIRECT LOOP: never hangs or infinitely follows -- the first redirect alone fails it",
+    async () => {
+      const server = await startServer((req, res) => {
+        res.writeHead(302, { Location: req.url === "/a" ? "/b" : "/a" });
+        res.end();
+      });
+      await expect(pollHealth(`${urlFor(server).replace("/api/health", "")}/a`, EXPECTED_SHA, "production", 1)).rejects.toThrow(
+        /Timed out/,
+      );
+    },
+    10000,
+  );
+
+  it(
+    "HTTP DOWNGRADE: a redirect from https-intended traffic to a plain-http location is rejected the same as any other redirect",
+    async () => {
+      // Simulated locally over http (no TLS available in a unit test), but
+      // the mechanism under test -- redirect: "error" -- makes no
+      // exception for scheme changes specifically; it rejects the redirect
+      // response itself before its Location is ever inspected.
+      const server = await startServer((_req, res) => {
+        res.writeHead(302, { Location: "http://attacker.example.com/api/health" });
+        res.end();
+      });
+      await expect(pollHealth(urlFor(server), EXPECTED_SHA, "production", 1)).rejects.toThrow(/Timed out/);
+    },
+    10000,
+  );
+
+  it("a spoofed response on the CORRECT origin still can't help an attacker who can't reach that origin -- rejects mismatched commitSha/environment as before, unrelated to redirects", async () => {
+    const server = await startServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, commitSha: "wrong-sha", environment: "production" }));
+    });
+    await expect(pollHealth(urlFor(server), EXPECTED_SHA, "production", 1)).rejects.toThrow(/Timed out/);
+  }, 10000);
 });

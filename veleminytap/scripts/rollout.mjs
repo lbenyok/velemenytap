@@ -75,6 +75,15 @@ const migrationsDir = path.resolve(dirname, "../supabase/migrations");
 const environmentsPath = path.resolve(dirname, "rollout-environments.json");
 const NPX = process.platform === "win32" ? "npx.cmd" : "npx";
 
+/**
+ * Round-7 finding R7-04 (MEDIUM): allowedOrigin was stored but never
+ * actually checked against anything -- healthUrl could name a different
+ * origin entirely and nothing here would notice, making allowedOrigin
+ * dead metadata rather than the enforced control its own name implies.
+ * Validated strictly here, at manifest-load time, so a malformed or
+ * internally-inconsistent entry is caught before any rollout phase ever
+ * reads it.
+ */
 export function loadEnvironments(raw) {
   const parsed = JSON.parse(raw);
   for (const [name, env] of Object.entries(parsed)) {
@@ -82,6 +91,44 @@ export function loadEnvironments(raw) {
       if (typeof env[key] !== "string" || !env[key]) {
         throw new Error(`rollout-environments.json's "${name}" entry is missing a valid "${key}".`);
       }
+    }
+
+    let allowedOriginUrl;
+    try {
+      allowedOriginUrl = new URL(env.allowedOrigin);
+    } catch {
+      throw new Error(`rollout-environments.json's "${name}".allowedOrigin ("${env.allowedOrigin}") is not a valid URL.`);
+    }
+    if (allowedOriginUrl.protocol !== "https:") {
+      throw new Error(`rollout-environments.json's "${name}".allowedOrigin must be https:// -- got "${env.allowedOrigin}".`);
+    }
+
+    let healthUrl;
+    try {
+      healthUrl = new URL(env.healthUrl);
+    } catch {
+      throw new Error(`rollout-environments.json's "${name}".healthUrl ("${env.healthUrl}") is not a valid URL.`);
+    }
+    if (healthUrl.protocol !== "https:") {
+      throw new Error(`rollout-environments.json's "${name}".healthUrl must be https:// -- got "${env.healthUrl}".`);
+    }
+    // The actual enforcement this finding asked for: healthUrl's origin
+    // must match this same entry's own allowedOrigin -- not just be
+    // printed alongside it.
+    if (healthUrl.origin !== allowedOriginUrl.origin) {
+      throw new Error(
+        `rollout-environments.json's "${name}" has a healthUrl origin ("${healthUrl.origin}") that does not match ` +
+          `its own allowedOrigin ("${allowedOriginUrl.origin}") -- these must agree.`,
+      );
+    }
+    if (healthUrl.username || healthUrl.password) {
+      throw new Error(`rollout-environments.json's "${name}".healthUrl must not carry credentials.`);
+    }
+    if (healthUrl.hash) {
+      throw new Error(`rollout-environments.json's "${name}".healthUrl must not carry a fragment.`);
+    }
+    if (healthUrl.search) {
+      throw new Error(`rollout-environments.json's "${name}".healthUrl must not carry a query string.`);
     }
   }
   return parsed;
@@ -129,6 +176,10 @@ export function projectRefFromDbUrl(dbUrl) {
   return null;
 }
 
+// Round-7 finding R7-04: every recognized flag, explicit -- see parseArgs's
+// unknown-argument check below.
+const KNOWN_FLAGS = new Set(["db-url", "expand", "enforce", "expected-sha", "target", "drain-seconds", "deploy-timeout-seconds"]);
+
 function parseMigrationList(value, flagName) {
   if (value === undefined) {
     throw new Error(`Missing required argument: --${flagName}. Pass an empty string if genuinely none are pending.`);
@@ -169,7 +220,25 @@ export function parseArgs(argv, environments) {
       args.dryRun = true;
       continue;
     }
+    if (!arg.startsWith("--")) {
+      throw new Error(`Unexpected argument "${arg}" -- every argument must be a --flag.`);
+    }
     const key = arg.replace(/^--/, "");
+    // Round-7 finding R7-04: an unrecognized flag used to be silently
+    // accepted and simply ignored (stored in `raw` under a key nothing
+    // ever reads) -- including, after round-6 R6-07 removed them,
+    // --allowed-origin/--health-url themselves. Silently ignoring a
+    // safety-related flag a caller believes they're setting is worse than
+    // rejecting it outright.
+    if (!KNOWN_FLAGS.has(key)) {
+      const removedFlagHint =
+        key === "allowed-origin" || key === "health-url"
+          ? " This flag was removed (round-6 R6-07) -- --target now selects both this and the origin from the committed rollout-environments.json manifest."
+          : "";
+      throw new Error(
+        `Unknown argument --${key}.${removedFlagHint} Known arguments: --dry-run, ${[...KNOWN_FLAGS].map((f) => `--${f}`).join(", ")}.`,
+      );
+    }
     const value = argv[++i];
     raw[key] = value;
   }
@@ -297,20 +366,116 @@ export function validateMigrationPlan(pending, expandList, enforceList, allFiles
   }
 }
 
-function sh(cmd, args, opts = {}) {
+/**
+ * Round-7 finding R7-02 (HIGH): execFileSync's own thrown Error embeds the
+ * FULL command line in `.message` ("Command failed: <cmd> <args...>",
+ * confirmed by direct reproduction) on any non-zero exit, plus separate
+ * `.stdout`/`.stderr` properties -- none of which sh()'s own redacted
+ * console.log line ever protected; that only covered the happy-path log
+ * line, never a thrown failure. --db-url carries a real password this
+ * script doesn't control the contents of, and the top-level catch in
+ * main() prints exactly this message unchanged -- disclosing it in
+ * plaintext to whatever captures this script's stderr (a CI log, a
+ * terminal transcript, an incident channel).
+ *
+ * Fixed generically, not by stripping only the one --db-url this call
+ * happens to be using: CONNECTION_STRING_CREDENTIALS matches the userinfo
+ * portion of any postgres(ql):// URL appearing anywhere in the text (the
+ * CLI's own output could echo a differently-formatted but still-sensitive
+ * connection string, e.g. after resolving a pooler alias), and
+ * credentialSecretsFromArgs additionally extracts this specific call's own
+ * username/password -- both as they appear literally in the URL and
+ * percent-decoded -- for a second, targeted substring pass, in case either
+ * leaks outside a full URL context (e.g. a bare password echoed by a
+ * misconfigured error message).
+ */
+const CONNECTION_STRING_CREDENTIALS = /(postgres(?:ql)?:\/\/)([^@/\s]*)@/gi;
+
+export function redactConnectionStrings(text, extraSecrets = []) {
+  if (typeof text !== "string" || !text) return text;
+  let result = text.replace(CONNECTION_STRING_CREDENTIALS, "$1[redacted]@");
+  for (const secret of extraSecrets) {
+    if (secret) {
+      result = result.split(secret).join("[redacted]");
+    }
+  }
+  return result;
+}
+
+export function credentialSecretsFromArgs(args) {
+  const secrets = [];
+  for (const arg of args) {
+    if (typeof arg !== "string" || !arg.includes("://")) continue;
+    let url;
+    try {
+      url = new URL(arg);
+    } catch {
+      continue;
+    }
+    for (const raw of [url.username, url.password]) {
+      if (!raw) continue;
+      secrets.push(raw);
+      try {
+        const decoded = decodeURIComponent(raw);
+        if (decoded !== raw) secrets.push(decoded);
+      } catch {
+        // Not percent-encoded, or malformed -- the raw form above still covers it.
+      }
+    }
+  }
+  return secrets;
+}
+
+function sanitizeSubprocessError(err, args) {
+  const secrets = credentialSecretsFromArgs(args);
+  const toSafeString = (value) => {
+    if (typeof value === "string") return redactConnectionStrings(value, secrets);
+    if (value && typeof value.toString === "function") return redactConnectionStrings(value.toString(), secrets);
+    return value;
+  };
+  const sanitized = new Error(toSafeString(err instanceof Error ? err.message : String(err)));
+  sanitized.status = err?.status;
+  sanitized.signal = err?.signal;
+  sanitized.stdout = toSafeString(err?.stdout);
+  sanitized.stderr = toSafeString(err?.stderr);
+  // Deliberately does NOT copy err.output or any other property forward --
+  // a fresh Error with only these explicitly-sanitized fields means there
+  // is no un-sanitized property left for a future change to accidentally
+  // log or serialize.
+  return sanitized;
+}
+
+export function sh(cmd, args, opts = {}) {
   console.log(`+ ${cmd} ${args.filter((a) => !a.includes("://")).join(" ")} [connection string redacted from log]`);
-  return execFileSync(cmd, args, { encoding: "utf-8", ...opts });
+  try {
+    return execFileSync(cmd, args, { encoding: "utf-8", ...opts });
+  } catch (err) {
+    throw sanitizeSubprocessError(err, args);
+  }
 }
 
 function listMigrationFiles() {
   return readdirSync(migrationsDir).filter((f) => f.endsWith(".sql")).sort();
 }
 
-function getPendingMigrations(dbUrl) {
+export function getPendingMigrations(dbUrl) {
   const raw = sh(NPX, ["supabase", "migration", "list", "--db-url", dbUrl, "--output-format", "json"]);
   const jsonStart = raw.indexOf("{");
   if (jsonStart === -1) {
-    throw new Error(`Expected JSON from 'supabase migration list --output-format json', got: ${raw}`);
+    // Found during this round's own independent self-review: sh() only
+    // sanitizes a THROWN (non-zero-exit) failure -- this is a success-exit
+    // path (getPendingMigrations calls sh(), which returned normally) that
+    // previously embedded the raw, un-redacted stdout directly into a
+    // thrown error message. If a future `supabase` CLI version ever mixes
+    // a warning/banner line containing --db-url into its stdout on an
+    // otherwise-successful exit, that credential would reach whatever
+    // catches this error (main()'s console.error) completely unsanitized,
+    // bypassing sanitizeSubprocessError entirely since no subprocess
+    // actually failed here. Redact defensively the same way a failure
+    // would be, even though this path isn't itself a credential source.
+    throw new Error(
+      `Expected JSON from 'supabase migration list --output-format json', got: ${redactConnectionStrings(raw, credentialSecretsFromArgs(["--db-url", dbUrl]))}`,
+    );
   }
   const parsed = JSON.parse(raw.slice(jsonStart));
   const knownFiles = listMigrationFiles();
@@ -333,12 +498,23 @@ function getPendingMigrations(dbUrl) {
     });
 }
 
-async function pollHealth(healthUrl, expectedSha, expectedEnvironment, timeoutSeconds) {
+export async function pollHealth(healthUrl, expectedSha, expectedEnvironment, timeoutSeconds) {
   const deadline = Date.now() + timeoutSeconds * 1000;
   let lastBody = null;
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(healthUrl, { cache: "no-store" });
+      // Round-7 finding R7-04: fetch follows redirects by default -- a
+      // configured healthUrl could be redirected (by a compromised or
+      // merely misconfigured intermediary) to a different host entirely,
+      // which could then return a spoofed `ok`+matching-commitSha+
+      // matching-environment response and incorrectly authorize the
+      // enforce phase. allowedOrigin exists specifically to name the one
+      // origin this script trusts (validated against healthUrl already, in
+      // loadEnvironments) -- redirect: "error" means ANY redirect response
+      // (same-origin or not) is treated as a failure, the same as any
+      // other unreachable/invalid response, rather than silently followed
+      // wherever it points.
+      const res = await fetch(healthUrl, { cache: "no-store", redirect: "error" });
       const body = await res.json();
       lastBody = body;
       // Round-5 R5-05: also requires a matching environment, not just
