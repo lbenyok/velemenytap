@@ -223,3 +223,18 @@
   --input: oklch(0.922 0 0);
   --ring: var(--pf-accent);
 }
+
+/* First-time dashboard tour (features/onboarding-tour): a static ring
+   around whichever nav link the current step is about, applied via
+   tour-dialog.tsx toggling this class directly on the real element found
+   by its data-tour attribute -- never a floating/anchored popover, so
+   this is the only visual connection between the step and its target.
+   No animation, deliberately -- a persistent ring is enough to draw the
+   eye without needing a prefers-reduced-motion fallback to reason about. */
+.tour-highlight {
+  position: relative;
+  z-index: 51; /* above the dialog's own backdrop (z-50), never above the dialog itself */
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-md);
+}

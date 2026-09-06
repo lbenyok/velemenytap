@@ -24,12 +24,12 @@ import {
 } from "@/components/ui/sheet";
 
 const NAV_ITEMS = [
-  { href: "/dashboard", label: "Áttekintés", icon: LayoutDashboard },
-  { href: "/dashboard/locations", label: "Helyszínek", icon: MapPin },
-  { href: "/dashboard/nfc-cards", label: "NFC kártyák", icon: Nfc },
-  { href: "/dashboard/feedback", label: "Vélemények", icon: Inbox },
-  { href: "/dashboard/analytics", label: "Elemzés", icon: BarChart3 },
-  { href: "/dashboard/settings", label: "Beállítások", icon: Settings },
+  { href: "/dashboard", label: "Áttekintés", icon: LayoutDashboard, tourTarget: "nav-overview" },
+  { href: "/dashboard/locations", label: "Helyszínek", icon: MapPin, tourTarget: "nav-locations" },
+  { href: "/dashboard/nfc-cards", label: "NFC kártyák", icon: Nfc, tourTarget: "nav-nfc-cards" },
+  { href: "/dashboard/feedback", label: "Vélemények", icon: Inbox, tourTarget: "nav-feedback" },
+  { href: "/dashboard/analytics", label: "Elemzés", icon: BarChart3, tourTarget: "nav-analytics" },
+  { href: "/dashboard/settings", label: "Beállítások", icon: Settings, tourTarget: "nav-settings" },
 ] as const;
 
 function isActive(pathname: string, href: string): boolean {
@@ -44,12 +44,17 @@ function NavLink({
   icon: Icon,
   active,
   onNavigate,
+  tourTarget,
 }: {
   href: string;
   label: string;
   icon: LucideIcon;
   active: boolean;
   onNavigate?: () => void;
+  /** Only set for the desktop copy of this link -- see the desktop <nav>'s
+   * own comment below for why the mobile Sheet's copy deliberately never
+   * gets one. */
+  tourTarget?: string;
 }) {
   return (
     <Link
@@ -58,6 +63,7 @@ function NavLink({
       // aria-current, not just a visual highlight.
       aria-current={active ? "page" : undefined}
       onClick={onNavigate}
+      data-tour={tourTarget}
       className={cn(
         "flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
@@ -105,6 +111,16 @@ export function DashboardNav() {
         ))}
       </nav>
 
+      {/* The tour only ever looks for a data-tour target in THIS nav, never
+          the mobile Sheet's copy below -- both render the same NAV_ITEMS,
+          so if both carried the attribute, document.querySelector's "first
+          match in document order" would depend on Base UI's own portal
+          mount timing for the Sheet's content rather than anything this
+          code controls. The Sheet's copy is stripped of tourTarget just
+          below for exactly this reason -- a step whose target lives only
+          below `xl` correctly finds nothing and renders as a plain
+          centered step instead. */}
+
       {/* Below xl (round-5 R5-07 -- was lg/1024px, measured to still
           overlap the org name; see the desktop nav's own comment above):
           a labelled menu button opens the same links in a side panel,
@@ -131,7 +147,9 @@ export function DashboardNav() {
             {NAV_ITEMS.map((item) => (
               <NavLink
                 key={item.href}
-                {...item}
+                href={item.href}
+                label={item.label}
+                icon={item.icon}
                 active={isActive(pathname, item.href)}
                 onNavigate={() => setOpen(false)}
               />

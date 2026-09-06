@@ -41,6 +41,17 @@ test("the real onboarding form creates an organization and lands on the dashboar
   await page.getByRole("button", { name: "Tovább" }).click();
 
   await page.waitForURL(/\/dashboard$/);
+  // A genuinely brand-new organization created through the real flow (not
+  // seedOrgWithMember, which defaults new test orgs to "completed" so
+  // *other* specs aren't affected -- see that helper's own comment) is
+  // exactly the case the first-time onboarding tour (features/onboarding-tour)
+  // exists for, so its welcome dialog is expected here. Dismissing it first
+  // is what a real first-time user would do before this test's own
+  // assertion about the underlying page -- the dialog marks page content
+  // inert while open (correct modal behavior), so checking the heading
+  // before dismissing would be asserting against content the browser
+  // itself currently treats as not there.
+  await page.getByRole("button", { name: "Kihagyom" }).click();
   await expect(page.getByRole("heading", { name: /E2E UI Onboarding Test/ })).toBeVisible();
 });
 
