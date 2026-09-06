@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { redactSensitiveData, sanitizeUrl } from "./sentry-redact";
+import { redactSensitiveData, sanitizeUrl, redactSpan } from "./sentry-redact";
 import type { ErrorEvent } from "@sentry/nextjs";
+import type { TransactionEvent, SpanJSON } from "@sentry/core";
 
 function event(overrides: Partial<ErrorEvent>): ErrorEvent {
   return overrides as ErrorEvent;
@@ -126,6 +127,89 @@ describe("redactSensitiveData", () => {
       );
       expect(serialized(result)).not.toContain(CANARY);
       expect(result.request?.headers?.["Content-Type"]).toBe("application/json");
+    });
+
+    /**
+     * Round-6 finding R6-02: event.request.query_string is a SEPARATE
+     * field from event.request.url, populated by some SDK instrumentation
+     * paths -- round 5's fix only ever touched .url, so a canary placed
+     * here survived redaction outright. Sentry's own type allows three
+     * shapes (string, object, array of pairs); all three are covered.
+     */
+    it("redacts a sensitive param from a string-shaped request.query_string", () => {
+      const result = redactSensitiveData(event({ request: { query_string: `token=${CANARY}&keep=1` } }));
+      expect(serialized(result)).not.toContain(CANARY);
+      expect(result.request?.query_string).toContain("keep=1");
+    });
+
+    it("redacts a sensitive param from an object-shaped request.query_string", () => {
+      const result = redactSensitiveData(event({ request: { query_string: { token: CANARY, keep: "1" } } }));
+      expect(serialized(result)).not.toContain(CANARY);
+      expect((result.request?.query_string as Record<string, string>).keep).toBe("1");
+    });
+
+    it("redacts a sensitive param from an array-of-pairs-shaped request.query_string", () => {
+      const result = redactSensitiveData(
+        event({ request: { query_string: [["token", CANARY], ["keep", "1"]] } }),
+      );
+      expect(serialized(result)).not.toContain(CANARY);
+    });
+
+    it("leaves a query_string with no sensitive params untouched", () => {
+      const result = redactSensitiveData(event({ request: { query_string: "status=new" } }));
+      expect(result.request?.query_string).toBe("status=new");
+    });
+  });
+
+  describe("transaction events (round-6 R6-02: beforeSend alone never sees these)", () => {
+    it("redacts a live token from a transaction event's request.url the same way as an error event", () => {
+      const txn: TransactionEvent = {
+        type: "transaction",
+        request: { url: `https://app.example.com/api/notification-email/confirm?token=${CANARY}` },
+      } as TransactionEvent;
+      const result = redactSensitiveData(txn) as TransactionEvent;
+      expect(JSON.stringify(result)).not.toContain(CANARY);
+    });
+
+    it("redacts a live token from a transaction event's request.query_string", () => {
+      const txn: TransactionEvent = {
+        type: "transaction",
+        request: { query_string: `token=${CANARY}` },
+      } as TransactionEvent;
+      const result = redactSensitiveData(txn) as TransactionEvent;
+      expect(JSON.stringify(result)).not.toContain(CANARY);
+    });
+  });
+
+  describe("redactSpan (round-6 R6-02: beforeSend/beforeSendTransaction never see individual spans)", () => {
+    function span(overrides: Partial<SpanJSON>): SpanJSON {
+      return { span_id: "a", trace_id: "b", start_timestamp: 0, ...overrides } as SpanJSON;
+    }
+
+    it("redacts a live token from a span's url.full attribute", () => {
+      const result = redactSpan(
+        span({ data: { "url.full": `https://app.example.com/auth/confirm?token_hash=${CANARY}` } }),
+      );
+      expect(JSON.stringify(result)).not.toContain(CANARY);
+    });
+
+    it("redacts a live token from a span's legacy http.url attribute", () => {
+      const result = redactSpan(span({ data: { "http.url": `/auth/confirm?token_hash=${CANARY}` } }));
+      expect(JSON.stringify(result)).not.toContain(CANARY);
+    });
+
+    it("redacts a live token from a span's url.query attribute", () => {
+      const result = redactSpan(span({ data: { "url.query": `?token=${CANARY}` } }));
+      expect(JSON.stringify(result)).not.toContain(CANARY);
+    });
+
+    it("leaves a span with no URL data untouched", () => {
+      const result = redactSpan(span({ data: { "http.request.method": "GET" } }));
+      expect(result.data?.["http.request.method"]).toBe("GET");
+    });
+
+    it("does not throw on a span with no data at all", () => {
+      expect(() => redactSpan(span({}))).not.toThrow();
     });
   });
 

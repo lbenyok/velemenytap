@@ -1,4 +1,5 @@
 import type { ErrorEvent } from "@sentry/nextjs";
+import type { TransactionEvent, SpanJSON } from "@sentry/core";
 
 /**
  * Field names that may carry customer-submitted free text (feedback content,
@@ -46,6 +47,43 @@ const REDACTED_QUERY_VALUE = "[redacted]";
 const REDACTED = "[redacted]";
 const CIRCULAR = "[circular]";
 const MAX_DEPTH = 20;
+
+/**
+ * Round-6 finding R6-02: the general URL sanitizer above only ever touched
+ * `event.request.url` -- Sentry's `Request` shape has a SEPARATE
+ * `query_string` field (populated by some SDK instrumentation instead of,
+ * or alongside, `url`), which none of round 5's fix touched at all. A
+ * canary placed there survived redaction outright. `query_string` can be a
+ * plain string ("a=1&b=2"), an object ({a: "1", b: "2"}), or an array of
+ * [key, value] pairs -- Sentry's own type allows all three -- so this
+ * handles each shape explicitly rather than assuming one.
+ */
+type QueryParams = string | Record<string, string> | Array<[string, string]>;
+
+function sanitizeQueryParams(qs: QueryParams): QueryParams {
+  if (typeof qs === "string") {
+    if (!qs) return qs;
+    const params = new URLSearchParams(qs.startsWith("?") ? qs.slice(1) : qs);
+    let changed = false;
+    for (const key of [...params.keys()]) {
+      if (SENSITIVE_QUERY_PARAMS.has(key.toLowerCase())) {
+        params.set(key, REDACTED_QUERY_VALUE);
+        changed = true;
+      }
+    }
+    return changed ? params.toString() : qs;
+  }
+  if (Array.isArray(qs)) {
+    return qs.map(([key, value]): [string, string] =>
+      SENSITIVE_QUERY_PARAMS.has(key.toLowerCase()) ? [key, REDACTED_QUERY_VALUE] : [key, value],
+    );
+  }
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(qs)) {
+    result[key] = SENSITIVE_QUERY_PARAMS.has(key.toLowerCase()) ? REDACTED_QUERY_VALUE : value;
+  }
+  return result;
+}
 
 /**
  * Redacts the value of any sensitive-looking query parameter in a URL,
@@ -175,13 +213,17 @@ function redactValue(value: unknown): unknown {
  */
 const BREADCRUMB_URL_KEYS = ["url", "to", "from"];
 
-export function redactSensitiveData(event: ErrorEvent): ErrorEvent {
+export function redactSensitiveData<T extends ErrorEvent | TransactionEvent>(event: T): T {
   if (event.request) {
     if (event.request.data !== undefined) {
       delete event.request.data;
     }
     if (event.request.url) {
       event.request.url = sanitizeUrl(event.request.url);
+    }
+    // Round-6 R6-02: a separate field from request.url, not covered above.
+    if (event.request.query_string) {
+      event.request.query_string = sanitizeQueryParams(event.request.query_string as QueryParams);
     }
     // Round-5 R5-11: defensive even though this app's own Sentry config
     // doesn't deliberately enable cookie/header capture -- a session
@@ -217,5 +259,46 @@ export function redactSensitiveData(event: ErrorEvent): ErrorEvent {
       return { ...crumb, data };
     });
   }
+  // Defensive: Next.js/OpenTelemetry name HTTP transactions from a route
+  // TEMPLATE ("GET /api/notification-email/confirm"), never the literal
+  // URL with its query string, so this should already be a no-op in
+  // practice -- kept because the finding explicitly calls out "transaction
+  // names" and a no-op guard here costs nothing.
+  if (typeof event.transaction === "string") {
+    event.transaction = sanitizeUrl(event.transaction);
+  }
   return event;
+}
+
+/**
+ * Round-6 finding R6-02: `beforeSend`/`beforeSendTransaction` never see
+ * individual spans within a transaction -- Sentry's HTTP instrumentation
+ * attaches the full request URL (query string included) to span data under
+ * `url.full` (current semantic-convention attribute name) and `http.url`
+ * (the older name, still emitted by some integrations), so a live token
+ * could reach Sentry through a transaction's child spans even with
+ * `beforeSend`/`beforeSendTransaction` fully redacting the transaction
+ * event itself. Wired up as `beforeSendSpan` in every Sentry config
+ * (client/server/edge) alongside the other two hooks -- this is the one
+ * hook that can actually reach span-level data in this SDK version.
+ */
+const SPAN_URL_ATTRIBUTE_KEYS = ["url.full", "http.url"];
+
+export function redactSpan(span: SpanJSON): SpanJSON {
+  if (!span.data) {
+    return span;
+  }
+  const data = { ...span.data };
+  for (const key of SPAN_URL_ATTRIBUTE_KEYS) {
+    const value = data[key];
+    if (typeof value === "string") {
+      data[key] = sanitizeUrl(value);
+    }
+  }
+  if (typeof data["url.query"] === "string") {
+    // Stored WITH its leading "?" (URL.prototype.search's own format) --
+    // sanitizeQueryParams's string branch handles that prefix itself.
+    data["url.query"] = sanitizeQueryParams(data["url.query"] as string) as string;
+  }
+  return { ...span, data };
 }
