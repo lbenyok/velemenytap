@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { getCurrentOrganization } from "@/features/organizations/current";
 import { sendNotificationEmailConfirmation } from "@/features/organizations/notification-email-verification";
 
@@ -83,21 +84,23 @@ export async function updateOrganizationSettingsAction(
       }
     }
   } else if (parsed.data.notification_email !== current?.notification_email) {
-    // Round-5 R5-12: request_notification_email_change() now enforces a
-    // server-owned cooldown/hourly budget (a real Resend send otherwise
-    // had no rate limit at all) and returns which reservation this call
-    // claimed, not just a token -- finalize_notification_email_change_send
-    // below reports whether the send actually succeeded, the same
-    // reserved/delivered/failed pattern already used for the negative-
-    // feedback alert, so a transient Resend failure doesn't permanently
-    // burn budget the org never actually used.
-    const { data: requestResult, error: requestError } = await supabase
-      .rpc("request_notification_email_change", {
-        p_organization_id: organization.id,
-        p_email: parsed.data.notification_email,
-      })
-      .single();
-    if (requestError || !requestResult?.token) {
+    // Round-6 finding R6-01: request_notification_email_change() used to
+    // return the raw confirmation token directly -- to a function callable
+    // by `authenticated`, meaning any org member could obtain a live token
+    // for any address by calling the RPC directly (bypassing this Server
+    // Action, and Resend, entirely), never proving they control that
+    // inbox. It now returns only a log_id (not a secret); the token itself
+    // is minted by issue_notification_email_change_token(), granted to
+    // `service_role` ONLY -- called here via the admin client, from
+    // trusted server code, never reachable from a browser or any
+    // authenticated session. Round-5 R5-12's server-owned cooldown/hourly
+    // budget is enforced the same way as before, just without caller-
+    // suppliable parameters (round-6 R6-04) -- see the migration.
+    const { data: logId, error: requestError } = await supabase.rpc("request_notification_email_change", {
+      p_organization_id: organization.id,
+      p_email: parsed.data.notification_email,
+    });
+    if (requestError || logId === null) {
       const tooManyRequests = requestError?.code === "VT203" || requestError?.code === "VT204";
       return {
         error: tooManyRequests
@@ -106,13 +109,27 @@ export async function updateOrganizationSettingsAction(
       };
     }
 
+    // finalize_notification_email_change_send is also service_role-only
+    // now (round-6 R6-04) -- a client can no longer report its own
+    // reservation as delivered/failed, so both privileged calls use the
+    // admin client, never the user's RLS-bound session.
+    const admin = createAdminClient();
+    const { data: token, error: tokenError } = await admin.rpc("issue_notification_email_change_token", {
+      p_log_id: logId,
+    });
+    if (tokenError || !token) {
+      return {
+        error: "Nem sikerült elindítani az e-mail cím megerősítését. Kérjük, próbáld újra.",
+      };
+    }
+
     const sent = await sendNotificationEmailConfirmation({
       email: parsed.data.notification_email,
-      token: requestResult.token,
+      token,
       organizationName: parsed.data.name,
     });
-    await supabase.rpc("finalize_notification_email_change_send", {
-      p_log_id: requestResult.log_id,
+    await admin.rpc("finalize_notification_email_change_send", {
+      p_log_id: logId,
       p_delivered: sent,
     });
     if (!sent) {

@@ -336,11 +336,15 @@ export interface Database {
         Args: {
           p_organization_id: number;
           p_email: string;
-          p_expires_in_minutes?: number;
-          p_cooldown_minutes?: number;
-          p_org_hourly_budget?: number;
         };
-        Returns: { token: string; log_id: number }[];
+        Returns: number;
+      };
+      issue_notification_email_change_token: {
+        Args: {
+          p_log_id: number;
+          p_expires_in_minutes?: number;
+        };
+        Returns: string;
       };
       finalize_notification_email_change_send: {
         Args: {

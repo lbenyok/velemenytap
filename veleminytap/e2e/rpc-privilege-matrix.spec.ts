@@ -22,6 +22,16 @@ type ExpectedGrant = {
   anon: boolean;
   authenticated: boolean;
   service_role: boolean;
+  // Round-6 R6-01/R6-03: the round-3 3-argument request_notification_email_change
+  // is a real production object (migration 20260904194400) that a later
+  // corrective migration (20260906090000) strips every grant from, kept
+  // defined only until a future cleanup migration drops it. This isolated
+  // test project's own migration history does not necessarily retain
+  // every historical production object in the exact same shape (its
+  // history is built up independently -- see DECISIONS.md/STATUS.md) --
+  // this flag lets both tests below tolerate the function's absence here
+  // without silently tolerating the absence of anything else.
+  mayNotExistInThisEnvironment?: boolean;
 };
 
 const EXPECTED: ExpectedGrant[] = [
@@ -61,27 +71,35 @@ const EXPECTED: ExpectedGrant[] = [
     authenticated: false,
     service_role: true,
   },
-  // Round-5 finding R5-10: these three (round-3 R3-03's notification-email
-  // confirmation flow) were never added to this matrix despite
-  // DATABASE_SCHEMA.md/SECURITY.md documenting all nine RPCs as covered by
-  // it -- the catalog itself was never independently re-checked against
-  // that claim until now.
+  // Round-5 finding R5-10: these were never added to this matrix despite
+  // DATABASE_SCHEMA.md/SECURITY.md documenting them all as covered by it --
+  // the catalog itself was never independently re-checked against that
+  // claim until now.
   {
-    // Round-5 R5-12 added --cooldown-minutes/--org-hourly-budget params
-    // (mirroring claim_negative_alert_send's own tunable-budget shape).
-    signature: "public.request_notification_email_change(bigint, text, int, int, int)",
+    // Round-6 R6-01/R6-04: no longer returns the token or accepts caller-
+    // suppliable cooldown/budget parameters -- see
+    // supabase/migrations/20260905193325_....sql.
+    signature: "public.request_notification_email_change(bigint, text)",
     anon: false,
     authenticated: true,
     service_role: false,
   },
   {
-    // Round-5 R5-12: reports whether a reservation's send actually
-    // succeeded, the same reserved/delivered/failed pattern as
-    // finalize_negative_alert_send.
+    // Round-6 R6-01: the only function that ever sees the plaintext
+    // confirmation token -- service_role only, never authenticated, so no
+    // browser or ordinary authenticated Supabase client can obtain one.
+    signature: "public.issue_notification_email_change_token(bigint, int)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  {
+    // Round-6 R6-04: was authenticated (a client could report its own
+    // reservation delivered/failed) -- now service_role only.
     signature: "public.finalize_notification_email_change_send(bigint, boolean)",
     anon: false,
-    authenticated: true,
-    service_role: false,
+    authenticated: false,
+    service_role: true,
   },
   {
     signature: "public.clear_notification_email(bigint)",
@@ -94,6 +112,22 @@ const EXPECTED: ExpectedGrant[] = [
     anon: false,
     authenticated: false,
     service_role: true,
+  },
+  {
+    // Round-3's original 3-argument version, still deployed to production
+    // and deliberately left in place (round-6 R6-03) -- but round-6 R6-01
+    // found it returns the plaintext token directly to `authenticated`,
+    // the same live vulnerability the 2-argument replacement above exists
+    // to fix. Migration 20260906090000 revokes `authenticated`'s grant
+    // immediately (not a rollout-compatibility exception for a function
+    // that IS the vulnerability) -- so it now has zero grants to any
+    // client-reachable role, kept only until a future cleanup migration
+    // drops it outright once nothing could still be calling it.
+    signature: "public.request_notification_email_change(bigint, text, int)",
+    anon: false,
+    authenticated: false,
+    service_role: false,
+    mayNotExistInThisEnvironment: true,
   },
 ];
 
@@ -111,6 +145,17 @@ for (const expected of EXPECTED) {
   test(`R3-07: ${expected.signature} grants exactly the intended role matrix`, async () => {
     test.skip(!client, "No direct Postgres connection available in this environment.");
     if (!client) return;
+
+    if (expected.mayNotExistInThisEnvironment) {
+      const { rows: existsRows } = await client.query("select to_regprocedure($1) is not null as exists", [
+        expected.signature,
+      ]);
+      test.skip(
+        !existsRows[0].exists,
+        `${expected.signature} does not exist in this environment's catalog -- expected to be absent in some (see the EXPECTED entry's comment).`,
+      );
+      if (!existsRows[0].exists) return;
+    }
 
     for (const role of ["anon", "authenticated", "service_role"] as const) {
       const { rows } = await client.query(
@@ -179,7 +224,16 @@ test("EXPECTED accounts for every function in the public schema, not just the on
       .map((part) => part.split(/\s+/).pop()!.replace(/integer/g, "int"));
     return `${name}(${types.join(",")})`;
   };
-  const actual = rows.map((r) => normalize(r.signature as string)).sort();
-  const expected = EXPECTED.map((e) => normalize(e.signature)).sort();
-  expect(actual, "a function exists in public that EXPECTED above doesn't cover").toEqual(expected);
+  const actual = new Set(rows.map((r) => normalize(r.signature as string)));
+  // Entries flagged mayNotExistInThisEnvironment are excluded from the
+  // "expected" side when the live catalog doesn't actually have them --
+  // this test's purpose is catching an UNEXPECTED function nothing
+  // accounts for, not requiring every hypothetically-possible one to be
+  // present in every environment (see the flag's own comment above).
+  const expected = EXPECTED.filter((e) => !e.mayNotExistInThisEnvironment || actual.has(normalize(e.signature))).map(
+    (e) => normalize(e.signature),
+  );
+  expect([...actual].sort(), "a function exists in public that EXPECTED above doesn't cover").toEqual(
+    expected.sort(),
+  );
 });
