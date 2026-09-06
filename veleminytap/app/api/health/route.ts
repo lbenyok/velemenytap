@@ -33,20 +33,29 @@ import { LATEST_MIGRATION, MIGRATION_COUNT } from "@/lib/build-info";
  * check exists to detect.
  *
  * "Local development" is decided from NODE_ENV, not from any Vercel
- * variable either -- `next dev` always sets NODE_ENV=development;
- * `next build`/`next start` (and every real Vercel build) always set it to
- * "production". This is the explicit, testable local-development
- * condition the finding asks for: it does not depend on being told it's
- * running locally by a value only a genuine deployment would ever set.
+ * variable either -- `next dev` always sets NODE_ENV=development. This is
+ * the explicit, testable local-development condition the finding asks
+ * for: it does not depend on being told it's running locally by a value
+ * only a genuine deployment would ever set.
  *
  * In a production-mode build (NODE_ENV=production) that cannot establish
  * APP_ENV as "production" or "preview", this fails closed (503,
  * ok:false) -- it never infers "development" merely because Vercel's own
  * metadata is missing, which is exactly the inference that let a broken
  * deployment misreport as healthy before.
+ *
+ * Round-7 finding R7-07: this used to treat anything OTHER than exactly
+ * "production" as local dev (`NODE_ENV !== "production"`) -- fail-OPEN,
+ * since an unset, malformed, or unexpected value like "test"/"staging"
+ * also fell through to "development, ok: true" rather than to the strict
+ * checks above. Flipped to fail-CLOSED: only the one value `next dev`
+ * itself actually sets (`NODE_ENV === "development"`) is treated as local
+ * development; every other value -- missing, malformed, "test", or
+ * anything else -- now requires APP_ENV/commitSha to be established the
+ * same as a genuine production-mode build would.
  */
 export async function GET() {
-  const isLocalDev = process.env.NODE_ENV !== "production";
+  const isLocalDev = process.env.NODE_ENV === "development";
   const appEnv = process.env.APP_ENV ?? null;
   const commitSha = process.env.VERCEL_GIT_COMMIT_SHA ?? null;
   const commitRef = process.env.VERCEL_GIT_COMMIT_REF ?? null;

@@ -17,10 +17,21 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
  * never depend on any Vercel-managed variable for the fail-closed
  * decision: APP_ENV is a plain, non-system environment variable the owner
  * sets directly per Vercel environment (immune to that toggle by
- * construction), and "local dev" is decided from NODE_ENV, which `next
- * dev`/`next build` set independently of Vercel entirely. These tests
+ * construction), and "local dev" is decided from NODE_ENV. These tests
  * mock lib/build-info (unrelated now -- it only carries migration info)
  * and drive process.env directly.
+ *
+ * Round-7 finding R7-07: "local dev" used to be `NODE_ENV !== "production"`
+ * -- fail-OPEN, since an unset, malformed, or unexpected value ("test",
+ * "staging", undefined) also fell through to "development, ok: true"
+ * rather than to the strict checks below. Flipped to fail-CLOSED:
+ * `NODE_ENV === "development"` (the one value `next dev` itself actually
+ * sets) is the only value treated as local dev; everything else --
+ * missing, malformed, "test", or anything else -- is now a production-
+ * mode check requiring APP_ENV/commitSha the same as a genuine deployment
+ * would. The matrix below exercises development, production, "test",
+ * missing NODE_ENV, and a malformed NODE_ENV value explicitly, crossed
+ * with valid/missing APP_ENV and valid/missing commit SHA.
  */
 vi.mock("@/lib/build-info", () => ({
   LATEST_MIGRATION: "20260101000000_test.sql",
@@ -43,9 +54,9 @@ describe("GET /api/health", () => {
     vi.unstubAllEnvs();
   });
 
-  describe("local development (NODE_ENV !== production)", () => {
+  describe('local development -- NODE_ENV === "development" only', () => {
     it("reports ok locally with no APP_ENV and no commit SHA at all", async () => {
-      vi.stubEnv("NODE_ENV", "test");
+      vi.stubEnv("NODE_ENV", "development");
       const { GET } = await import("./route");
       const res = await GET();
       expect(res.status).toBe(200);
@@ -64,6 +75,75 @@ describe("GET /api/health", () => {
       const body = await res.json();
       expect(body.ok).toBe(true);
       expect(body.environment).toBe("development");
+    });
+  });
+
+  /**
+   * Round-7 finding R7-07's actual regression case: NODE_ENV values other
+   * than exactly "production" used to be silently treated as safe local
+   * development. "test" is vitest's own default NODE_ENV, and is exactly
+   * the kind of value that must now be treated strictly, not leniently.
+   */
+  describe('NODE_ENV="test" is now strict (production-mode), not local dev', () => {
+    beforeEach(() => {
+      vi.stubEnv("NODE_ENV", "test");
+    });
+
+    it("fails loud when APP_ENV is not set, even though NODE_ENV is merely 'test'", async () => {
+      const { GET } = await import("./route");
+      const res = await GET();
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(body.ok).toBe(false);
+      expect(body.environment).toBe("unknown");
+    });
+
+    it("reports ok when APP_ENV and a commit SHA are both genuinely present", async () => {
+      process.env.APP_ENV = "preview";
+      process.env.VERCEL_GIT_COMMIT_SHA = "abc123";
+      const { GET } = await import("./route");
+      const res = await GET();
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.ok).toBe(true);
+    });
+  });
+
+  describe("MISSING NODE_ENV entirely is also strict, not local dev", () => {
+    beforeEach(() => {
+      delete (process.env as Record<string, string | undefined>).NODE_ENV;
+    });
+
+    it("fails loud when APP_ENV is not set", async () => {
+      const { GET } = await import("./route");
+      const res = await GET();
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(body.ok).toBe(false);
+    });
+
+    it("reports ok when APP_ENV and a commit SHA are both present", async () => {
+      process.env.APP_ENV = "production";
+      process.env.VERCEL_GIT_COMMIT_SHA = "abc123";
+      const { GET } = await import("./route");
+      const res = await GET();
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.ok).toBe(true);
+    });
+  });
+
+  describe("a MALFORMED NODE_ENV value is also strict, not local dev", () => {
+    beforeEach(() => {
+      vi.stubEnv("NODE_ENV", "developmnet"); // typo'd, not the real value
+    });
+
+    it("fails loud when APP_ENV is not set", async () => {
+      const { GET } = await import("./route");
+      const res = await GET();
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(body.ok).toBe(false);
     });
   });
 
@@ -148,8 +228,8 @@ describe("GET /api/health", () => {
     });
   });
 
-  it("reports the build's expected latest migration", async () => {
-    vi.stubEnv("NODE_ENV", "test");
+  it("reports the build's expected latest migration regardless of ok/environment status", async () => {
+    vi.stubEnv("NODE_ENV", "development");
     const { GET } = await import("./route");
     const res = await GET();
     const body = await res.json();
