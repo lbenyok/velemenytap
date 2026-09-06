@@ -26,6 +26,7 @@ If **Root Directory** is wrong, the build fails immediately with `Couldn't find 
 
 | Variable | Production | Preview | Development (local `.env.local`) |
 |---|---|---|---|
+| `APP_ENV` | `production` | `preview` | **unset** |
 | `NEXT_PUBLIC_SUPABASE_URL` | production project | **isolated test project** | production project (or isolated, your choice) |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | production project | isolated test project | production project |
 | `SUPABASE_SECRET_KEY` | production project | isolated test project | production project |
@@ -33,6 +34,8 @@ If **Root Directory** is wrong, the build fails immediately with `Couldn't find 
 | `RESEND_API_KEY` | real key | **unset** | optional |
 | `RESEND_FROM_EMAIL` | real sender | **unset** | optional |
 | `NEXT_PUBLIC_SENTRY_DSN` | real DSN | **unset** | optional |
+
+**`APP_ENV` (round-6 finding R6-06) — not yet configured; an owner action.** `/api/health`'s fail-closed logic used to infer "is this a genuine production/preview build" from `VERCEL_ENV` (round-4 R4-01) and then, after round-5's own fix turned out to rest on a false premise, from a build-time snapshot of it (`BUILD_VERCEL_ENV`) — but per Vercel's own current documentation, `VERCEL_ENV` is a **System Environment Variable**, gated by the "Automatically expose System Environment Variables" toggle at *both* build and runtime, with no build-time carve-out. A project with that toggle disabled would have had `BUILD_VERCEL_ENV` null too, and the health check silently reported a healthy "development" instead of the failure it was built to catch — see `DECISIONS.md` for the full correction. `APP_ENV` is a plain, **ordinary** project environment variable (not a System one) set directly in Vercel Project Settings → Environment Variables, scoped `production`/`preview` per row above — ordinary env vars are never gated by that toggle, so `APP_ENV` cannot be silently withheld by the exact misconfiguration this check exists to detect. **This must be added in the Vercel dashboard for `/api/health` to report anything other than a 503 "cannot establish deployment environment" in Production/Preview** — this repository cannot set it.
 
 **Preview deployments must never point at the production Supabase project** — a PR from an external contributor, or just an unreviewed branch, should not be able to read or write real customer data, and should not be able to send real emails or report real errors to production Sentry. Configure the three Supabase variables with **Preview** scope pointing at the same isolated test project `.env.test.local`/CI already use (round-3 R3-01's `APPROVED_TEST_PROJECT_REF` — see `e2e/support/env.ts`), and leave `RESEND_API_KEY`/`NEXT_PUBLIC_SENTRY_DSN` empty for that scope specifically, mirroring what `e2e/support/env.ts` already force-disables for the test suite itself (round-2 R2-06).
 
@@ -51,7 +54,7 @@ Repository Settings → Secrets and variables → Actions:
 | `SUPABASE_SECRET_KEY` | isolated test project | `e2e` job |
 | `SUPABASE_DB_URL` | isolated test project's **pooler** connection string (not the direct host — see § 3) | `e2e` job (round-4 R4-04: now mandatory, not optional — see `e2e/support/db-connection.ts`) |
 
-All four are checked together by the `check-e2e-secrets` job; missing any one skips the whole `e2e` job with a warning rather than failing CI outright (so a fork/contributor without these secrets still gets a useful, if partial, CI run) — but once the job does run, none of its tests may silently skip for lack of a working database connection (that's the actual R4-04 fix).
+All four are checked together by the `check-e2e-secrets` job (`scripts/check-e2e-secrets.mjs`, round-5 R5-01). **The behavior differs by trust level, corrected from an earlier, stale version of this document that described only the fork case as if it applied universally:** for a push to `master` or a pull request from a branch within this same repository (both of which GitHub Actions *does* give repository secrets to), a missing secret **fails CI outright** — round-4 R4-04 made `SUPABASE_DB_URL` specifically mandatory for exactly this reason (a security-relevant privilege matrix or concurrency guarantee silently not running must never look like a clean pass), and round-5 R5-01 closed the gap where the job itself only ever warned-and-skipped regardless of trust level. Only a **fork pull request** — the one case GitHub Actions genuinely never hands repository secrets to — still skips the `e2e` job gracefully with a warning. See § 5's "Fork contribution flow" for what that skip means for branch protection (round-6 R6-08) and how a maintainer runs the real suite against a fork PR's code before merging it.
 
 Repository Settings → Secrets and variables → Actions → **Variables** tab (not Secrets — this one isn't sensitive):
 
@@ -64,21 +67,33 @@ Repository Settings → Secrets and variables → Actions → **Variables** tab 
 ```
 checks (typecheck, lint, unit tests)
   │
-  ├──> e2e (Playwright, needs all 4 secrets from § 4, else skips)
+  ├──> e2e (Playwright, needs all 4 secrets from § 4, else skips -- fork PRs only)
+  │       │
+  │       └──> e2e-gate (round-6 R6-08: fails unless e2e genuinely SUCCEEDED --
+  │       │      a skip does not count; needs no secrets, checks out nothing)
   │       │
   └───────┴──> verify-production-deployment (push to master only)
 ```
 
-`verify-production-deployment` (round-4 R4-01) runs only on a push to `master`, requires `checks` to have succeeded, and requires `e2e` to not have actively **failed** (a skip, for missing secrets, is tolerated — a failure is not). It polls the live production `/api/health` endpoint for up to 5 minutes until it reports the exact commit SHA that triggered the run, and fails loudly if that never happens. **This is what would have caught the actual incident**: CI would go red on every push to `master` for as long as the Vercel webhook stayed broken, instead of staying silently green while production quietly ran stale code.
+`verify-production-deployment` (round-4 R4-01) runs only on a push to `master`, requires `checks` to have succeeded, and requires `e2e` to have actively **succeeded** — round-5 R5-01 tightened this from an earlier `!= 'failure'` check (which a *skipped* e2e job, e.g. from missing secrets, also satisfied) to `== 'success'`, so a skip is no longer indistinguishable from a pass for this specific gate. It polls the live production `/api/health` endpoint for up to 5 minutes until it reports the exact commit SHA that triggered the run, and fails loudly if that never happens. **This is what would have caught the actual incident**: CI would go red on every push to `master` for as long as the Vercel webhook stayed broken, instead of staying silently green while production quietly ran stale code.
+
+### Fork contribution flow and its security tradeoff (round-6 finding R6-08)
+
+GitHub Actions never exposes repository secrets to a `pull_request` run whose head is a fork — by design, and this repository does not use `pull_request_target` to work around it (that would mean running untrusted fork code with secrets available, a materially worse tradeoff). The consequence: `check-e2e-secrets` correctly reports `configured: false` for a fork PR, and `e2e` correctly **skips** rather than fails.
+
+The problem round 6 found is what a skip means for branch protection: GitHub treats a skipped job as satisfying a required status check, identically to one that ran and passed. Once required checks are configured (the still-open owner action below), a fork PR could merge having never run the RPC privilege matrix, the RLS tests, or anything else database-dependent — silently defeating round-4 R4-04's entire guarantee for exactly the untrusted-contribution path it matters most for. Fixed with a new job, `e2e-gate` — treats anything other than `e2e` having genuinely **succeeded**, including a skip, as a failure. It needs no secrets and checks out no untrusted code, so a fork PR gains nothing by triggering it.
+
+**Require `e2e-gate` in branch protection, not `e2e` itself** (see the owner action below). For a genuine external contribution to a fork PR: a maintainer who has reviewed the diff pushes the fork's branch (or a copy of it) to a branch **within this repository** — at that point it is a same-repo ref, GitHub hands it secrets, and `e2e` runs and reports for real. There is currently no lower-friction path than that manual step, and building one (a maintainer-comment-triggered re-run against the fork's exact commit, for instance) is real additional infrastructure this repository does not have a demonstrated need for yet, given no active external contributor flow exists today — revisit if that changes.
 
 ### What this repository's CI *cannot* enforce (must be configured by hand, and re-verified periodically)
 
-- **GitHub branch protection / rulesets** (Settings → Branches → Branch protection rules, or Settings → Rules → Rulesets, for `master`): require the `checks` and `e2e` status checks to pass before a PR can merge. This repo does not currently have this configured — set it up, and include `verify-production-deployment` too if you want a merge itself blocked retroactively by production-deploy health (unusual, but possible with a merge-queue-style setup); more commonly this check is treated as post-merge observability rather than a merge gate, since it can only run *after* something is already on `master`.
+- **GitHub branch protection / rulesets** (Settings → Branches → Branch protection rules, or Settings → Rules → Rulesets, for `master`): require the `checks` and `e2e-gate` (not `e2e` — see the fork contribution flow above, round-6 R6-08) status checks to pass before a PR can merge. This repo does not currently have this configured — set it up, and include `verify-production-deployment` too if you want a merge itself blocked retroactively by production-deploy health (unusual, but possible with a merge-queue-style setup); more commonly this check is treated as post-merge observability rather than a merge gate, since it can only run *after* something is already on `master`.
 - **Vercel Deployment Protection / Checks** (Vercel Project Settings → Git → Deployment Protection, or the "Checks" API integration if enabled for your plan): Vercel can be configured to wait for GitHub Actions check runs to report success before promoting a deployment to Production, rather than promoting as soon as the build itself finishes. Without this, exactly what was observed on this project's most recent rollout can recur: Vercel finished (and promoted) a Production build before the Playwright job had even started. Consult Vercel's own current documentation for your plan's exact configuration surface — this changes between plans and over time, and this repository cannot verify or set it for you.
+- **`APP_ENV`** (§ 3, round-6 R6-06) — a plain Vercel project environment variable, `production`/`preview` scoped, that `/api/health` now requires to report anything other than a fail-closed 503 in a real deployment. Not yet configured.
 
 ## 6. Health/version verification (`/api/health`)
 
-`app/api/health/route.ts` reports (all non-secret): `environment` (Vercel's `VERCEL_ENV`, or `"development"` locally), `commitSha` (`VERCEL_GIT_COMMIT_SHA`), `commitRef`, and `latestMigration`/`migrationCount` — the migration this specific build of the code was compiled expecting the database schema to already have (generated at build time by `scripts/generate-build-info.mjs`, wired into `predev`/`prebuild`). Returns HTTP 503 with `ok: false` if `environment` is `production` or `preview` but no commit SHA is present — see § 2's note on why that combination is possible and exactly what it means (the Git connection or system-env-var setting is broken) rather than assuming it's a false alarm.
+`app/api/health/route.ts` reports (all non-secret): `environment`, `commitSha` (`VERCEL_GIT_COMMIT_SHA`), `commitRef`, and `latestMigration`/`migrationCount` — the migration this specific build of the code was compiled expecting the database schema to already have (generated at build time by `scripts/generate-build-info.mjs`, wired into `predev`/`prebuild`). `environment` comes from `APP_ENV` (§ 3, round-6 R6-06) when set to `production`/`preview`, or `"development"` when `NODE_ENV !== "production"` (i.e. `next dev`) — **never** from any Vercel-managed System Environment Variable, since those are exactly what a disabled "Automatically expose System Environment Variables" toggle can silently withhold (round 5's own fix, R5-05, rested on the false premise that `VERCEL_ENV` was exempt from that at build time; it isn't — see `DECISIONS.md`). In a genuine production-mode build (`NODE_ENV=production`) that cannot establish `APP_ENV` as `production`/`preview`, or that can but has no commit SHA visible, this returns HTTP 503 with `ok: false` rather than ever inferring "development" from missing Vercel metadata — see § 2's note on why a broken Git connection or system-env-var setting produces exactly that missing-metadata shape.
 
 Public, unauthenticated route (`proxy.ts`'s `PUBLIC_PATHS`) — everything it returns is already either non-secret build metadata or already-public Vercel system information.
 
@@ -90,13 +105,16 @@ Use this whenever a migration set includes a column-protecting **enforce** migra
 
 ```bash
 node scripts/rollout.mjs \
+  --target production \
   --db-url "$PRODUCTION_DB_URL" \
+  --expand 20260904194200_validate_analytics_period_days.sql,20260904194300_restrict_service_role_and_enable_alert_log_rls.sql,20260904194400_notification_email_verification.sql,20260905193325_server_owned_notification_email_change_budget.sql,20260906090000_fix_confirm_toctou_and_revoke_leaked_token_grant.sql \
   --enforce 20260904194100_enforce_alert_cooldown_trigger.sql,20260904194500_enforce_notification_email_change_trigger.sql \
-  --expected-sha "$(git rev-parse HEAD)" \
-  --health-url https://veleminytap.vercel.app/api/health
+  --expected-sha "$(git rev-parse HEAD)"
 ```
 
-What it does, in order (see the script's own header comment for the full detail): applies every pending migration *except* the ones named by `--enforce` → polls `/api/health` until it reports `--expected-sha`, failing closed (never proceeding) if that doesn't happen within the timeout → waits a drain window → re-checks health once more → **only then** applies the `--enforce` migrations → does a final check that nothing is left pending.
+**`--expand` is required, not optional** (round-5 R5-03) — every migration pending against `$PRODUCTION_DB_URL` that isn't named in `--enforce` must be named here explicitly (an empty string, `--expand ""`, if genuinely none); the script validates this exactly and refuses to guess. **`--target`** (round-6 R6-07) selects a fixed entry from the committed `scripts/rollout-environments.json` manifest — it replaces the old caller-supplied `--allowed-origin`/`--health-url` arguments entirely, binding the origin, health URL, expected `environment` value, and the Supabase project ref `--db-url` must resolve to, all together; the script rejects a `--db-url` that doesn't match `--target`'s own project ref before touching anything. **`--expected-sha` must be the full 40-character commit SHA** (round-6 R6-11) — a short one can never match `/api/health`'s own full-length `commitSha`, and is now rejected before phase 0 rather than only after phase 1 has already run and a multi-minute timeout has elapsed.
+
+What it does, in order (see the script's own header comment for the full detail): applies every pending migration *except* the ones named by `--enforce` → polls `/api/health` until it reports `--expected-sha` in the target's expected environment, failing closed (never proceeding) if that doesn't happen within the timeout → waits a drain window → re-checks health once more → **only then** applies the `--enforce` migrations → does a final check that nothing is left pending.
 
 Add `--dry-run` to preview exactly what phase 1 would push, with nothing applied and no health polling. This script performs real production writes exactly like `supabase db push` does — Claude Code's auto-mode classifier blocks it from running this directly against production regardless of in-conversation approval; a human runs it, the same as a raw `supabase db push` would need to be.
 

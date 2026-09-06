@@ -26,11 +26,6 @@ npm run test:e2e
 
 Also make sure nothing else is already listening on port 3000 before running the suite — Playwright reuses an existing server there (`reuseExistingServer`) rather than starting its own, and a stray `npm run dev` from another terminal would be running against `.env.local` (production), silently defeating the isolation above.
 
-```bash
-npx playwright install --with-deps chromium   # one-time
-npm run test:e2e
-```
-
 Playwright starts `npm run dev` itself (`playwright.config.ts`'s `webServer`) and waits for `http://localhost:3000` to respond — no separate terminal needed. Test data (throwaway orgs/locations/cards/auth users, prefixed `E2E ...`) is created before each suite/test and deleted after, in `e2e/support/seed.ts`. If a run is killed mid-suite, cleanup may not fire — check the isolated project for leftover `organizations` rows or auth users and delete them by hand if that happens. Since this is a dedicated test project, this is inconvenient but never destructive to real data.
 
 ## What's covered
@@ -51,3 +46,5 @@ Playwright starts `npm run dev` itself (`playwright.config.ts`'s `webServer`) an
 - `SUPABASE_DB_URL` (the isolated project's **pooler** connection string — see the note in `DEPLOYMENT.md` § 3 on why the direct host fails on GitHub-hosted runners)
 
 (Same values as `.env.test.local`, above — **not** `.env.local`.) All four are checked together by the `check-e2e-secrets` job (`scripts/check-e2e-secrets.mjs`, round-5 R5-01). For a push or a same-repo pull request, any of the four missing **fails CI outright** rather than skipping — round-4 finding R4-04 made `SUPABASE_DB_URL` specifically mandatory in CI, since `rpc-privilege-matrix.spec.ts` (the RPC role-allowlist matrix, R3-07) and `location-deactivation-race.spec.ts` (the concurrency guarantee, R2-05) silently skipping in CI is false confidence, not degraded-but-acceptable coverage. Only a **fork-originated** pull request (which GitHub does not hand secrets to at all) gets the graceful warn-and-skip behavior instead — `check-e2e-secrets.mjs`'s tests (`scripts/check-e2e-secrets.test.ts`) cover both branches. If these secrets were ever set from `.env.local`, update them to the isolated project's values — `e2e/support/env.ts` now actively rejects a resolved project that isn't the one it allowlists, so a production value here fails loudly (`loadEnvVars` throws) rather than silently running the suite against production.
+
+A fork PR's `e2e` skip is real and correct given secrets can't be exposed to it — but GitHub treats a skipped job as satisfying a required status check the same as a passing one. `e2e-gate` (round-6 R6-08) is a separate job that fails on anything but `e2e` genuinely succeeding, including a skip; it's what branch protection should require instead of `e2e` itself. See `DEPLOYMENT.md` § 5's "Fork contribution flow" for the full reasoning and how a maintainer runs the real suite against a fork PR's code before merging it.

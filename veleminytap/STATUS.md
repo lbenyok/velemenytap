@@ -1,6 +1,19 @@
 # Status
 
-Last updated: 2026-09-05, after implementing and testing (not yet merging) the response to a fourth-round independent review of `master` itself (following the round-2/3 merge and the Vercel deployment-gap fix, both below). Branch `fix/round4-review-findings`, not merged — see "Round-4 review-response pass" below and `REVIEW_REQUEST.md` for the full handoff. Prior entry: 2026-09-05, after merging PR #2 and fixing the Vercel deployment gap.
+Last updated: 2026-09-06, after implementing and testing (not yet merging) the response to a sixth-round independent review of PR #3 — see "Round-6 review-response pass" below and `REVIEW_REQUEST.md` for the full handoff. Branch `fix/round4-review-findings`, still not merged; it now also carries round-5's and round-6's fixes on top of round 4's (below). Prior entry: 2026-09-05, after implementing and testing the round-4 response.
+
+## Round-6 review-response pass (2026-09-06, not yet merged)
+
+A sixth-round independent review of PR #3 found 11 further findings (R6-01–R6-11). All 11 verified and fixed; **all 11 confirmed, none rejected**. The two most significant:
+
+- **R6-01 (HIGH)** — `request_notification_email_change()`, in both its round-3 (already production-deployed) and round-5 forms, returned the raw confirmation token directly to its `authenticated` caller — any org member could call the RPC directly (bypassing the settings form, the Server Action, and Resend entirely), read a live token out of the response, and confirm an arbitrary address without ever proving control of its inbox, defeating the entire point of round 3's confirmation flow. Fixed by splitting token issuance into a new function, `issue_notification_email_change_token()`, granted to `service_role` only; the round-3 3-argument signature's `authenticated` grant is revoked outright (a deliberate, documented exception to a strict compatibility window — see `DECISIONS.md` § "R6-01/R6-03").
+- **R6-06 (MEDIUM)** — round 5's own `/api/health` fix (R5-05) rested on a false premise about Vercel: `VERCEL_ENV` is gated by the "Automatically expose System Environment Variables" toggle at build time too, not just runtime, contrary to what R5-05 assumed. Fixed by never trusting any Vercel-managed variable for this decision at all — a new, ordinary (non-system) `APP_ENV` variable, set directly by the owner, is now authoritative. See `DECISIONS.md` § "R6-06" for the full correction, verified against Vercel's own current documentation rather than re-asserted from memory.
+
+Also fixed: R6-02 (Sentry redaction missed `query_string` and never covered transaction/span data at all), R6-03 (the round-5 migration's own signature change wasn't rollout-compatible), R6-04 (rate-limit parameters were caller-suppliable, not server-owned), R6-05 (a TOCTOU race in the confirmation function), R6-07 (the rollout script's origin/health-url trust wasn't bound to the database it authorized), R6-08 (a fork PR's e2e skip could satisfy a required status check), R6-09 (several stale documentation claims), R6-10 (an unguarded `decodeURIComponent` could crash on malformed input), R6-11 (a short commit SHA passed validation but could never match `/api/health`'s response).
+
+**Verification**: see `REVIEW_REQUEST.md` for exact, fresh results (typecheck/lint/unit tests/build/e2e).
+
+**Not part of this pass**: merging, applying anything to production, or deploying. R4-02 (GitHub branch protection / Vercel Deployment Checks) remains open and unconfigurable from this repository — this PR is not merge-ready on that basis alone.
 
 ## Round-4 review-response pass (2026-09-05, not yet merged)
 
