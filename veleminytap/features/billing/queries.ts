@@ -9,7 +9,7 @@ export async function getOrganizationBilling(
   const supabase = await createClient();
   const { data } = await supabase
     .from("organization_billing")
-    .select("status, trial_ends_at, current_period_end, cancel_at_period_end, stripe_subscription_id")
+    .select("status, trial_ends_at, current_period_end, cancel_at_period_end, stripe_subscription_id, grandfathered_at")
     .eq("organization_id", organizationId)
     .maybeSingle();
 

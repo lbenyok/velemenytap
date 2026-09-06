@@ -8,6 +8,7 @@ function billing(overrides: Partial<OrganizationBilling>): OrganizationBilling {
     current_period_end: null,
     cancel_at_period_end: false,
     stripe_subscription_id: null,
+    grandfathered_at: null,
     ...overrides,
   };
 }
@@ -61,4 +62,43 @@ describe("isBillingActive", () => {
       expect(isBillingActive(billing({ status, stripe_subscription_id: "sub_1" }))).toBe(false);
     },
   );
+
+  /**
+   * Found during an independent review: every organization that predates
+   * organization_billing entirely had NO row at all (the provisioning
+   * trigger only fires on new-organization INSERT), so getOrganizationBilling
+   * returned null and isBillingActive(null) permanently locked them out --
+   * see the grandfathering migration's own comment for the full incident
+   * and policy. grandfathered_at is the fix: a non-expiring "still fine"
+   * signal for an organization that predates billing and has never
+   * actually subscribed.
+   */
+  describe("grandfathering (pre-existing organizations backfilled when billing was introduced)", () => {
+    it("allows a grandfathered organization with no trial_ends_at and no subscription at all", () => {
+      expect(
+        isBillingActive(billing({ status: "trialing", trial_ends_at: null, grandfathered_at: "2026-09-07T00:00:00Z" })),
+      ).toBe(true);
+    });
+
+    it("never expires -- unlike the signup trial, an old grandfathered_at still grants access", () => {
+      const longAgo = new Date(Date.now() - 365 * 86_400_000).toISOString();
+      expect(isBillingActive(billing({ trial_ends_at: null, grandfathered_at: longAgo }))).toBe(true);
+    });
+
+    it("stops applying once the organization actually has a Stripe subscription -- Stripe's own status becomes authoritative", () => {
+      expect(
+        isBillingActive(
+          billing({ status: "canceled", stripe_subscription_id: "sub_1", grandfathered_at: "2026-09-07T00:00:00Z" }),
+        ),
+      ).toBe(false);
+    });
+
+    it("a real active Stripe subscription is still allowed for a grandfathered organization that has since subscribed", () => {
+      expect(
+        isBillingActive(
+          billing({ status: "active", stripe_subscription_id: "sub_1", grandfathered_at: "2026-09-07T00:00:00Z" }),
+        ),
+      ).toBe(true);
+    });
+  });
 });

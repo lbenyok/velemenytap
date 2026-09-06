@@ -96,6 +96,12 @@ export default async function BillingPage({
           <AlertTitle>Még nincs aktív előfizetésed.</AlertTitle>
           <AlertDescription>Először fizess elő alább — utána bármikor kezelheted itt.</AlertDescription>
         </Alert>
+      ) : sp.error === "already_subscribed" ? (
+        <Alert variant="destructive">
+          <TriangleAlert />
+          <AlertTitle>Már van előfizetésed.</AlertTitle>
+          <AlertDescription>Az előfizetésed kezeléséhez használd a lenti gombot.</AlertDescription>
+        </Alert>
       ) : null}
 
       <Card className="max-w-2xl">
