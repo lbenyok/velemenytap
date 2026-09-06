@@ -182,6 +182,27 @@ describe("projectRefFromDbUrl (adversarial -- the allowlist this backs must not 
     expect(projectRefFromDbUrl("")).toBeNull();
   });
 
+  /**
+   * Round-6 finding R6-10: `new URL()` parses a syntactically-invalid
+   * percent-encoding sequence in the username component without
+   * complaining (percent-encoding validity isn't part of URL syntax) --
+   * it's `decodeURIComponent()`, called later specifically for the pooler
+   * form, that throws a URIError on it. That call used to run unguarded,
+   * so this crashed the whole check with an uncaught exception instead of
+   * returning null like every other non-matching input.
+   */
+  it("returns null (not a thrown URIError) for a malformed percent-encoded pooler username", () => {
+    const url = `postgresql://postgres%ZZ:pw@aws-1-eu-west-1.pooler.supabase.com:6543/postgres`;
+    expect(() => projectRefFromDbUrl(url)).not.toThrow();
+    expect(projectRefFromDbUrl(url)).toBeNull();
+  });
+
+  it("returns null for a lone, incomplete percent sign in the pooler username", () => {
+    const url = `postgresql://postgres.${APPROVED_REF}%:pw@aws-1-eu-west-1.pooler.supabase.com:6543/postgres`;
+    expect(() => projectRefFromDbUrl(url)).not.toThrow();
+    expect(projectRefFromDbUrl(url)).toBeNull();
+  });
+
   it("rejects a non-Postgres protocol even with an otherwise-matching host", () => {
     const url = `https://postgres:pw@db.${APPROVED_REF}.supabase.co:5432/postgres`;
     expect(projectRefFromDbUrl(url)).toBeNull();

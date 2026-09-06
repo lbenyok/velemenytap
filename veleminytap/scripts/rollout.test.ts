@@ -1,97 +1,218 @@
 import { describe, it, expect } from "vitest";
-import { parseArgs, validateMigrationPlan } from "./rollout.mjs";
+import { parseArgs, validateMigrationPlan, loadEnvironments, projectRefFromDbUrl } from "./rollout.mjs";
+
+const TEST_REF = "abcdefghijklmnopqrst";
+const TEST_ENVIRONMENTS = loadEnvironments(
+  JSON.stringify({
+    production: {
+      supabaseProjectRef: TEST_REF,
+      allowedOrigin: "https://veleminytap.vercel.app",
+      healthUrl: "https://veleminytap.vercel.app/api/health",
+      environment: "production",
+    },
+    staging: {
+      supabaseProjectRef: "stagingref00000000000",
+      allowedOrigin: "https://staging.example.com",
+      healthUrl: "https://staging.example.com/api/health",
+      environment: "preview",
+    },
+  }),
+);
+
+const VALID_SHA = "a".repeat(40);
 
 const VALID_ARGV = [
   "--db-url",
-  "postgresql://postgres:pw@db.example.supabase.co:5432/postgres",
+  `postgresql://postgres:pw@db.${TEST_REF}.supabase.co:5432/postgres`,
   "--expand",
   "20260101000000_a.sql",
   "--enforce",
   "20260102000000_b.sql",
   "--expected-sha",
-  "abc1234",
-  "--health-url",
-  "https://veleminytap.vercel.app/api/health",
+  VALID_SHA,
+  "--target",
+  "production",
 ];
+
+describe("loadEnvironments", () => {
+  it("parses a valid manifest", () => {
+    expect(Object.keys(TEST_ENVIRONMENTS)).toEqual(["production", "staging"]);
+  });
+
+  it("rejects an entry missing a required field", () => {
+    expect(() =>
+      loadEnvironments(JSON.stringify({ production: { supabaseProjectRef: "x", allowedOrigin: "https://x" } })),
+    ).toThrow(/missing a valid "healthUrl"/);
+  });
+
+  it("rejects an entry with an empty-string field", () => {
+    expect(() =>
+      loadEnvironments(
+        JSON.stringify({
+          production: { supabaseProjectRef: "x", allowedOrigin: "https://x", healthUrl: "", environment: "production" },
+        }),
+      ),
+    ).toThrow(/missing a valid "healthUrl"/);
+  });
+});
+
+describe("projectRefFromDbUrl (mirrors e2e/support/db-connection.ts's own coverage -- kept minimal here)", () => {
+  it("extracts the ref from a direct connection", () => {
+    expect(projectRefFromDbUrl(`postgresql://postgres:pw@db.${TEST_REF}.supabase.co:5432/postgres`)).toBe(TEST_REF);
+  });
+
+  it("extracts the ref from a pooler connection's username, not its shared hostname", () => {
+    expect(
+      projectRefFromDbUrl(`postgresql://postgres.${TEST_REF}:pw@aws-1-eu-west-1.pooler.supabase.com:6543/postgres`),
+    ).toBe(TEST_REF);
+  });
+
+  it("does not read the ref out of the query string", () => {
+    const url = `postgresql://postgres:pw@db.other.supabase.co:5432/postgres?x=db.${TEST_REF}.supabase.co`;
+    expect(projectRefFromDbUrl(url)).toBe("other");
+  });
+
+  it("returns null (not a thrown URIError) for a malformed percent-encoded pooler username", () => {
+    const url = `postgresql://postgres%ZZ:pw@aws-1-eu-west-1.pooler.supabase.com:6543/postgres`;
+    expect(() => projectRefFromDbUrl(url)).not.toThrow();
+    expect(projectRefFromDbUrl(url)).toBeNull();
+  });
+});
 
 describe("parseArgs", () => {
   it("parses a fully valid argument set", () => {
-    const args = parseArgs(VALID_ARGV);
+    const args = parseArgs(VALID_ARGV, TEST_ENVIRONMENTS);
     expect(args.expand).toEqual(["20260101000000_a.sql"]);
     expect(args.enforce).toEqual(["20260102000000_b.sql"]);
-    expect(args.expectedSha).toBe("abc1234");
+    expect(args.expectedSha).toBe(VALID_SHA);
     expect(args.dryRun).toBe(false);
+    expect(args.target).toBe("production");
+    expect(args.allowedOrigin).toBe("https://veleminytap.vercel.app");
+    expect(args.healthUrl).toBe("https://veleminytap.vercel.app/api/health");
+    expect(args.environment).toBe("production");
   });
 
   it("requires --expand even when there's nothing to expand -- an empty string is explicit, omitting the flag is not", () => {
-    expect(() => parseArgs(VALID_ARGV.filter((_, i) => !(VALID_ARGV[i - 1] === "--expand" || VALID_ARGV[i] === "--expand")))).toThrow(
-      /Missing required argument: --expand/,
-    );
+    expect(() =>
+      parseArgs(
+        VALID_ARGV.filter((_, i) => !(VALID_ARGV[i - 1] === "--expand" || VALID_ARGV[i] === "--expand")),
+        TEST_ENVIRONMENTS,
+      ),
+    ).toThrow(/Missing required argument: --expand/);
   });
 
   it("accepts an explicitly empty --expand", () => {
     const argv = [...VALID_ARGV];
     argv[argv.indexOf("--expand") + 1] = "";
-    const args = parseArgs(argv);
+    const args = parseArgs(argv, TEST_ENVIRONMENTS);
     expect(args.expand).toEqual([]);
   });
 
   it("rejects a duplicate name within --enforce", () => {
     const argv = [...VALID_ARGV];
     argv[argv.indexOf("--enforce") + 1] = "20260102000000_b.sql,20260102000000_b.sql";
-    expect(() => parseArgs(argv)).toThrow(/more than once/);
+    expect(() => parseArgs(argv, TEST_ENVIRONMENTS)).toThrow(/more than once/);
   });
 
   it("rejects a migration listed in both --expand and --enforce", () => {
     const argv = [...VALID_ARGV];
     argv[argv.indexOf("--enforce") + 1] = "20260101000000_a.sql";
-    expect(() => parseArgs(argv)).toThrow(/both --expand and --enforce/);
+    expect(() => parseArgs(argv, TEST_ENVIRONMENTS)).toThrow(/both --expand and --enforce/);
   });
 
   it("rejects a malformed --expected-sha", () => {
     const argv = [...VALID_ARGV];
     argv[argv.indexOf("--expected-sha") + 1] = "not-a-sha!";
-    expect(() => parseArgs(argv)).toThrow(/doesn't look like a git commit SHA/);
+    expect(() => parseArgs(argv, TEST_ENVIRONMENTS)).toThrow(/full 40-character git commit SHA/);
   });
 
-  it("rejects --health-url on an origin that doesn't match --allowed-origin", () => {
+  /**
+   * Round-6 finding R6-11: a short SHA used to pass this check (7-40 hex
+   * accepted) and only fail much later, after phase 1 had already applied
+   * the expand migrations and the full deploy-timeout had elapsed --
+   * because /api/health always reports the full 40-character SHA and the
+   * comparison is exact string equality, a short one can never match.
+   */
+  it("rejects a short (7-character) SHA that could never match /api/health's full SHA", () => {
     const argv = [...VALID_ARGV];
-    argv[argv.indexOf("--health-url") + 1] = "https://attacker.example.com/api/health";
-    expect(() => parseArgs(argv)).toThrow(/does not match --allowed-origin/);
+    argv[argv.indexOf("--expected-sha") + 1] = "a1b2c3d";
+    expect(() => parseArgs(argv, TEST_ENVIRONMENTS)).toThrow(/full 40-character git commit SHA/);
   });
 
-  it("accepts a matching custom --allowed-origin", () => {
-    const argv = [
-      ...VALID_ARGV.map((v, i) => (VALID_ARGV[i - 1] === "--health-url" ? "https://staging.example.com/api/health" : v)),
-      "--allowed-origin",
-      "https://staging.example.com",
-    ];
-    expect(() => parseArgs(argv)).not.toThrow();
-  });
-
-  it("rejects a non-https --allowed-origin", () => {
-    const argv = [...VALID_ARGV, "--allowed-origin", "http://veleminytap.vercel.app"];
-    expect(() => parseArgs(argv)).toThrow(/must be https/);
-  });
-
-  it("rejects a non-finite --drain-seconds", () => {
-    const argv = [...VALID_ARGV, "--drain-seconds", "not-a-number"];
-    expect(() => parseArgs(argv)).toThrow(/finite, non-negative number/);
-  });
-
-  it("rejects a negative --deploy-timeout-seconds", () => {
-    const argv = [...VALID_ARGV, "--deploy-timeout-seconds", "-5"];
-    expect(() => parseArgs(argv)).toThrow(/finite, non-negative number/);
-  });
-
-  it("rejects Infinity for a timeout argument", () => {
-    const argv = [...VALID_ARGV, "--drain-seconds", "Infinity"];
-    expect(() => parseArgs(argv)).toThrow(/finite, non-negative number/);
+  it("accepts a full 40-character SHA", () => {
+    expect(() => parseArgs(VALID_ARGV, TEST_ENVIRONMENTS)).not.toThrow();
   });
 
   it("requires --db-url", () => {
     const argv = VALID_ARGV.filter((_, i) => VALID_ARGV[i - 1] !== "--db-url" && VALID_ARGV[i] !== "--db-url");
-    expect(() => parseArgs(argv)).toThrow(/--db-url/);
+    expect(() => parseArgs(argv, TEST_ENVIRONMENTS)).toThrow(/--db-url/);
+  });
+
+  it("rejects a non-finite --drain-seconds", () => {
+    const argv = [...VALID_ARGV, "--drain-seconds", "not-a-number"];
+    expect(() => parseArgs(argv, TEST_ENVIRONMENTS)).toThrow(/finite, non-negative number/);
+  });
+
+  it("rejects a negative --deploy-timeout-seconds", () => {
+    const argv = [...VALID_ARGV, "--deploy-timeout-seconds", "-5"];
+    expect(() => parseArgs(argv, TEST_ENVIRONMENTS)).toThrow(/finite, non-negative number/);
+  });
+
+  it("rejects Infinity for a timeout argument", () => {
+    const argv = [...VALID_ARGV, "--drain-seconds", "Infinity"];
+    expect(() => parseArgs(argv, TEST_ENVIRONMENTS)).toThrow(/finite, non-negative number/);
+  });
+
+  /**
+   * Round-6 finding R6-07: --allowed-origin/--health-url used to be
+   * caller-supplied arguments, trusted as long as they agreed with each
+   * other -- proving nothing about whether --db-url belonged to the same
+   * application. --target now selects a fixed, committed manifest entry;
+   * these tests cover the new trust boundary directly.
+   */
+  describe("R6-07: --target binds origin/health-url/environment/project-ref together via the manifest", () => {
+    it("requires --target", () => {
+      const argv = VALID_ARGV.filter((_, i) => VALID_ARGV[i - 1] !== "--target" && VALID_ARGV[i] !== "--target");
+      expect(() => parseArgs(argv, TEST_ENVIRONMENTS)).toThrow(/Missing required argument: --target/);
+    });
+
+    it("rejects a --target not defined in the manifest", () => {
+      const argv = [...VALID_ARGV];
+      argv[argv.indexOf("--target") + 1] = "nonexistent";
+      expect(() => parseArgs(argv, TEST_ENVIRONMENTS)).toThrow(/not defined in rollout-environments\.json/);
+    });
+
+    it("rejects a --db-url whose project ref doesn't match --target's manifest entry", () => {
+      const argv = [...VALID_ARGV];
+      // Points at the STAGING project's ref while --target says production.
+      argv[argv.indexOf("--db-url") + 1] = `postgresql://postgres:pw@db.stagingref00000000000.supabase.co:5432/postgres`;
+      expect(() => parseArgs(argv, TEST_ENVIRONMENTS)).toThrow(/does not match --target|expects "abcdefghijklmnopqrst"/);
+    });
+
+    it("rejects a --db-url that doesn't resolve to any project ref at all", () => {
+      const argv = [...VALID_ARGV];
+      argv[argv.indexOf("--db-url") + 1] = "postgresql://postgres:pw@some-attacker-controlled-host.example.com:5432/postgres";
+      expect(() => parseArgs(argv, TEST_ENVIRONMENTS)).toThrow(/unparseable/);
+    });
+
+    it("a matching --target/--db-url pair for a DIFFERENT (non-production) environment still works, deriving that environment's own values", () => {
+      const argv = [...VALID_ARGV];
+      argv[argv.indexOf("--db-url") + 1] = `postgresql://postgres:pw@db.stagingref00000000000.supabase.co:5432/postgres`;
+      argv[argv.indexOf("--target") + 1] = "staging";
+      const args = parseArgs(argv, TEST_ENVIRONMENTS);
+      expect(args.allowedOrigin).toBe("https://staging.example.com");
+      expect(args.environment).toBe("preview");
+    });
+
+    it("no longer accepts --allowed-origin/--health-url as arguments at all -- they're silently ignored, not honored", () => {
+      const argv = [...VALID_ARGV, "--allowed-origin", "https://attacker.example.com", "--health-url", "https://attacker.example.com/api/health"];
+      const args = parseArgs(argv, TEST_ENVIRONMENTS);
+      // The manifest's values win regardless of what an attacker-controlled
+      // caller tries to pass for these -- there is no code path left that
+      // reads raw["allowed-origin"]/raw["health-url"] into the result at all.
+      expect(args.allowedOrigin).toBe("https://veleminytap.vercel.app");
+      expect(args.healthUrl).toBe("https://veleminytap.vercel.app/api/health");
+    });
   });
 });
 

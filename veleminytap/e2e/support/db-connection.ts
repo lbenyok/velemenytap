@@ -51,8 +51,22 @@ export function projectRefFromDbUrl(dbUrl: string): string | null {
   // ("postgres.<ref>"), decoded first since a URL's username component is
   // percent-encoded and an encoded ref must be treated the same as a
   // plain one, not silently fail to match.
+  //
+  // Round-6 finding R6-10: decodeURIComponent throws URIError on malformed
+  // percent-encoding (e.g. a lone "%" or "%ZZ") -- this used to run
+  // unguarded, so a malformed username crashed the whole check with an
+  // uncaught exception and a stack trace instead of the clean "doesn't
+  // match, return null" this function promises everywhere else. Wrapped in
+  // its own try/catch, matching the existing pattern around `new URL()`
+  // above -- a malformed component simply isn't a valid pooler username,
+  // the same conclusion as any other non-matching one.
   if (/^aws-[0-9]+-[a-z0-9-]+\.pooler\.supabase\.com$/.test(hostname)) {
-    const username = decodeURIComponent(url.username);
+    let username: string;
+    try {
+      username = decodeURIComponent(url.username);
+    } catch {
+      return null;
+    }
     const usernameMatch = /^postgres\.([a-z0-9]+)$/.exec(username);
     if (usernameMatch) {
       return usernameMatch[1];

@@ -22,28 +22,41 @@
 //     (before touching the database), instead of an unrecognized
 //     migration silently falling into whichever phase happens to run
 //     first.
-//   - --health-url must be an exact match for --allowed-origin (defaults
-//     to this project's real production origin) and the response's own
-//     `environment` field must read "production" -- a fake/compromised
-//     health server can no longer authorize a production migration by
-//     satisfying just `ok`+`commitSha`.
+//   - The health URL polled and the `environment` value required in its
+//     response are no longer caller-supplied at all -- see round-6 R6-07
+//     below, which replaced this with --target/rollout-environments.json.
 //   - No more shell:true (a real command-injection surface given --db-url
 //     carries a password this script doesn't control the contents of).
 //
 // Usage:
 //   node scripts/rollout.mjs \
+//     --target production \
 //     --db-url "$PROD_DB_URL" \
 //     --expand 20260904194200_validate_analytics_period_days.sql,20260904194300_restrict_service_role_and_enable_alert_log_rls.sql,20260904194400_notification_email_verification.sql \
 //     --enforce 20260904194100_enforce_alert_cooldown_trigger.sql,20260904194500_enforce_notification_email_change_trigger.sql \
 //     --expected-sha "$(git rev-parse HEAD)" \
-//     --health-url https://veleminytap.vercel.app/api/health \
-//     [--allowed-origin https://veleminytap.vercel.app] \
 //     [--drain-seconds 60] [--deploy-timeout-seconds 300] [--dry-run]
 //
 // Either list may be passed as an empty string (--expand "") if that
 // phase genuinely has nothing pending -- but the flag itself must always
 // be given, so "I forgot to list something" and "there's genuinely
 // nothing" are never the same code path.
+//
+// Round-6 finding R6-07: --allowed-origin and --health-url used to be
+// caller-supplied arguments, cross-checked only against EACH OTHER (round-5
+// R5-05) -- which proves nothing about whether --db-url actually points at
+// the database belonging to that same application. A caller could point
+// --db-url at one project while --allowed-origin/--health-url named a
+// totally different, unrelated (if legitimate-looking) application, and
+// the script would happily authorize a production migration on the
+// strength of two mutually-agreeing but otherwise ungrounded arguments.
+// --target now selects a fixed, committed, reviewed entry from
+// rollout-environments.json binding the Supabase project ref, the
+// application's exact origin, its health URL, and its expected `environment`
+// value together -- --allowed-origin/--health-url are no longer accepted as
+// arguments at all, and --db-url's own project ref is verified against the
+// manifest's ref before phase 0 runs, so a --db-url/--target mismatch is
+// rejected immediately rather than silently trusted.
 //
 // Exits non-zero and leaves the database in whatever state the last
 // successfully-completed phase left it in if any gate fails -- it never
@@ -52,15 +65,69 @@
 // already been pushed to the branch Vercel deploys from, and only WAITS
 // for that deployment to become live before proceeding.
 import { execFileSync } from "node:child_process";
-import { readdirSync, renameSync, mkdtempSync, rmSync } from "node:fs";
+import { readdirSync, readFileSync, renameSync, mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const migrationsDir = path.resolve(dirname, "../supabase/migrations");
-const DEFAULT_ALLOWED_ORIGIN = "https://veleminytap.vercel.app";
+const environmentsPath = path.resolve(dirname, "rollout-environments.json");
 const NPX = process.platform === "win32" ? "npx.cmd" : "npx";
+
+export function loadEnvironments(raw) {
+  const parsed = JSON.parse(raw);
+  for (const [name, env] of Object.entries(parsed)) {
+    for (const key of ["supabaseProjectRef", "allowedOrigin", "healthUrl", "environment"]) {
+      if (typeof env[key] !== "string" || !env[key]) {
+        throw new Error(`rollout-environments.json's "${name}" entry is missing a valid "${key}".`);
+      }
+    }
+  }
+  return parsed;
+}
+
+/**
+ * Deliberately duplicated, minimal re-implementation of
+ * e2e/support/db-connection.ts's projectRefFromDbUrl() -- that file is
+ * TypeScript, imported elsewhere only through a test runner/bundler that
+ * transpiles it, and this script runs directly under plain `node` with no
+ * build step. Extracts the ref only from the hostname (direct connection)
+ * or the decoded username (pooler connection), the one component each
+ * connection form actually authenticates against -- never the path, query
+ * string, password, or fragment, all of which a client fully controls and
+ * none of which the server checks. Keep in sync with db-connection.ts if
+ * either changes.
+ */
+export function projectRefFromDbUrl(dbUrl) {
+  let url;
+  try {
+    url = new URL(dbUrl);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "postgresql:" && url.protocol !== "postgres:") {
+    return null;
+  }
+  const hostname = url.hostname.toLowerCase();
+  const directMatch = /^db\.([a-z0-9]+)\.supabase\.co$/.exec(hostname);
+  if (directMatch) {
+    return directMatch[1];
+  }
+  if (/^aws-[0-9]+-[a-z0-9-]+\.pooler\.supabase\.com$/.test(hostname)) {
+    let username;
+    try {
+      username = decodeURIComponent(url.username);
+    } catch {
+      return null;
+    }
+    const usernameMatch = /^postgres\.([a-z0-9]+)$/.exec(username);
+    if (usernameMatch) {
+      return usernameMatch[1];
+    }
+  }
+  return null;
+}
 
 function parseMigrationList(value, flagName) {
   if (value === undefined) {
@@ -80,17 +147,20 @@ function parseMigrationList(value, flagName) {
   return list;
 }
 
-export function parseArgs(argv) {
+export function parseArgs(argv, environments) {
   const args = {
     drainSeconds: 60,
     deployTimeoutSeconds: 300,
     dryRun: false,
-    allowedOrigin: DEFAULT_ALLOWED_ORIGIN,
     dbUrl: /** @type {string} */ (""),
     expand: /** @type {string[]} */ ([]),
     enforce: /** @type {string[]} */ ([]),
     expectedSha: /** @type {string} */ (""),
+    target: /** @type {string} */ (""),
+    allowedOrigin: /** @type {string} */ (""),
     healthUrl: /** @type {string} */ (""),
+    supabaseProjectRef: /** @type {string} */ (""),
+    environment: /** @type {string} */ (""),
   };
   const raw = {};
   for (let i = 0; i < argv.length; i++) {
@@ -116,44 +186,60 @@ export function parseArgs(argv) {
   }
 
   if (!raw["expected-sha"]) throw new Error("Missing required argument: --expected-sha");
-  if (!/^[0-9a-f]{7,40}$/i.test(raw["expected-sha"])) {
-    throw new Error(`--expected-sha "${raw["expected-sha"]}" doesn't look like a git commit SHA (expected 7-40 hex characters).`);
+  // Round-6 finding R6-11: this used to accept 7-40 hex characters, but
+  // /api/health's own commitSha is always the FULL 40-character SHA
+  // (VERCEL_GIT_COMMIT_SHA), and pollHealth compares it with exact string
+  // equality -- a short SHA can never match, but that failure was only
+  // ever discovered after phase 1 (the expand migrations) had already run
+  // and the full deploy-timeout had elapsed. Requiring the full SHA here,
+  // before phase 0, catches a short --expected-sha immediately instead of
+  // after an irreversible-by-this-script step and a multi-minute wait. The
+  // caller already has the full SHA trivially available ($(git rev-parse
+  // HEAD), as this script's own usage example uses) -- there's no
+  // legitimate case for passing a short one.
+  if (!/^[0-9a-f]{40}$/i.test(raw["expected-sha"])) {
+    throw new Error(
+      `--expected-sha "${raw["expected-sha"]}" must be a full 40-character git commit SHA, not a short/abbreviated ` +
+        'one -- /api/health always reports the full SHA and this script compares it exactly. Use "$(git rev-parse HEAD)".',
+    );
   }
   args.expectedSha = raw["expected-sha"];
 
-  if (raw["allowed-origin"] !== undefined) args.allowedOrigin = raw["allowed-origin"];
-  let allowedOriginUrl;
-  try {
-    allowedOriginUrl = new URL(args.allowedOrigin);
-  } catch {
-    throw new Error(`--allowed-origin "${args.allowedOrigin}" is not a valid URL.`);
-  }
-  if (allowedOriginUrl.protocol !== "https:") {
-    throw new Error(`--allowed-origin must be https:// -- got "${args.allowedOrigin}".`);
-  }
-
-  if (!raw["health-url"]) throw new Error("Missing required argument: --health-url");
-  let healthUrl;
-  try {
-    healthUrl = new URL(raw["health-url"]);
-  } catch {
-    throw new Error(`--health-url "${raw["health-url"]}" is not a valid URL.`);
-  }
-  // Round-5 R5-05: this check used to accept any URL the caller supplied,
-  // with no restriction at all -- a compromised or merely misconfigured
-  // caller could point a real rollout at an attacker-controlled health
-  // server that trivially satisfies `ok`+`commitSha`, authorizing
-  // production database writes. Requiring an exact origin match (not just
-  // "https", not just "same hostname" -- the full scheme+host+port) means
-  // this script only ever trusts the one server it's explicitly
-  // configured to trust.
-  if (healthUrl.origin !== allowedOriginUrl.origin) {
+  // Round-6 finding R6-07: --allowed-origin/--health-url used to be
+  // caller-supplied, cross-checked only against each other -- proving
+  // nothing about whether --db-url actually belongs to that same
+  // application. --target now selects a fixed entry from the committed
+  // rollout-environments.json manifest; the origin, health URL, expected
+  // `environment` value, AND the Supabase project ref --db-url must
+  // resolve to are all bound together there, reviewed and diffable like
+  // any other change, not assembled at the command line.
+  if (!raw["target"]) {
     throw new Error(
-      `--health-url's origin ("${healthUrl.origin}") does not match --allowed-origin ("${allowedOriginUrl.origin}"). ` +
-        "Refusing to poll an unexpected origin for a production rollout decision.",
+      `Missing required argument: --target. Known targets: ${Object.keys(environments).join(", ") || "(none configured)"}.`,
     );
   }
-  args.healthUrl = raw["health-url"];
+  const env = environments[raw["target"]];
+  if (!env) {
+    throw new Error(
+      `--target "${raw["target"]}" is not defined in rollout-environments.json. Known targets: ${Object.keys(environments).join(", ") || "(none configured)"}.`,
+    );
+  }
+  args.target = raw["target"];
+  args.allowedOrigin = env.allowedOrigin;
+  args.healthUrl = env.healthUrl;
+  args.supabaseProjectRef = env.supabaseProjectRef;
+  args.environment = env.environment;
+
+  // Reject a --db-url/--target mismatch before phase 0 runs, not after a
+  // migration has already been applied against the wrong database.
+  const dbUrlProjectRef = projectRefFromDbUrl(args.dbUrl);
+  if (dbUrlProjectRef !== args.supabaseProjectRef) {
+    throw new Error(
+      `--db-url resolves to project ref "${dbUrlProjectRef ?? "unparseable"}", but --target "${args.target}" expects ` +
+        `"${args.supabaseProjectRef}" (rollout-environments.json). Refusing to run a rollout against a database that ` +
+        "doesn't match the target's own manifest entry.",
+    );
+  }
 
   for (const [flag, key] of [
     ["drain-seconds", "drainSeconds"],
@@ -247,7 +333,7 @@ function getPendingMigrations(dbUrl) {
     });
 }
 
-async function pollHealth(healthUrl, expectedSha, timeoutSeconds) {
+async function pollHealth(healthUrl, expectedSha, expectedEnvironment, timeoutSeconds) {
   const deadline = Date.now() + timeoutSeconds * 1000;
   let lastBody = null;
   while (Date.now() < deadline) {
@@ -255,16 +341,18 @@ async function pollHealth(healthUrl, expectedSha, timeoutSeconds) {
       const res = await fetch(healthUrl, { cache: "no-store" });
       const body = await res.json();
       lastBody = body;
-      // Round-5 R5-05: also requires environment === "production" now,
-      // not just ok+commitSha -- a health response is otherwise only as
+      // Round-5 R5-05: also requires a matching environment, not just
+      // ok+commitSha -- a health response is otherwise only as
       // trustworthy as whatever server answered --health-url, and ok:true
       // with a matching SHA is a low bar for something about to authorize
-      // writes to a real production database.
-      if (res.ok && body.ok && body.commitSha === expectedSha && body.environment === "production") {
+      // writes to a real production database. --health-url itself is now
+      // bound to --target via rollout-environments.json (round-6 R6-07),
+      // not a caller-supplied argument.
+      if (res.ok && body.ok && body.commitSha === expectedSha && body.environment === expectedEnvironment) {
         return body;
       }
       console.log(
-        `  not yet -- commitSha=${body.commitSha} ok=${body.ok} environment=${body.environment} (want ${expectedSha}, production)`,
+        `  not yet -- commitSha=${body.commitSha} ok=${body.ok} environment=${body.environment} (want ${expectedSha}, ${expectedEnvironment})`,
       );
     } catch (err) {
       console.log(`  health check request failed: ${err instanceof Error ? err.message : err}`);
@@ -272,7 +360,7 @@ async function pollHealth(healthUrl, expectedSha, timeoutSeconds) {
     await new Promise((resolve) => setTimeout(resolve, 5000));
   }
   throw new Error(
-    `Timed out after ${timeoutSeconds}s waiting for ${healthUrl} to report commit ${expectedSha} in production. ` +
+    `Timed out after ${timeoutSeconds}s waiting for ${healthUrl} to report commit ${expectedSha} in ${expectedEnvironment}. ` +
       `Last response: ${JSON.stringify(lastBody)}. This does not necessarily mean the deployment is ` +
       "broken -- check the Vercel Deployments dashboard directly. Refusing to apply the enforce " +
       "migrations against unverified application code.",
@@ -359,7 +447,10 @@ function applyEnforceMigrations(dbUrl, enforceList, dryRun) {
 }
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
+  const environments = loadEnvironments(readFileSync(environmentsPath, "utf-8"));
+  const args = parseArgs(process.argv.slice(2), environments);
+
+  console.log(`Target: "${args.target}" (${args.environment}) -- ${args.allowedOrigin}, project ref ${args.supabaseProjectRef}`);
 
   console.log("=== Phase 0: validate the migration plan against the database ===");
   const pendingAtStart = getPendingMigrations(args.dbUrl);
@@ -375,16 +466,16 @@ async function main() {
     return;
   }
 
-  console.log("\n=== Phase 2: wait for the expected commit to be live in production ===");
+  console.log(`\n=== Phase 2: wait for the expected commit to be live in ${args.environment} ===`);
   console.log(`Polling ${args.healthUrl} for commitSha=${args.expectedSha} (timeout ${args.deployTimeoutSeconds}s)...`);
-  await pollHealth(args.healthUrl, args.expectedSha, args.deployTimeoutSeconds);
-  console.log("Confirmed: production is serving the expected commit.");
+  await pollHealth(args.healthUrl, args.expectedSha, args.environment, args.deployTimeoutSeconds);
+  console.log(`Confirmed: ${args.environment} is serving the expected commit.`);
 
   console.log(`\n=== Phase 3: drain window (${args.drainSeconds}s) ===`);
   await new Promise((resolve) => setTimeout(resolve, args.drainSeconds * 1000));
 
   console.log("\n=== Phase 4: compatibility smoke check ===");
-  const health = await pollHealth(args.healthUrl, args.expectedSha, 30);
+  const health = await pollHealth(args.healthUrl, args.expectedSha, args.environment, 30);
   console.log(`Smoke check passed: ${JSON.stringify(health)}`);
 
   console.log("\n=== Phase 5: apply enforce migrations ===");
