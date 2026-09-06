@@ -22,16 +22,6 @@ type ExpectedGrant = {
   anon: boolean;
   authenticated: boolean;
   service_role: boolean;
-  // Round-6 R6-01/R6-03: the round-3 3-argument request_notification_email_change
-  // is a real production object (migration 20260904194400) that a later
-  // corrective migration (20260906090000) strips every grant from, kept
-  // defined only until a future cleanup migration drops it. This isolated
-  // test project's own migration history does not necessarily retain
-  // every historical production object in the exact same shape (its
-  // history is built up independently -- see DECISIONS.md/STATUS.md) --
-  // this flag lets both tests below tolerate the function's absence here
-  // without silently tolerating the absence of anything else.
-  mayNotExistInThisEnvironment?: boolean;
 };
 
 const EXPECTED: ExpectedGrant[] = [
@@ -113,22 +103,23 @@ const EXPECTED: ExpectedGrant[] = [
     authenticated: false,
     service_role: true,
   },
-  {
-    // Round-3's original 3-argument version, still deployed to production
-    // and deliberately left in place (round-6 R6-03) -- but round-6 R6-01
-    // found it returns the plaintext token directly to `authenticated`,
-    // the same live vulnerability the 2-argument replacement above exists
-    // to fix. Migration 20260906090000 revokes `authenticated`'s grant
-    // immediately (not a rollout-compatibility exception for a function
-    // that IS the vulnerability) -- so it now has zero grants to any
-    // client-reachable role, kept only until a future cleanup migration
-    // drops it outright once nothing could still be calling it.
-    signature: "public.request_notification_email_change(bigint, text, int)",
-    anon: false,
-    authenticated: false,
-    service_role: false,
-    mayNotExistInThisEnvironment: true,
-  },
+  // The round-3 3-argument request_notification_email_change(bigint, text,
+  // int) is GONE now, not merely grant-stripped -- migration 20260906100000
+  // drops it outright. Round-6 R6-01/R6-03 had planned to keep it defined
+  // (grants revoked only) as a rollout-compatibility bridge; round-7's own
+  // verification (after R7-03 repaired this isolated test project's
+  // migration drift, which is exactly what had hidden this) discovered
+  // that coexistence never actually worked at all: its third parameter's
+  // `default 1440` makes it callable with only 2 arguments, which is
+  // ambiguous against the new 2-argument function for PostgREST's own
+  // overload resolution -- independent of grants, since that resolution
+  // happens before any permission check. Every real call to
+  // request_notification_email_change(p_organization_id, p_email) --
+  // which is the only way this app has ever called it -- started failing
+  // outright (PGRST203) the moment both overloads coexisted. See
+  // DECISIONS.md for the full account. There is deliberately no row for
+  // it here any more; the completeness test below now correctly expects
+  // it to be entirely absent from the catalog.
 ];
 
 let client: Client | null;
@@ -146,16 +137,18 @@ for (const expected of EXPECTED) {
     test.skip(!client, "No direct Postgres connection available in this environment.");
     if (!client) return;
 
-    if (expected.mayNotExistInThisEnvironment) {
-      const { rows: existsRows } = await client.query("select to_regprocedure($1) is not null as exists", [
-        expected.signature,
-      ]);
-      test.skip(
-        !existsRows[0].exists,
-        `${expected.signature} does not exist in this environment's catalog -- expected to be absent in some (see the EXPECTED entry's comment).`,
-      );
-      if (!existsRows[0].exists) return;
-    }
+    // Round-7 finding R7-03: every row here, including the retained
+    // round-3 3-argument overload, must be checked unconditionally -- a
+    // security-relevant grant check silently skipping because the target
+    // object happens to be missing in this specific environment is exactly
+    // the false-confidence gap this whole file exists to prevent. Fail
+    // loudly with a clear message instead of skipping if a row's function
+    // doesn't exist at all, rather than letting has_function_privilege()
+    // report a possibly-misleading `false` for a nonexistent object.
+    const { rows: existsRows } = await client.query("select to_regprocedure($1) is not null as exists", [
+      expected.signature,
+    ]);
+    expect(existsRows[0].exists, `${expected.signature} does not exist in the catalog -- expected it to.`).toBe(true);
 
     for (const role of ["anon", "authenticated", "service_role"] as const) {
       const { rows } = await client.query(
@@ -224,16 +217,7 @@ test("EXPECTED accounts for every function in the public schema, not just the on
       .map((part) => part.split(/\s+/).pop()!.replace(/integer/g, "int"));
     return `${name}(${types.join(",")})`;
   };
-  const actual = new Set(rows.map((r) => normalize(r.signature as string)));
-  // Entries flagged mayNotExistInThisEnvironment are excluded from the
-  // "expected" side when the live catalog doesn't actually have them --
-  // this test's purpose is catching an UNEXPECTED function nothing
-  // accounts for, not requiring every hypothetically-possible one to be
-  // present in every environment (see the flag's own comment above).
-  const expected = EXPECTED.filter((e) => !e.mayNotExistInThisEnvironment || actual.has(normalize(e.signature))).map(
-    (e) => normalize(e.signature),
-  );
-  expect([...actual].sort(), "a function exists in public that EXPECTED above doesn't cover").toEqual(
-    expected.sort(),
-  );
+  const actual = rows.map((r) => normalize(r.signature as string)).sort();
+  const expected = EXPECTED.map((e) => normalize(e.signature)).sort();
+  expect(actual, "a function exists in public that EXPECTED above doesn't cover").toEqual(expected);
 });
