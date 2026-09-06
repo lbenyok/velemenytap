@@ -101,6 +101,31 @@ test("Org A cannot update Org B's nfc_card", async () => {
   expect(data).toEqual([]);
 });
 
+test("Org A cannot update Org B's onboarding_tour_status", async () => {
+  // organizations_update's USING/WITH CHECK is private.is_org_member(id) --
+  // broad by column (any member can update any of their own org's columns),
+  // so this is the one column-specific check worth its own test: does that
+  // membership check actually stop Org A from touching Org B's row at all,
+  // the same guarantee already relied on for name/logo_url via the same
+  // policy.
+  const clientA = await userClient(orgA.email, orgA.password);
+  const { data } = await clientA
+    .from("organizations")
+    .update({ onboarding_tour_status: "skipped" })
+    .eq("id", orgB.orgId)
+    .select("id");
+
+  expect(data).toEqual([]);
+
+  const clientB = await userClient(orgB.email, orgB.password);
+  const { data: unchanged } = await clientB
+    .from("organizations")
+    .select("onboarding_tour_status")
+    .eq("id", orgB.orgId)
+    .single();
+  expect(unchanged?.onboarding_tour_status).toBe("completed");
+});
+
 test("Org A cannot insert a location directly into Org B", async () => {
   const clientA = await userClient(orgA.email, orgA.password);
   const { error } = await clientA

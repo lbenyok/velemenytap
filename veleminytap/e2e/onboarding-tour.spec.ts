@@ -3,6 +3,7 @@ import {
   seedOrgWithMember,
   cleanupOrgWithMember,
   adminClient,
+  userClient,
   type SeededOrgMember,
 } from "./support/seed";
 
@@ -145,6 +146,27 @@ test.describe("skip and completion both persist", () => {
     expect(data?.onboarding_tour_status).toBe("skipped");
   });
 
+  test("clicking the backdrop mid-tour also records skipped, not just the explicit Kihagyom button or Escape", async ({
+    page,
+  }) => {
+    await signIn(page);
+    await page.getByRole("button", { name: "Kezdjük" }).click();
+    await expect(page.getByRole("heading", { name: "Áttekintés" })).toBeVisible();
+    // Base UI's Dialog renders a backdrop element behind the panel -- click
+    // it well outside the dialog panel's own bounds (top-left corner of the
+    // viewport) so this can't accidentally land on dialog content instead.
+    await page.mouse.click(5, 5);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+
+    const admin = adminClient();
+    const { data } = await admin
+      .from("organizations")
+      .select("onboarding_tour_status")
+      .eq("id", member.orgId)
+      .single();
+    expect(data?.onboarding_tour_status).toBe("skipped");
+  });
+
   test("clicking through every step to Bezárás records completed and the tour does not reappear after a reload", async ({
     page,
   }) => {
@@ -232,12 +254,22 @@ test.describe("reopening the tour", () => {
     await page.getByRole("button", { name: "Útmutató megnyitása" }).click();
     await expect(page.getByRole("heading", { name: "Üdvözlünk a VéleményTapban!" })).toBeVisible();
 
-    // Reopening itself must not rewrite the persisted status -- closing it
-    // again (without finishing) still records skipped, same as any other
-    // dismissal, and a later plain visit must still not auto-open it.
+    // "completed" is a terminal state (see actions.ts's own state-machine
+    // comment) -- dismissing a manually reopened, already-completed tour
+    // must NOT downgrade it to "skipped". Checking only that the dialog
+    // doesn't auto-reappear wouldn't catch a downgrade, since "skipped"
+    // also never auto-opens -- the status itself has to be asserted.
     await page.keyboard.press("Escape");
     await page.reload();
     await expect(page.getByRole("dialog")).toHaveCount(0);
+
+    const admin = adminClient();
+    const { data } = await admin
+      .from("organizations")
+      .select("onboarding_tour_status")
+      .eq("id", member.orgId)
+      .single();
+    expect(data?.onboarding_tour_status).toBe("completed");
   });
 
   test("the reopen button is reachable on both the desktop nav row and the mobile menu button's own header row", async ({
@@ -250,6 +282,50 @@ test.describe("reopening the tour", () => {
     await page.setViewportSize({ width: 375, height: 720 });
     await page.reload();
     await expect(page.getByRole("button", { name: "Útmutató megnyitása" })).toBeVisible();
+  });
+});
+
+test.describe("reopening a previously-skipped tour", () => {
+  test.beforeEach(async () => {
+    member = await seedOrgWithMember("tour-reopen-skip");
+    await markTourStatus(member.orgId, "skipped");
+  });
+
+  test("dismissing a reopened, previously-skipped tour again leaves it skipped, not completed", async ({
+    page,
+  }) => {
+    await signIn(page);
+    await page.getByRole("button", { name: "Útmutató megnyitása" }).click();
+    await expect(page.getByRole("heading", { name: "Üdvözlünk a VéleményTapban!" })).toBeVisible();
+    await page.getByRole("button", { name: "Kihagyom" }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+
+    const admin = adminClient();
+    const { data } = await admin
+      .from("organizations")
+      .select("onboarding_tour_status")
+      .eq("id", member.orgId)
+      .single();
+    expect(data?.onboarding_tour_status).toBe("skipped");
+  });
+
+  test("finishing a reopened, previously-skipped tour promotes it to completed", async ({ page }) => {
+    await signIn(page);
+    await page.getByRole("button", { name: "Útmutató megnyitása" }).click();
+    await page.getByRole("button", { name: "Kezdjük" }).click();
+    for (let i = 0; i < 6; i++) {
+      await page.getByRole("button", { name: "Következő" }).click();
+    }
+    await page.getByRole("button", { name: "Bezárás" }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+
+    const admin = adminClient();
+    const { data } = await admin
+      .from("organizations")
+      .select("onboarding_tour_status")
+      .eq("id", member.orgId)
+      .single();
+    expect(data?.onboarding_tour_status).toBe("completed");
   });
 });
 
@@ -294,12 +370,20 @@ test.describe("desktop nav highlight and mobile degradation", () => {
     await expect(page.getByRole("button", { name: "Következő" })).toBeVisible();
   });
 
-  test("the dashboard's own mobile menu still opens normally while the tour is open, unaffected by it", async ({
+  test("the dashboard's own mobile menu opens normally once the tour is dismissed, with no leftover overlay interference", async ({
     page,
   }) => {
+    // Note: this deliberately dismisses the tour FIRST -- a modal dialog is
+    // supposed to trap focus and block the page underneath it, so "the menu
+    // opens while the tour dialog is still genuinely open" is not something
+    // to assert; that would be testing that the dialog fails to behave like
+    // a dialog. What this actually guards against is a dismissed tour
+    // leaving some stray overlay/aria-hidden/focus-trap state behind that
+    // interferes with normal navigation afterward.
     await page.setViewportSize({ width: 375, height: 720 });
     await signIn(page);
     await page.getByRole("button", { name: "Kihagyom" }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
 
     await page.getByRole("button", { name: "Menü megnyitása" }).click();
     await expect(
@@ -350,5 +434,118 @@ test.describe("resilience", () => {
     // The NFC-kártyák step itself must still render normally.
     await expect(page.getByRole("heading", { name: "NFC-kártyák" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Következő" })).toBeEnabled();
+  });
+});
+
+test.describe("a failed save is never silently discarded", () => {
+  test.beforeEach(async () => {
+    member = await seedOrgWithMember("tour-fail", "owner", "not_started");
+  });
+
+  /** Aborts only the Server Action's own POST (to the dashboard page itself)
+   * -- a genuine network failure, not the function body returning `{ error
+   * }` -- while leaving every other request (the initial page load, static
+   * assets) alone. */
+  async function breakTourPersistence(page: Page) {
+    await page.route("**/dashboard", async (route) => {
+      if (route.request().method() === "POST") {
+        await route.abort("failed");
+      } else {
+        await route.continue();
+      }
+    });
+  }
+
+  test("a network failure while dismissing the tour shows a retry prompt, and a successful retry then persists it", async ({
+    page,
+  }) => {
+    await signIn(page);
+    await expect(page.getByRole("dialog")).toBeVisible();
+    await breakTourPersistence(page);
+
+    await page.getByRole("button", { name: "Kihagyom" }).click();
+    // Stays open with an explicit failure state -- not silently closed as
+    // if the write had succeeded.
+    await expect(page.getByRole("alert")).toBeVisible();
+    await expect(page.getByRole("dialog")).toBeVisible();
+
+    const admin = adminClient();
+    const { data: whileFailing } = await admin
+      .from("organizations")
+      .select("onboarding_tour_status")
+      .eq("id", member.orgId)
+      .single();
+    expect(whileFailing?.onboarding_tour_status).toBe("not_started");
+
+    await page.unroute("**/dashboard");
+    await page.getByRole("button", { name: "Próbáld újra" }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+
+    const { data: afterRetry } = await admin
+      .from("organizations")
+      .select("onboarding_tour_status")
+      .eq("id", member.orgId)
+      .single();
+    expect(afterRetry?.onboarding_tour_status).toBe("skipped");
+  });
+
+  test("'Bezárás mentés nélkül' after a failed save closes the dialog without ever persisting the attempted status", async ({
+    page,
+  }) => {
+    await signIn(page);
+    await breakTourPersistence(page);
+
+    await page.getByRole("button", { name: "Kihagyom" }).click();
+    await expect(page.getByRole("alert")).toBeVisible();
+    await page.getByRole("button", { name: "Bezárás mentés nélkül" }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+
+    const admin = adminClient();
+    const { data } = await admin
+      .from("organizations")
+      .select("onboarding_tour_status")
+      .eq("id", member.orgId)
+      .single();
+    // Deliberately unchanged -- "close anyway" is an informed choice not to
+    // persist, not a silent write of whatever was being attempted.
+    expect(data?.onboarding_tour_status).toBe("not_started");
+  });
+});
+
+test.describe("database-level enforcement, independent of the Server Action's own validation", () => {
+  test.beforeEach(async () => {
+    member = await seedOrgWithMember("tour-check-constraint", "owner", "not_started");
+  });
+
+  test("a forged/invalid status value is rejected by the column's CHECK constraint even when the Server Action's own validation is bypassed entirely", async () => {
+    // setOnboardingTourStatusAction's own `status !== "completed" &&
+    // status !== "skipped"` guard is application-level and only protects
+    // calls that actually go through it -- a forged direct POST to the
+    // action's endpoint id bypasses it entirely. The CHECK constraint on
+    // organizations.onboarding_tour_status is the layer that still holds
+    // regardless of how the write is attempted, so this goes around the
+    // Server Action completely and writes straight through the same
+    // RLS-bound client the real action itself uses, the most direct
+    // simulation of "arbitrary caller sends whatever it wants" available
+    // from an e2e test.
+    const client = await userClient(member.email, member.password);
+    // Deliberately cast past the generated column type -- the whole point
+    // is to prove the database itself rejects a value TypeScript alone
+    // would never let this call send.
+    const { error } = await client
+      .from("organizations")
+      .update({ onboarding_tour_status: "hacked" as never })
+      .eq("id", member.orgId);
+
+    expect(error).not.toBeNull();
+    expect(error?.message).toMatch(/onboarding_tour_status/i);
+
+    const admin = adminClient();
+    const { data } = await admin
+      .from("organizations")
+      .select("onboarding_tour_status")
+      .eq("id", member.orgId)
+      .single();
+    expect(data?.onboarding_tour_status).toBe("not_started");
   });
 });

@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 export const metadata: Metadata = {
   title: "VéleményTap — minden csillag számít",
   description:
-    "NFC-kártyát teszel ki a pultra. A vásárlóid pár másodperc alatt értékelnek, és utána mindenki ugyanazt a Google-értékelés linket kapja, a csillagok számától függetlenül.",
+    "NFC-kártyát teszel ki a pultra. A vásárlóid pár másodperc alatt értékelnek, és utána mindenki ugyanazt a Google-értékelési linket kapja, a csillagok számától függetlenül.",
 };
 
 const fraunces = Fraunces({
@@ -20,7 +20,7 @@ const fraunces = Fraunces({
 
 const VERTICALS = [
   "Kávézók és éttermek",
-  "Szalonok és wellness stúdiók",
+  "Szalonok és wellness-stúdiók",
   "Rendelők és klinikák",
   "Edzőtermek és stúdiók",
   "Üzletek",
@@ -41,7 +41,7 @@ const STEPS = [
   {
     n: "03",
     title: "Te mindent látsz",
-    body: "Azonnal megjelenik az irányítópultodon. Alacsony értékelésnél e-mail is megy a csapatodnak, hogy azonnal léphessetek.",
+    body: "Azonnal megjelenik az irányítópultodon. Alacsony értékelésnél e-mailes értesítést is kapsz, hogy időben léphess.",
   },
 ];
 
@@ -53,13 +53,13 @@ const DASHBOARD_CARDS = [
   },
   {
     icon: Mail,
-    title: "Azonnali jelzés a rosszakról",
-    body: "Egy-két csillagos értékelésnél azonnal e-mailt kap a csapatod, hogy még időben felvehessétek a kapcsolatot.",
+    title: "Értesítés a rossz értékelésekről",
+    body: "Az egy- és kétcsillagos véleményekhez e-mailes értesítést is beállíthatsz, hogy időben reagálhass.",
   },
   {
     icon: BarChart3,
     title: "Trendek időben",
-    body: "Látod az átlagot, a mennyiséget, és hogy melyik helyszín vagy kártya lóg le a többi mögött. Nem csak a mai napot, a trendet is.",
+    body: "Látod az átlagot, a mennyiséget, és hogy melyik helyszín vagy kártya marad el a többitől. Nem csak a mai napot, a trendet is.",
   },
 ];
 
@@ -159,7 +159,7 @@ function Hero() {
           <p className="mt-5 max-w-lg text-base leading-relaxed text-[var(--pf-ink-muted)] sm:text-lg">
             Kiteszed a kártyát a pultra. A vásárlód hozzáérinti a
             telefonját, és pár másodperc alatt kész az értékelés. Utána
-            mindenki ugyanahhoz a Google-értékelés linkhez jut, egy
+            mindenki ugyanahhoz a Google-értékelési linkhez jut, egy
             csillagtól ötig — válogatásra nincs mód, ezt a Google
             szabályzata sem engedné.
           </p>
@@ -304,7 +304,7 @@ function DashboardPreview() {
         className="mt-3 max-w-xl text-2xl font-medium sm:text-3xl"
         style={{ fontFamily: "var(--font-display)" }}
       >
-        Egy irányítópult az összes koppintásnak.
+        Minden visszajelzés egyetlen irányítópulton.
       </h2>
       <div className="mt-10 grid gap-5 sm:grid-cols-3">
         {DASHBOARD_CARDS.map(({ icon: Icon, title, body }) => (

@@ -7,23 +7,42 @@ import type { OnboardingTourStatus } from "@/lib/supabase/database.types";
 
 type TourPhase = "closed" | "welcome" | "step";
 
+/** Tracks an in-flight or failed attempt to close the dialog with a given
+ * status -- while this is non-null, the dialog stays open and shows either
+ * a saving indicator or a retry/close-anyway prompt, never silently
+ * discarding the fact that the write hasn't been confirmed yet. */
+type PendingClose = { status: "completed" | "skipped"; saving: boolean; error: string | null };
+
 type TourContextValue = {
   phase: TourPhase;
   stepIndex: number;
+  pending: PendingClose | null;
   /** Opens from the welcome screen -- used both for the automatic
    * first-time show and for the manual "Útmutató megnyitása" reopen
    * button, which is exactly why reopening never touches the persisted
-   * status (see actions.ts): it's the same entry point either way. */
+   * status by itself: it's the same entry point either way, and nothing
+   * is written until the tour is dismissed or finished again. */
   open: () => void;
   next: () => void;
   back: () => void;
   beginSteps: () => void;
-  /** Records "skipped" and closes -- used by the Kihagyom button and by
-   * any implicit dismissal (Escape, backdrop click). */
+  /** Attempts to record "skipped" and close -- used by the Kihagyom
+   * button and by any implicit dismissal (Escape, backdrop click). Stays
+   * open with an error/retry prompt if the write fails; never silently
+   * closes on a failed save. */
   skip: () => void;
-  /** Records "completed" and closes -- used only by the final step's own
-   * Bezárás button, i.e. someone who actually went through the tour. */
-  complete: () => void;
+  /** Attempts to record "completed" and close -- used by the final step's
+   * own Bezárás button. Returns whether it actually succeeded, so a
+   * caller that also needs to navigate (the final step's action button)
+   * can wait for a confirmed write before leaving the page. */
+  complete: () => Promise<boolean>;
+  /** Retries the currently pending (failed) close attempt. */
+  retry: () => void;
+  /** Gives up on persisting the pending close attempt and closes anyway --
+   * a deliberate, informed choice, not a silent failure: the tour may
+   * simply reappear later, which is honest given the write never actually
+   * confirmed. */
+  closeAnyway: () => void;
 };
 
 const TourContext = createContext<TourContextValue | null>(null);
@@ -51,23 +70,19 @@ export function TourProvider({
     initialStatus === "not_started" ? "welcome" : "closed",
   );
   const [stepIndex, setStepIndex] = useState(0);
-  // Set just before a deliberate close (skip or complete) so the single
-  // persistence effect below knows which status to record, without
-  // duplicating that server call across every button that can close the
-  // dialog (buttons, Escape, backdrop click all funnel through setPhase).
-  const pendingStatusRef = useRef<"completed" | "skipped">("skipped");
-
-  function persist(status: "completed" | "skipped") {
-    // Fire-and-forget: this is a UI-state nicety, not a critical write the
-    // user is blocked on. If it fails (network blip, session expired), the
-    // dashboard is already fully usable regardless -- the tour just might
-    // show again next visit, which is a minor inconvenience, not a defect
-    // worth a loading/error state for.
-    setOnboardingTourStatusAction(status).catch(() => {});
-  }
+  const [pending, setPending] = useState<PendingClose | null>(null);
+  // This client's best understanding of the persisted status -- seeded
+  // from the server-rendered value, updated only after a confirmed
+  // successful write. Purely a client-side optimization (skips an
+  // unnecessary network call for an already-known-terminal state); the
+  // actual guarantee that "completed" can never be downgraded is enforced
+  // by the UPDATE's own WHERE clause in actions.ts against the database's
+  // real current value, not against this ref, so a stale ref here (e.g.
+  // another device completed the tour since this page loaded) can never
+  // cause an incorrect downgrade.
+  const lastKnownStatusRef = useRef<OnboardingTourStatus>(initialStatus);
 
   function open() {
-    pendingStatusRef.current = "skipped";
     setStepIndex(0);
     setPhase("welcome");
   }
@@ -85,36 +100,81 @@ export function TourProvider({
     setStepIndex((i) => Math.max(0, i - 1));
   }
 
-  function skip() {
-    pendingStatusRef.current = "skipped";
-    persist("skipped");
+  async function attemptClose(status: "completed" | "skipped"): Promise<boolean> {
+    // Client-side mirror of the server's own terminal-state guard -- avoids
+    // an unnecessary request for the common "reopened a completed tour,
+    // dismissed it again" case. Not load-bearing for correctness (the
+    // server enforces this regardless), just avoids the round trip.
+    if (lastKnownStatusRef.current === status || lastKnownStatusRef.current === "completed") {
+      setPending(null);
+      setPhase("closed");
+      return true;
+    }
+
+    setPending({ status, saving: true, error: null });
+    // A Server Action call rejects (rather than resolving with `{ error }`)
+    // on a genuine network failure -- a dropped connection, a timeout, the
+    // server process itself erroring before the function body ever runs.
+    // That's a different failure mode from the function body deliberately
+    // returning `{ error }`, but from here it means the same thing: the
+    // write is not confirmed, so it gets the identical retry/close-anyway
+    // treatment rather than an uncaught rejection surfacing as a React
+    // error boundary and losing the tour's state entirely.
+    let result: { error?: string };
+    try {
+      result = await setOnboardingTourStatusAction(status);
+    } catch {
+      setPending({ status, saving: false, error: "Nem sikerült menteni az útmutató állapotát." });
+      return false;
+    }
+    if (result.error) {
+      setPending({ status, saving: false, error: result.error });
+      return false;
+    }
+    lastKnownStatusRef.current = status;
+    setPending(null);
     setPhase("closed");
+    return true;
   }
 
-  function complete() {
-    pendingStatusRef.current = "completed";
-    persist("completed");
+  function skip() {
+    void attemptClose("skipped");
+  }
+
+  function complete(): Promise<boolean> {
+    return attemptClose("completed");
+  }
+
+  function retry() {
+    if (pending) {
+      void attemptClose(pending.status);
+    }
+  }
+
+  function closeAnyway() {
+    setPending(null);
     setPhase("closed");
   }
 
   // Any dismissal that isn't the deliberate "finished the last step"
-  // action (Escape, clicking the backdrop) must still record something,
-  // or the tour would keep reappearing on every dashboard visit until
-  // someone happens to click through to the very end -- exactly the "hard
-  // requirement" this feature must not become. Treated the same as
-  // clicking Kihagyom.
+  // action (Escape, clicking the backdrop) must still attempt to record
+  // something, or the tour would keep reappearing on every dashboard visit
+  // until someone happens to click through to the very end -- exactly the
+  // "hard requirement" this feature must not become. Treated the same as
+  // clicking Kihagyom. While a close attempt is pending (saving, or
+  // showing a retry prompt after a failure), a further implicit dismissal
+  // is ignored -- the dialog stays open until the user makes an explicit
+  // choice (retry or close anyway), rather than silently abandoning an
+  // in-flight or failed write.
   function handleOpenChange(nextOpen: boolean) {
     if (nextOpen) return;
-    if (pendingStatusRef.current === "completed") {
-      // complete() already persisted and closed; nothing further to do.
-      return;
-    }
+    if (pending) return;
     skip();
   }
 
   return (
     <TourContext.Provider
-      value={{ phase, stepIndex, open, next, back, beginSteps, skip, complete }}
+      value={{ phase, stepIndex, pending, open, next, back, beginSteps, skip, complete, retry, closeAnyway }}
     >
       {children}
       <TourDialog

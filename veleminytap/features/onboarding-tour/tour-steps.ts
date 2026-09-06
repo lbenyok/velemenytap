@@ -71,7 +71,7 @@ export const TOUR_STEPS: TourStep[] = [
     title: "Beállítások",
     body: [
       "Itt kezeled a vállalkozásod nevét, logóját és az értesítési e-mail címet.",
-      "Alacsony értékelésnél e-mailben értesítjük a csapatodat. Ha megadsz egy értesítési címet, előbb meg kell erősítened, mielőtt aktívvá válik.",
+      "Alacsony értékelésnél e-mailes értesítést is kaphat a csapatod. Ha megadsz egy értesítési címet, előbb meg kell erősítened, mielőtt aktívvá válik.",
     ],
   },
   {

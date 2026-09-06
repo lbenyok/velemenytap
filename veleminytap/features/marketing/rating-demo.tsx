@@ -78,8 +78,8 @@ export function RatingDemo() {
             </p>
             <div className="flex items-center justify-center gap-2 rounded-lg bg-[var(--pf-accent)] px-4 py-2.5 text-center text-sm font-medium text-white">
               <Check className="size-4 shrink-0" strokeWidth={2.5} />
-              Ugyanaz a Google-értékelés link jár, bármennyi csillagot
-              adtál
+              Ugyanez a Google-értékelési link jelenik meg, bármennyi
+              csillagot adtál
             </div>
           </div>
         )}

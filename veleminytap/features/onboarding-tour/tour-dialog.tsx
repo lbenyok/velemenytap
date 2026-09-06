@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useTour } from "./tour-provider";
 import { TOUR_STEPS, TOUR_WELCOME } from "./tour-steps";
@@ -24,6 +24,51 @@ function findVisibleTarget(navTarget: string): HTMLElement | null {
   return el;
 }
 
+/**
+ * Shown instead of the normal footer controls whenever a close attempt is
+ * in flight or has failed -- found during an independent review: the
+ * previous version fired the persistence call without awaiting it and
+ * closed the dialog immediately regardless of outcome, so a failed save
+ * looked identical to a successful one from the user's point of view. This
+ * makes the actual state honest: saving shows progress, a failure offers a
+ * real retry or an explicit, informed "close anyway" that does not pretend
+ * the write succeeded.
+ */
+function PendingCloseBanner({
+  saving,
+  error,
+  onRetry,
+  onCloseAnyway,
+}: {
+  saving: boolean;
+  error: string | null;
+  onRetry: () => void;
+  onCloseAnyway: () => void;
+}) {
+  if (saving) {
+    return (
+      <p className="text-sm text-muted-foreground" role="status">
+        Mentés folyamatban…
+      </p>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-sm text-destructive" role="alert">
+        {error}
+      </p>
+      <div className="flex gap-2">
+        <Button type="button" size="sm" onClick={onRetry}>
+          Próbáld újra
+        </Button>
+        <Button type="button" size="sm" variant="ghost" onClick={onCloseAnyway}>
+          Bezárás mentés nélkül
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function TourDialog({
   phase,
   stepIndex,
@@ -33,10 +78,16 @@ export function TourDialog({
   stepIndex: number;
   onOpenChange: (open: boolean) => void;
 }) {
-  const { next, back, beginSteps, skip, complete } = useTour();
+  const { pending, next, back, beginSteps, skip, complete, retry, closeAnyway } = useTour();
   const router = useRouter();
   const highlightedRef = useRef<HTMLElement | null>(null);
   const step = phase === "step" ? TOUR_STEPS[stepIndex] : null;
+  // Local only -- the final step's own action button needs to know it
+  // triggered the current save attempt specifically, so it (and not the
+  // generic pending banner) is what disables itself while waiting, and so
+  // navigation only ever happens after complete() has actually resolved
+  // true, never racing ahead of a still-in-flight or failed write.
+  const [actionPending, setActionPending] = useState(false);
 
   // Highlights the current step's real, visible nav target (if any) and
   // always cleans up the PREVIOUS step's highlight -- including on
@@ -71,6 +122,20 @@ export function TourDialog({
   }, [phase, stepIndex]);
 
   const isLastStep = stepIndex === TOUR_STEPS.length - 1;
+  const controlsDisabled = pending !== null;
+
+  async function handleActionClick(href: string) {
+    setActionPending(true);
+    const succeeded = await complete();
+    setActionPending(false);
+    // Only navigate once the completion is actually confirmed persisted --
+    // on failure, `pending` (from the provider) now carries the error, and
+    // the shared banner below renders the retry/close-anyway choice
+    // instead. Navigating away here would abandon that state mid-flight.
+    if (succeeded) {
+      router.push(href);
+    }
+  }
 
   return (
     <Dialog open={phase !== "closed"} onOpenChange={onOpenChange}>
@@ -85,14 +150,23 @@ export function TourDialog({
                 ))}
               </DialogDescription>
             </DialogHeader>
-            <DialogFooter>
-              <Button type="button" variant="ghost" onClick={skip}>
-                Kihagyom
-              </Button>
-              <Button type="button" onClick={beginSteps}>
-                Kezdjük
-              </Button>
-            </DialogFooter>
+            {pending ? (
+              <PendingCloseBanner
+                saving={pending.saving}
+                error={pending.error}
+                onRetry={retry}
+                onCloseAnyway={closeAnyway}
+              />
+            ) : (
+              <DialogFooter>
+                <Button type="button" variant="ghost" onClick={skip}>
+                  Kihagyom
+                </Button>
+                <Button type="button" onClick={beginSteps}>
+                  Kezdjük
+                </Button>
+              </DialogFooter>
+            )}
           </>
         ) : step ? (
           <>
@@ -107,39 +181,46 @@ export function TourDialog({
                 ))}
               </DialogDescription>
             </DialogHeader>
-            {step.action ? (
+            {step.action && !pending ? (
               <div>
                 <Button
                   type="button"
                   variant="secondary"
-                  onClick={() => {
-                    complete();
-                    router.push(step.action!.href);
-                  }}
+                  disabled={actionPending}
+                  onClick={() => void handleActionClick(step.action!.href)}
                 >
-                  {step.action.label}
+                  {actionPending ? "Mentés…" : step.action.label}
                 </Button>
               </div>
             ) : null}
-            <DialogFooter className="sm:justify-between">
-              <div className="flex gap-2">
-                <Button type="button" variant="outline" onClick={back} disabled={stepIndex === 0}>
-                  Vissza
-                </Button>
-                <Button type="button" variant="ghost" onClick={skip}>
-                  Kihagyom
-                </Button>
-              </div>
-              {isLastStep ? (
-                <Button type="button" onClick={complete}>
-                  Bezárás
-                </Button>
-              ) : (
-                <Button type="button" onClick={next}>
-                  Következő
-                </Button>
-              )}
-            </DialogFooter>
+            {pending ? (
+              <PendingCloseBanner
+                saving={pending.saving}
+                error={pending.error}
+                onRetry={retry}
+                onCloseAnyway={closeAnyway}
+              />
+            ) : (
+              <DialogFooter className="sm:justify-between">
+                <div className="flex gap-2">
+                  <Button type="button" variant="outline" onClick={back} disabled={stepIndex === 0 || controlsDisabled}>
+                    Vissza
+                  </Button>
+                  <Button type="button" variant="ghost" onClick={skip} disabled={controlsDisabled}>
+                    Kihagyom
+                  </Button>
+                </div>
+                {isLastStep ? (
+                  <Button type="button" onClick={() => void complete()} disabled={controlsDisabled}>
+                    Bezárás
+                  </Button>
+                ) : (
+                  <Button type="button" onClick={next} disabled={controlsDisabled}>
+                    Következő
+                  </Button>
+                )}
+              </DialogFooter>
+            )}
           </>
         ) : null}
       </DialogContent>

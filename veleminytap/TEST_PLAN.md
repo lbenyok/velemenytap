@@ -42,6 +42,7 @@ Against a **dedicated, isolated Supabase test project** (`.env.test.local`, giti
 | Notification-email recipient confirmation flow, end-to-end including the real browser confirm-link round trip | `notification-email-verification.spec.ts` |
 | RPC role-allowlist matrix (5+ functions × anon/authenticated/service_role), direct catalog introspection | `rpc-privilege-matrix.spec.ts` |
 | Dashboard nav accessibility (accessible names, `aria-current`, keyboard) and responsive behavior at 320/375/768/desktop widths | `dashboard-nav-accessibility.spec.ts` |
+| First-time dashboard onboarding tour: state model (`not_started`/`completed`/`skipped`), every dismissal path, `completed`'s terminal-state guarantee, reopened-tour promotion, backfilled-organization protection, nav highlight/responsive degradation, async close failure handling, CHECK-constraint enforcement independent of the Server Action's own validation | `onboarding-tour.spec.ts` (cross-tenant case in `tenant-isolation.spec.ts`) |
 
 **`rpc-privilege-matrix.spec.ts` and `location-deactivation-race.spec.ts` need a direct Postgres connection** (`SUPABASE_DB_URL`) — optional locally (skip gracefully without it), **mandatory in CI** as of round-4 R4-04 (`e2e/support/db-connection.ts` throws rather than skipping when CI is set and the connection is missing, invalid, or doesn't resolve to the approved isolated project). A skipped run of either is not equivalent to a passing one — check the run's own output for a `skipped` count, not just the absence of failures.
 

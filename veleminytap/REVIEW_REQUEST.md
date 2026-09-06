@@ -107,7 +107,8 @@ The `verify-production-deployment` skip is expected and correct, not a gap: that
    - `20260905193325_server_owned_notification_email_change_budget.sql` — purely additive (new tables, new functions); never applied to production in any form.
    - `20260906110000_fix_claim_negative_alert_send_clock_timestamp.sql` — `create or replace` with an unchanged signature; safe drop-in.
    - `20260906120000_fix_request_notification_email_change_reserved_at_clock_timestamp.sql` — same, safe drop-in.
-2. **Deploy this PR's application code** (calls the 2-argument `request_notification_email_change`, never the 3-argument one).
+   - `20260906130000_add_onboarding_tour_status.sql` — **added after this document was first written**, as part of the later first-time dashboard onboarding tour work; purely additive (new `organizations.onboarding_tour_status` column, existing rows backfilled to `'completed'` via the column's own metadata-only default, never a bulk `UPDATE`). Must be `--expand`, not `--enforce`: this PR's new dashboard code reads this column on every dashboard request, so it must exist *before* that code deploys, not after — the opposite direction from `20260906090000`/`20260906100000` below, but the same principle (new code's dependency must be satisfied before that code goes live). See `DEPLOYMENT.md` § 7 and `DATABASE_SCHEMA.md` § "Onboarding tour state" for the full reasoning.
+2. **Deploy this PR's application code** (calls the 2-argument `request_notification_email_change`, never the 3-argument one; also now depends on `organizations.onboarding_tour_status` existing).
 3. **Let old serverless instances drain.**
 4. **Only then apply** (`--enforce`):
    - `20260906090000_fix_confirm_toctou_and_revoke_leaked_token_grant.sql` — revokes the 3-argument function's grant (bundled with an unrelated, independently-safe `confirm_notification_email_change` TOCTOU fix).
@@ -119,7 +120,7 @@ Corrected `scripts/rollout.mjs` invocation (see `DEPLOYMENT.md` § 7 for the ful
 node scripts/rollout.mjs \
   --target production \
   --db-url "$PRODUCTION_DB_URL" \
-  --expand 20260905193325_server_owned_notification_email_change_budget.sql,20260906110000_fix_claim_negative_alert_send_clock_timestamp.sql,20260906120000_fix_request_notification_email_change_reserved_at_clock_timestamp.sql \
+  --expand 20260905193325_server_owned_notification_email_change_budget.sql,20260906110000_fix_claim_negative_alert_send_clock_timestamp.sql,20260906120000_fix_request_notification_email_change_reserved_at_clock_timestamp.sql,20260906130000_add_onboarding_tour_status.sql \
   --enforce 20260906090000_fix_confirm_toctou_and_revoke_leaked_token_grant.sql,20260906100000_drop_ambiguous_request_notification_email_change_overload.sql \
   --expected-sha "$(git rev-parse HEAD)"
 ```
