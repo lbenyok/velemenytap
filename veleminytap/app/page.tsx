@@ -6,9 +6,9 @@ import { RatingDemo } from "@/features/marketing/rating-demo";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = {
-  title: "VéleményTap — NFC-s visszajelzés. Minden csillag számít.",
+  title: "VéleményTap — minden csillag számít",
   description:
-    "Helyezz ki egy NFC-kártyát a pultra: öt másodperc alatt valódi értékelést kapsz, és minden vásárló ugyanazt a Google-értékelési linket kapja — válogatás nélkül.",
+    "NFC-kártyát teszel ki a pultra. A vásárlóid pár másodperc alatt értékelnek, és mindenki ugyanahhoz a Google-linkhez jut, függetlenül attól, hány csillagot adott.",
 };
 
 const fraunces = Fraunces({
@@ -31,17 +31,17 @@ const STEPS = [
   {
     n: "01",
     title: "Koppintás",
-    body: "A vásárló a telefonjával megérinti a kártyát. Nincs alkalmazás, nincs bejelentkezés, nem kell URL-t beírni.",
+    body: "A vásárló odaérinti a telefonját a kártyához: nincs mit letölteni, nincs bejelentkezés, nincs beírandó cím.",
   },
   {
     n: "02",
     title: "Értékelés",
-    body: "1-től 5 csillagig értékel, és írhat hozzá megjegyzést is, ha szeretne. Mindössze öt másodperc.",
+    body: "Egytől öt csillagig értékel, és ha akar, írhat is pár szót hozzá. Ennyi az egész, öt másodperc alatt.",
   },
   {
     n: "03",
     title: "Te mindent látsz",
-    body: "Azonnal megjelenik az irányítópultodon. Alacsony értékelésnél e-mail is érkezik a csapatodnak, hogy gyorsan léphess.",
+    body: "Azonnal megjelenik az irányítópultodon. Alacsony értékelésnél e-mail is megy a csapatodnak, hogy azonnal léphessetek.",
   },
 ];
 
@@ -49,17 +49,17 @@ const DASHBOARD_CARDS = [
   {
     icon: Inbox,
     title: "Vélemény-postaláda",
-    body: "Minden értékelés egy helyen, szűrhető helyszín, kártya vagy státusz szerint. Semmi sem vész el egy fiókban, amit elfelejtesz megnézni.",
+    body: "Az összes értékelés egy helyen van, szűrhetsz helyszín, kártya vagy státusz szerint. Semmi nem vész el egy olyan postafiókban, amit elfelejtesz megnézni.",
   },
   {
     icon: Mail,
     title: "Azonnali jelzés a rosszakról",
-    body: "Egy 1 vagy 2 csillagos értékelés azonnal e-mailt küld a csapatodnak, hogy még időben felvehessétek a kapcsolatot.",
+    body: "Egy-két csillagos értékelésnél azonnal e-mailt kap a csapatod, hogy még időben felvehessétek a kapcsolatot.",
   },
   {
     icon: BarChart3,
     title: "Trendek időben",
-    body: "Átlagos értékelés, mennyiség, és hogy melyik helyszín vagy kártya teljesít gyengén — nem csak a mai szám.",
+    body: "Látod az átlagot, a mennyiséget, és hogy melyik helyszín vagy kártya lóg le a többi mögött. Nem csak a mai napot, a trendet is.",
   },
 ];
 
@@ -142,27 +142,25 @@ function Hero() {
     <section className="mx-auto max-w-6xl px-5 pt-8 pb-20 sm:px-8 sm:pt-14 sm:pb-28">
       <div className="grid items-center gap-12 lg:grid-cols-[1.05fr_0.95fr] lg:gap-10">
         <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-3 motion-safe:duration-700">
-          <Eyebrow>NFC-alapú visszajelzés üzleteknek</Eyebrow>
+          <Eyebrow>NFC-kártya a pultodra</Eyebrow>
           <h1
             className="mt-4 text-4xl leading-[1.08] font-medium text-balance sm:text-5xl lg:text-[3.4rem]"
             style={{ fontFamily: "var(--font-display)" }}
           >
             Koppints a kártyára.
             <br />
-            Azonnali, valódi{" "}
             <span
               className="bg-clip-text text-transparent italic"
               style={{ backgroundImage: "var(--pf-accent-gradient-text)" }}
             >
-              vélemény.
+              Válogatás nélkül.
             </span>
           </h1>
           <p className="mt-5 max-w-lg text-base leading-relaxed text-[var(--pf-ink-muted)] sm:text-lg">
-            Egy NFC-kártya a pultnál öt másodperc alatt valódi értékeléssé
-            alakít minden látogatást. Minden vásárló ugyanazt a
-            Google-értékelési linket kapja — akár 1, akár 5 csillagot adott.
-            A vélemények válogatása sérti a Google irányelveit — nálunk
-            minden csillag számít.
+            Kiteszed a kártyát a pultra. A vásárlód hozzáérinti a
+            telefonját, és pár másodperc alatt kész az értékelés. Utána
+            mindenki ugyanahhoz a Google-linkhez jut, egy csillagtól ötig —
+            a válogatásról a Google szabályzata miatt is szó sem lehet.
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-4">
             <Link
@@ -204,7 +202,7 @@ function ProofRow() {
           className="mt-3 max-w-xl text-2xl font-medium sm:text-3xl"
           style={{ fontFamily: "var(--font-display)" }}
         >
-          Minden értékelés ugyanoda vezet.
+          Akárhány csillagot adnak, ugyanoda jutnak.
         </h2>
         <div className="mt-8 grid grid-cols-2 gap-3 sm:grid-cols-5 sm:gap-4">
           {[1, 2, 3, 4, 5].map((n) => (
@@ -305,7 +303,7 @@ function DashboardPreview() {
         className="mt-3 max-w-xl text-2xl font-medium sm:text-3xl"
         style={{ fontFamily: "var(--font-display)" }}
       >
-        Egy irányítópult, minden koppintáshoz.
+        Minden koppintás egy helyen fut össze.
       </h2>
       <div className="mt-10 grid gap-5 sm:grid-cols-3">
         {DASHBOARD_CARDS.map(({ icon: Icon, title, body }) => (
@@ -351,7 +349,7 @@ function FinalCta() {
           Tedd ki az első kártyát a pultra.
         </h2>
         <p className="mx-auto mt-3 max-w-md text-sm text-white/90 sm:text-base">
-          Ingyenesen indulhatsz. Nincs szükség bankkártyára, nincs szerződés.
+          Ingyen kipróbálhatod, bankkártya és aláírás nélkül.
         </p>
         <Link
           href="/signup"

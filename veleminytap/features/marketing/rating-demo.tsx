@@ -15,9 +15,9 @@ const LABELS: Record<number, string> = {
 const REFLECTIONS: Record<number, string> = {
   1: "Sajnáljuk, hogy nem voltál elégedett.",
   2: "Köszönjük, hogy jelezted.",
-  3: "Jó tudni, köszönjük.",
+  3: "Jó hallani, köszönjük!",
   4: "Örülünk, hogy élvezted!",
-  5: "Csodálatos — köszönjük!",
+  5: "Csodálatos, köszönjük!",
 };
 
 /**
@@ -32,7 +32,7 @@ export function RatingDemo() {
   return (
     <div className="public-feedback w-full max-w-sm rounded-2xl border border-[var(--pf-line)] bg-[var(--pf-surface)] p-6 shadow-[0_1px_2px_rgba(19,23,34,0.06),0_16px_40px_-16px_rgba(33,84,235,0.35)] sm:p-7">
       <p className="text-center text-xs tracking-wide text-[var(--pf-ink-muted)]">
-        Próbáld ki — koppints egy értékelésre
+        Próbáld ki: koppints egy csillagra
       </p>
 
       <div
@@ -69,7 +69,7 @@ export function RatingDemo() {
       <div className="mt-5 min-h-[76px]">
         {rating === null ? (
           <p className="text-center text-sm text-[var(--pf-ink-muted)]">
-            Válassz egy értékelést, ahogy a vásárlód is tenné.
+            Ugyanígy értékelne egy vásárlód is.
           </p>
         ) : (
           <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-1 space-y-3 motion-safe:duration-300">
@@ -78,8 +78,8 @@ export function RatingDemo() {
             </p>
             <div className="flex items-center justify-center gap-2 rounded-lg bg-[var(--pf-accent)] px-4 py-2.5 text-center text-sm font-medium text-white">
               <Check className="size-4 shrink-0" strokeWidth={2.5} />
-              Ugyanaz a &bdquo;Google-értékelés írása&rdquo; link, mint
-              bármelyik másik értékelésnél
+              Ugyanaz a Google-értékelés link jár, bármennyi csillagot
+              adtál
             </div>
           </div>
         )}
