@@ -138,7 +138,9 @@ test("R3-02: an organization-wide budget of one under REAL concurrent claims for
  * queued behind another can resume with real wall-clock time well past its
  * own frozen now(), so its checks (and the value it writes) reflect a
  * stale instant rather than the moment it actually runs. This is the same
- * class of bug round-6 R6-04 fixed in request_notification_email_change --
+ * class of bug round-6 R6-04 fixed in reserve_notification_email_change
+ * (renamed from request_notification_email_change during a second
+ * independent review -- see that migration's header comment) --
  * confirmed there as a real, reproducible, intermittent test failure
  * before the fix (see that migration's own comment) -- so this test uses
  * the identical shape: concurrent claims for the SAME card with

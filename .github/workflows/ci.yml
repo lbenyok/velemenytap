@@ -182,12 +182,23 @@ jobs:
             response="$(curl -fsS --max-time 10 "$HEALTH_URL" || echo '')"
             if [ -n "$response" ]; then
               actual_sha="$(node -e "try{console.log(JSON.parse(process.argv[1]).commitSha||'')}catch{console.log('')}" "$response")"
+              actual_env="$(node -e "try{console.log(JSON.parse(process.argv[1]).environment||'')}catch{console.log('')}" "$response")"
               ok="$(node -e "try{console.log(JSON.parse(process.argv[1]).ok===true)}catch{console.log('false')}" "$response")"
-              if [ "$ok" = "true" ] && [ "$actual_sha" = "$EXPECTED_SHA" ]; then
+              # Found during a second independent review: this only ever
+              # checked ok+commitSha, never environment -- a health
+              # response reporting ok:true with the right SHA but the WRONG
+              # environment (e.g. a preview deployment that happens to have
+              # been built from this exact commit, or APP_ENV misconfigured
+              # to the wrong scope in Vercel) would pass this gate despite
+              # not actually proving PRODUCTION is serving this commit,
+              # which is the entire point of this job. Mirrors
+              # scripts/rollout.mjs's own pollHealth, which has required an
+              # environment match since round-5 R5-05.
+              if [ "$ok" = "true" ] && [ "$actual_sha" = "$EXPECTED_SHA" ] && [ "$actual_env" = "production" ]; then
                 echo "Production is serving the expected commit ($EXPECTED_SHA)."
                 exit 0
               fi
-              echo "Not yet -- production reports commitSha=$actual_sha ok=$ok, expected $EXPECTED_SHA. Retrying in 15s."
+              echo "Not yet -- production reports commitSha=$actual_sha ok=$ok environment=$actual_env, expected $EXPECTED_SHA in production. Retrying in 15s."
             else
               echo "No response from $HEALTH_URL yet. Retrying in 15s."
             fi

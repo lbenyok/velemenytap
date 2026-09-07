@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
-import { CircleCheck, TriangleAlert, Star } from "lucide-react";
+import { CircleCheck, Clock, TriangleAlert, Gift, Star } from "lucide-react";
+import { createStripeClient } from "@/lib/stripe";
 import { getCurrentOrganization } from "@/features/organizations/current";
 import { getOrganizationBilling } from "@/features/billing/queries";
 import { isBillingActive, hasLiveSubscription } from "@/features/billing/status";
@@ -39,10 +40,66 @@ function formatDate(value: string | null): string {
   );
 }
 
+type CheckoutSuccessState = "none" | "confirmed" | "pending" | "unpaid" | "invalid";
+
+/**
+ * Second independent review, Finding 7: `?checkout=success` alone must
+ * never be treated as proof of payment -- a bookmarked, shared, or
+ * hand-crafted URL could carry it with no real Checkout having happened
+ * at all. Stripe's `{CHECKOUT_SESSION_ID}` placeholder (substituted with
+ * the real session id server-side on redirect -- see
+ * features/billing/actions.ts's success_url) is verified here directly
+ * against Stripe, and checked to actually belong to THIS organization,
+ * before ever rendering a success message. Distinguishes:
+ *   - "confirmed": paid, and this organization's own billing state
+ *     already reflects it (the subscription webhook has landed).
+ *   - "pending": Checkout completed, but reconciliation hasn't landed yet
+ *     -- webhooks are asynchronous; this is a normal, brief window, not
+ *     an error.
+ *   - "unpaid": the session exists but never actually completed/paid
+ *     (expired, canceled mid-flow, etc).
+ *   - "invalid": no session_id, the session doesn't exist, or it belongs
+ *     to a different organization -- logged loudly (a foreign session id
+ *     here is worth investigating) and never shown as any kind of success.
+ */
+async function resolveCheckoutSuccessState(
+  organizationId: number,
+  sessionId: string | undefined,
+  hasSubscriptionNow: boolean,
+): Promise<CheckoutSuccessState> {
+  if (!sessionId) {
+    return "invalid";
+  }
+
+  let session;
+  try {
+    session = await createStripeClient().checkout.sessions.retrieve(sessionId);
+  } catch (err) {
+    console.error(`Billing page: failed to retrieve Checkout Session ${sessionId} for organization ${organizationId}:`, err);
+    return "invalid";
+  }
+
+  const belongsToThisOrg =
+    session.client_reference_id === organizationId.toString() ||
+    session.metadata?.organization_id === organizationId.toString();
+  if (!belongsToThisOrg) {
+    console.error(
+      `Billing page: Checkout Session ${sessionId} does not belong to organization ${organizationId} (client_reference_id=${session.client_reference_id}) -- ignoring.`,
+    );
+    return "invalid";
+  }
+
+  if (session.status !== "complete" || session.payment_status !== "paid") {
+    return "unpaid";
+  }
+
+  return hasSubscriptionNow ? "confirmed" : "pending";
+}
+
 export default async function BillingPage({
   searchParams,
 }: {
-  searchParams: Promise<{ checkout?: string; error?: string }>;
+  searchParams: Promise<{ checkout?: string; session_id?: string; error?: string }>;
 }) {
   const organization = await getCurrentOrganization();
   if (!organization) {
@@ -58,7 +115,8 @@ export default async function BillingPage({
   // not the "manage subscription" Portal button for a subscription that
   // no longer meaningfully exists. See features/billing/status.ts.
   const hasSubscription = hasLiveSubscription(billing);
-  const trialing = billing?.status === "trialing" && !hasSubscription;
+  const grandfathered = billing?.grandfathered_at != null && !hasSubscription;
+  const trialing = billing?.status === "trialing" && !hasSubscription && !grandfathered;
   const trialDaysLeft =
     trialing && billing?.trial_ends_at
       ? Math.max(
@@ -66,6 +124,9 @@ export default async function BillingPage({
           Math.ceil((new Date(billing.trial_ends_at).getTime() - new Date().getTime()) / 86_400_000),
         )
       : null;
+
+  const checkoutSuccess: CheckoutSuccessState =
+    sp.checkout === "success" ? await resolveCheckoutSuccessState(organization.id, sp.session_id, hasSubscription) : "none";
 
   return (
     <div className="space-y-6">
@@ -78,11 +139,23 @@ export default async function BillingPage({
         </p>
       </div>
 
-      {sp.checkout === "success" ? (
+      {checkoutSuccess === "confirmed" ? (
         <Alert>
           <CircleCheck />
           <AlertTitle>Sikeres előfizetés.</AlertTitle>
           <AlertDescription>Köszönjük — az irányítópult mostantól elérhető.</AlertDescription>
+        </Alert>
+      ) : checkoutSuccess === "pending" ? (
+        <Alert>
+          <Clock />
+          <AlertTitle>A fizetés megtörtént, feldolgozás alatt.</AlertTitle>
+          <AlertDescription>Ez általában néhány másodpercet vesz igénybe. Frissítsd az oldalt egy pillanat múlva.</AlertDescription>
+        </Alert>
+      ) : checkoutSuccess === "unpaid" ? (
+        <Alert variant="destructive">
+          <TriangleAlert />
+          <AlertTitle>A fizetés nem fejeződött be.</AlertTitle>
+          <AlertDescription>Nem történt sikeres terhelés. Bármikor újra elindíthatod alább.</AlertDescription>
         </Alert>
       ) : sp.checkout === "canceled" ? (
         <Alert variant="destructive">
@@ -126,21 +199,35 @@ export default async function BillingPage({
         <CardHeader>
           <div className="flex items-center justify-between gap-3">
             <CardTitle>VéleményTap előfizetés</CardTitle>
-            {active ? (
+            {grandfathered ? (
+              <Badge variant="secondary">Ingyenes hozzáférés</Badge>
+            ) : active ? (
               <Badge>{trialing ? "Próbaidőszak" : "Aktív"}</Badge>
             ) : (
               <Badge variant="destructive">Nincs aktív előfizetés</Badge>
             )}
           </div>
           <CardDescription>
-            {trialing && trialDaysLeft !== null
-              ? `${trialDaysLeft} nap van hátra az ingyenes próbaidőszakból.`
-              : active && billing?.current_period_end
-                ? `A következő számlázás dátuma: ${formatDate(billing.current_period_end)}${billing.cancel_at_period_end ? " (lemondva, ekkor szűnik meg)" : ""}.`
-                : "Fizess elő, hogy folytathasd az irányítópult használatát."}
+            {grandfathered
+              ? "A fiókod díjmentes, korlátlan hozzáférést kapott — nincs lejárati dátum, és nem szükséges előfizetned."
+              : trialing && trialDaysLeft !== null
+                ? `${trialDaysLeft} nap van hátra az ingyenes próbaidőszakból.`
+                : active && billing?.current_period_end
+                  ? `A következő számlázás dátuma: ${formatDate(billing.current_period_end)}${billing.cancel_at_period_end ? " (lemondva, ekkor szűnik meg)" : ""}.`
+                  : "Fizess elő, hogy folytathasd az irányítópult használatát."}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
+          {grandfathered ? (
+            <Alert>
+              <Gift />
+              <AlertTitle>Nem kell előfizetned.</AlertTitle>
+              <AlertDescription>
+                A fiókodat korábban díjmentes, nem lejáró hozzáféréssel jelöltük meg. Ha mégis szeretnél előfizetni (pl. számlázási igazolás miatt), az alábbi lehetőségek bármikor elérhetők.
+              </AlertDescription>
+            </Alert>
+          ) : null}
+
           <ul className="space-y-2">
             {PLAN_FEATURES.map((feature) => (
               <li key={feature} className="flex items-start gap-2 text-sm text-foreground">

@@ -84,19 +84,27 @@ export async function updateOrganizationSettingsAction(
       }
     }
   } else if (parsed.data.notification_email !== current?.notification_email) {
-    // Round-6 finding R6-01: request_notification_email_change() used to
-    // return the raw confirmation token directly -- to a function callable
-    // by `authenticated`, meaning any org member could obtain a live token
-    // for any address by calling the RPC directly (bypassing this Server
-    // Action, and Resend, entirely), never proving they control that
-    // inbox. It now returns only a log_id (not a secret); the token itself
-    // is minted by issue_notification_email_change_token(), granted to
-    // `service_role` ONLY -- called here via the admin client, from
-    // trusted server code, never reachable from a browser or any
-    // authenticated session. Round-5 R5-12's server-owned cooldown/hourly
-    // budget is enforced the same way as before, just without caller-
-    // suppliable parameters (round-6 R6-04) -- see the migration.
-    const { data: logId, error: requestError } = await supabase.rpc("request_notification_email_change", {
+    // Round-6 finding R6-01: this RPC used to return the raw confirmation
+    // token directly -- to a function callable by `authenticated`, meaning
+    // any org member could obtain a live token for any address by calling
+    // the RPC directly (bypassing this Server Action, and Resend,
+    // entirely), never proving they control that inbox. It now returns
+    // only a log_id (not a secret); the token itself is minted by
+    // issue_notification_email_change_token(), granted to `service_role`
+    // ONLY -- called here via the admin client, from trusted server code,
+    // never reachable from a browser or any authenticated session.
+    // Round-5 R5-12's server-owned cooldown/hourly budget is enforced the
+    // same way as before, just without caller-suppliable parameters
+    // (round-6 R6-04) -- see the migration.
+    //
+    // Named reserve_notification_email_change, not request_notification_
+    // email_change -- a second independent review found the original name
+    // collided with production's already-deployed 3-argument function of
+    // the same name (identical callable shape once its own default
+    // applies), guaranteeing a PGRST203 outage for every caller during any
+    // rollout window where both existed. See supabase/migrations/
+    // 20260905193325's header comment for the full incident.
+    const { data: logId, error: requestError } = await supabase.rpc("reserve_notification_email_change", {
       p_organization_id: organization.id,
       p_email: parsed.data.notification_email,
     });

@@ -55,6 +55,35 @@ const EXPECTED: ExpectedGrant[] = [
     authenticated: false,
     service_role: true,
   },
+  // Third independent review, Findings 2/4: billing reconciliation
+  // fencing and the durable checkout-attempt model (migration
+  // 20260907200000) -- all four are service_role-only, called exclusively
+  // from the webhook route and features/billing/actions.ts via the admin
+  // client, never reachable from a browser or any authenticated session.
+  {
+    signature: "public.claim_billing_sync(bigint)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  {
+    signature: "public.claim_checkout_attempt(bigint, text, text, text, int)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  {
+    signature: "public.record_checkout_session(bigint, text, text, int)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  {
+    signature: "public.release_checkout_attempt(bigint, text)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
   {
     signature: "public.finalize_negative_alert_send(bigint, boolean)",
     anon: false,
@@ -68,8 +97,13 @@ const EXPECTED: ExpectedGrant[] = [
   {
     // Round-6 R6-01/R6-04: no longer returns the token or accepts caller-
     // suppliable cooldown/budget parameters -- see
-    // supabase/migrations/20260905193325_....sql.
-    signature: "public.request_notification_email_change(bigint, text)",
+    // supabase/migrations/20260905193325_....sql. Renamed from
+    // request_notification_email_change to reserve_notification_email_
+    // change during a second independent review -- see that migration's
+    // header comment for the PGRST203-ambiguous-overload incident this
+    // closes (the old name collided with production's own 3-argument
+    // function of the same name).
+    signature: "public.reserve_notification_email_change(bigint, text)",
     anon: false,
     authenticated: true,
     service_role: false,
@@ -111,15 +145,27 @@ const EXPECTED: ExpectedGrant[] = [
   // migration drift, which is exactly what had hidden this) discovered
   // that coexistence never actually worked at all: its third parameter's
   // `default 1440` makes it callable with only 2 arguments, which is
-  // ambiguous against the new 2-argument function for PostgREST's own
-  // overload resolution -- independent of grants, since that resolution
-  // happens before any permission check. Every real call to
-  // request_notification_email_change(p_organization_id, p_email) --
-  // which is the only way this app has ever called it -- started failing
-  // outright (PGRST203) the moment both overloads coexisted. See
+  // ambiguous against a differently-defined 2-argument function of the
+  // SAME name for PostgREST's own overload resolution -- independent of
+  // grants, since that resolution happens before any permission check.
+  // Every real call naming (p_organization_id, p_email) -- the only way
+  // this app has ever called either function -- started failing outright
+  // (PGRST203) the moment both overloads coexisted under one name. A
+  // second independent review's fix was to rename the new function
+  // (reserve_notification_email_change, above) rather than attempt to
+  // stagger a coexistence that can never actually be made safe -- see
   // DECISIONS.md for the full account. There is deliberately no row for
-  // it here any more; the completeness test below now correctly expects
-  // it to be entirely absent from the catalog.
+  // the legacy 3-argument name here any more; the completeness test below
+  // now correctly expects it to be entirely absent from the catalog.
+  //
+  // The legacy 3-argument function itself is NOT gone from production
+  // yet -- production is still on migration 17, and this app's pending
+  // rollout only drops it (20260906090000/20260906100000, --enforce) once
+  // the new reserve_notification_email_change-calling code is live and
+  // old code is drained. It is absent from THIS project (the isolated
+  // test project, which has every migration applied) specifically because
+  // this project always reflects the fully-rolled-out end state, not
+  // production's current mid-rollout position -- see DEPLOYMENT.md.
 ];
 
 let client: Client | null;

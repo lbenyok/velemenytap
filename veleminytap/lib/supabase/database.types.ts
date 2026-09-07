@@ -88,7 +88,12 @@ export interface Database {
           grandfathered_at: string | null;
           activated_at: string | null;
           pending_checkout_session_id: string | null;
-          pending_checkout_expires_at: string | null;
+          billing_sync_seq: number;
+          checkout_attempt_id: string | null;
+          checkout_attempt_interval: string | null;
+          checkout_attempt_price_id: string | null;
+          checkout_attempt_mode: string | null;
+          checkout_attempt_expires_at: string | null;
           last_synced_at: string | null;
           created_at: string;
           updated_at: string;
@@ -104,7 +109,12 @@ export interface Database {
           grandfathered_at?: string | null;
           activated_at?: string | null;
           pending_checkout_session_id?: string | null;
-          pending_checkout_expires_at?: string | null;
+          billing_sync_seq?: number;
+          checkout_attempt_id?: string | null;
+          checkout_attempt_interval?: string | null;
+          checkout_attempt_price_id?: string | null;
+          checkout_attempt_mode?: string | null;
+          checkout_attempt_expires_at?: string | null;
           last_synced_at?: string | null;
           created_at?: string;
           updated_at?: string;
@@ -120,7 +130,12 @@ export interface Database {
           grandfathered_at?: string | null;
           activated_at?: string | null;
           pending_checkout_session_id?: string | null;
-          pending_checkout_expires_at?: string | null;
+          billing_sync_seq?: number;
+          checkout_attempt_id?: string | null;
+          checkout_attempt_interval?: string | null;
+          checkout_attempt_price_id?: string | null;
+          checkout_attempt_mode?: string | null;
+          checkout_attempt_expires_at?: string | null;
           last_synced_at?: string | null;
           created_at?: string;
           updated_at?: string;
@@ -419,7 +434,7 @@ export interface Database {
         };
         Returns: undefined;
       };
-      request_notification_email_change: {
+      reserve_notification_email_change: {
         Args: {
           p_organization_id: number;
           p_email: string;
@@ -451,6 +466,45 @@ export interface Database {
           p_token: string;
         };
         Returns: number | null;
+      };
+      claim_billing_sync: {
+        Args: {
+          p_organization_id: number;
+        };
+        Returns: number | null;
+      };
+      claim_checkout_attempt: {
+        Args: {
+          p_organization_id: number;
+          p_interval: string;
+          p_price_id: string;
+          p_mode: string;
+          p_claim_seconds?: number;
+        };
+        Returns: {
+          attempt_id: string;
+          is_new_attempt: boolean;
+          existing_session_id: string | null;
+          existing_interval: string | null;
+          existing_price_id: string | null;
+          existing_mode: string | null;
+        }[];
+      };
+      record_checkout_session: {
+        Args: {
+          p_organization_id: number;
+          p_attempt_id: string;
+          p_session_id: string;
+          p_lease_seconds?: number;
+        };
+        Returns: boolean | null;
+      };
+      release_checkout_attempt: {
+        Args: {
+          p_organization_id: number;
+          p_attempt_id: string;
+        };
+        Returns: boolean | null;
       };
     };
     Enums: Record<string, never>;

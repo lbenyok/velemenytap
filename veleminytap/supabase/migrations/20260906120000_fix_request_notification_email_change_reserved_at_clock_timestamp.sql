@@ -3,7 +3,14 @@
 -- class as R7-05 (claim_negative_alert_send) -- and in the very function
 -- R6-04 had already partially fixed for it.
 --
--- request_notification_email_change() (migration 20260905193325) captures
+-- Renamed to reserve_notification_email_change() (from
+-- request_notification_email_change()) in the migration this file
+-- redefines -- see 20260905193325's own header comment for the full
+-- PGRST203-ambiguous-overload incident this closes; every reference below
+-- uses the new name so this file's own `create or replace` actually
+-- targets the function that exists.
+--
+-- reserve_notification_email_change() (migration 20260905193325) captures
 -- clock_timestamp() correctly for its own cooldown check and budget count
 -- -- both taken *after* the per-organization advisory lock, exactly as
 -- R6-04's own comment explains is required. But the row it then inserts,
@@ -42,7 +49,7 @@
 -- session) -- editing an applied migration would reproduce the exact
 -- bookkeeping-drift risk R7-03 spent this round repairing, even though
 -- the file was never applied to production.
-create or replace function public.request_notification_email_change(
+create or replace function public.reserve_notification_email_change(
   p_organization_id bigint,
   p_email text
 )

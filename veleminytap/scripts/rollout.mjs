@@ -85,13 +85,21 @@
 //   happened, which solves problem 2: the value passed to finalize is
 //   never speculative.
 //
-//   -- BEFORE running finalize, APP_ENV must already be set in Vercel for
-//   this target's environment (Project Settings -> Environment Variables,
-//   see DEPLOYMENT.md § 3). This is a REQUIRED human prerequisite, not an
-//   optional nicety: /api/health returns 503 (ok:false) without it, and
-//   finalize's own health poll can never succeed against a 503 -- it isn't
-//   something this script can set or detect in advance, only wait on and
-//   eventually time out against, less helpfully than simply doing it first.
+//   -- APP_ENV must already be set in Vercel for this target's environment
+//   (Project Settings -> Environment Variables, see DEPLOYMENT.md § 3)
+//   BEFORE THE MERGE that triggers deployment -- not merely "before
+//   finalize". Found during a second independent review: Vercel
+//   environment-variable changes only take effect on the NEXT deployment
+//   they're set before, never on one that already started building --
+//   setting APP_ENV after merging leaves the deployment the merge itself
+//   triggered still running without it, and no later `finalize` run can
+//   ever pass health against that specific deployment; only a fresh
+//   redeploy picks the change up. This is a REQUIRED human prerequisite,
+//   not an optional nicety: /api/health returns 503 (ok:false) without it,
+//   and finalize's own health poll can never succeed against a 503 -- it
+//   isn't something this script can set or detect in advance, only wait on
+//   and eventually time out against, less helpfully than simply doing it
+//   first, before merging, exactly as DEPLOYMENT.md § 7 step 1 describes.
 //
 //   node scripts/rollout.mjs finalize \
 //     --target production \
@@ -132,13 +140,15 @@
 // silently continues past a failed check. Neither phase deploys or merges
 // anything itself.
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync, renameSync, mkdtempSync, rmSync } from "node:fs";
+import { readdirSync, readFileSync, mkdtempSync, mkdirSync, copyFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
-const migrationsDir = path.resolve(dirname, "../supabase/migrations");
+const supabaseProjectDir = path.resolve(dirname, "..");
+const migrationsDir = path.resolve(supabaseProjectDir, "supabase/migrations");
+const configTomlPath = path.resolve(supabaseProjectDir, "supabase/config.toml");
 const environmentsPath = path.resolve(dirname, "rollout-environments.json");
 const NPX = process.platform === "win32" ? "npx.cmd" : "npx";
 
@@ -679,6 +689,20 @@ export async function pollHealth(healthUrl, expectedSha, expectedEnvironment, ti
   let lastBody = null;
   while (Date.now() < deadline) {
     try {
+      // Found during a second independent review: this fetch carried no
+      // timeout/abort signal at all -- a single hanging response (a
+      // half-open connection, a misbehaving proxy, a server that accepts
+      // the connection but never replies) could block for the ENTIRE
+      // remaining timeoutSeconds on one request, defeating the retry loop
+      // this function exists to run: instead of many short, cheap
+      // retries, an operator would silently wait out the full deploy
+      // timeout on a single stuck call with no further attempts at all.
+      // Each request is now bounded, capped by whatever's actually left of
+      // the overall deadline (never longer than that, and never longer
+      // than 30s even early in a long deadline, so a hang is always
+      // followed by a real retry rather than consuming the whole budget).
+      const remainingMs = deadline - Date.now();
+      const perRequestTimeoutMs = Math.max(1000, Math.min(30_000, remainingMs));
       // Round-7 finding R7-04: fetch follows redirects by default -- a
       // configured healthUrl could be redirected (by a compromised or
       // merely misconfigured intermediary) to a different host entirely,
@@ -690,7 +714,11 @@ export async function pollHealth(healthUrl, expectedSha, expectedEnvironment, ti
       // (same-origin or not) is treated as a failure, the same as any
       // other unreachable/invalid response, rather than silently followed
       // wherever it points.
-      const res = await fetch(healthUrl, { cache: "no-store", redirect: "error" });
+      const res = await fetch(healthUrl, {
+        cache: "no-store",
+        redirect: "error",
+        signal: AbortSignal.timeout(perRequestTimeoutMs),
+      });
       const body = await res.json();
       lastBody = body;
       // Round-5 R5-05: also requires a matching environment, not just
@@ -748,31 +776,61 @@ export function runPrepare(args) {
   if (args.expand.length === 0) {
     console.log("No expand migrations to apply -- nothing for prepare to do.");
   } else {
-    const stagingDir = mkdtempSync(path.join(tmpdir(), "rollout-enforce-staging-"));
-    const moved = [];
+    // Found during a second independent review: the previous design moved
+    // the --enforce migration files OUT of the real supabase/migrations/
+    // directory (renameSync), pushed, then relied on a `finally` block to
+    // move them back. A hard interruption between those two points (a
+    // killed process, a dropped connection, a crashed machine -- `finally`
+    // does not run across any of those) left this repository's own working
+    // tree missing real, tracked migration files. That's a materially
+    // worse failure than "prepare needs to be re-run": a resumed run (or
+    // any other tooling reading supabase/migrations/ in the meantime)
+    // would see a genuinely different, smaller set of files on disk than
+    // the one every validation function in this script assumes exists,
+    // and recovering required an undocumented manual `git checkout --
+    // supabase/migrations/`.
+    //
+    // Fixed by never touching the real directory at all: a complete,
+    // throwaway temporary Supabase project directory is assembled instead
+    // (its own supabase/config.toml, its own supabase/migrations/
+    // containing every file EXCEPT the staged-out --enforce set), and
+    // `supabase db push` is pointed at that copy via --workdir. A crash at
+    // any point during this leaves the real repository completely
+    // untouched -- there is nothing to restore, and nothing that can be
+    // left half-moved. The only artifact a crash can leave behind is an
+    // orphaned OS temp directory, harmless and safely deletable by hand,
+    // never a missing tracked file.
+    const workDir = mkdtempSync(path.join(tmpdir(), "rollout-prepare-workspace-"));
     try {
-      for (const file of args.enforce) {
-        renameSync(path.join(migrationsDir, file), path.join(stagingDir, file));
-        moved.push(file);
+      mkdirSync(path.join(workDir, "supabase", "migrations"), { recursive: true });
+      copyFileSync(configTomlPath, path.join(workDir, "supabase", "config.toml"));
+      const enforceSet = new Set(args.enforce);
+      const included = [];
+      for (const file of listMigrationFiles()) {
+        if (enforceSet.has(file)) continue;
+        copyFileSync(path.join(migrationsDir, file), path.join(workDir, "supabase", "migrations", file));
+        included.push(file);
       }
-      console.log(`Staged ${moved.length} enforce migration(s) out of the way: ${moved.join(", ") || "(none)"}`);
+      console.log(
+        `Assembled a temporary migration workspace with ${included.length} migration(s), excluding ` +
+          `${args.enforce.length} staged --enforce migration(s): ${args.enforce.join(", ") || "(none)"}`,
+      );
 
-      // Round-5 R5-04: --include-all is required whenever an already-staged
-      // -out enforce migration's timestamp sorts earlier than one that gets
-      // applied while it's out of the way -- this is not hypothetical, it's
+      // Round-5 R5-04: --include-all is required whenever a staged-out
+      // enforce migration's timestamp sorts earlier than one that gets
+      // applied while it's excluded -- this is not hypothetical, it's
       // exactly what happened applying this project's own round-2/3 enforce
       // migrations in production (STATUS.md). Without it, `supabase db
       // push` refuses to apply an out-of-order migration at all.
-      const pushArgs = ["supabase", "db", "push", "--db-url", args.dbUrl, "--include-all"];
+      const pushArgs = ["supabase", "db", "push", "--workdir", workDir, "--db-url", args.dbUrl, "--include-all"];
       if (args.dryRun) pushArgs.push("--dry-run");
       else pushArgs.push("--yes");
       sh(NPX, pushArgs);
     } finally {
-      for (const file of moved) {
-        renameSync(path.join(stagingDir, file), path.join(migrationsDir, file));
-      }
-      rmSync(stagingDir, { recursive: true, force: true });
-      console.log(`Restored ${moved.length} staged migration file(s) to supabase/migrations/.`);
+      // Best-effort cleanup only -- unlike the previous design, this
+      // `finally` not running (a hard crash) has no correctness
+      // consequence at all, only a leftover temp directory.
+      rmSync(workDir, { recursive: true, force: true });
     }
   }
 

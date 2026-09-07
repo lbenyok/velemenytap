@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
+import { existsSync, readdirSync } from "node:fs";
+import path from "node:path";
 import http from "node:http";
 import {
   parseArgs,
@@ -14,6 +16,7 @@ import {
   pollHealth,
   getPendingMigrations,
   runFinalize,
+  runPrepare,
 } from "./rollout.mjs";
 
 vi.mock("node:child_process", () => ({ execFileSync: vi.fn() }));
@@ -1055,6 +1058,240 @@ describe("pollHealth surfaces /api/health's own diagnostic error text on a faile
     });
     await expect(pollHealth(urlFor(server), EXPECTED_SHA, "production", 1)).rejects.toThrow(/APP_ENV/);
   }, 10000);
+});
+
+/**
+ * Found during an independent adversarial review of the third round's own
+ * diff: runPrepare -- this round's rewrite of the highest-risk part of the
+ * rollout tooling (replacing crash-unsafe renameSync file-staging with a
+ * copy-based temporary workspace, see runPrepare's own header comment) --
+ * had ZERO automated coverage. `execFileSync` (the only I/O the mocked
+ * `supabase` CLI calls go through) is mocked exactly like the runFinalize
+ * tests above; the filesystem assembly itself (mkdtempSync/mkdirSync/
+ * copyFileSync) is real, unmocked I/O against the OS temp directory and
+ * this repository's own REAL supabase/migrations/ directory (read-only),
+ * so these tests exercise the actual copy logic, not a simulation of it.
+ * The mocked `db push` implementation snapshots the assembled workdir's
+ * contents itself, synchronously, before returning -- runPrepare deletes
+ * that directory in its own `finally` moments later, so this is the only
+ * point a test can observe what was actually assembled.
+ */
+describe("runPrepare assembles a real temporary workspace and never touches the real migrations directory", () => {
+  const REAL_MIGRATIONS_DIR = path.resolve(__dirname, "../supabase/migrations");
+  const EXPAND_FILES = [
+    "20260907150000_add_organization_billing.sql",
+    "20260907160000_fix_organization_billing_grandfathering_and_event_ordering.sql",
+  ];
+  const ENFORCE_FILES = ["20260906090000_fix_confirm_toctou_and_revoke_leaked_token_grant.sql"];
+
+  let capturedWorkdirMigrations: string[] | null;
+  let capturedWorkdirHasConfig: boolean | null;
+  let capturedPushArgs: string[] | null;
+  let migrationListCallCount: number;
+
+  beforeEach(() => {
+    vi.mocked(execFileSync).mockReset();
+    capturedWorkdirMigrations = null;
+    capturedWorkdirHasConfig = null;
+    capturedPushArgs = null;
+    migrationListCallCount = 0;
+
+    vi.mocked(execFileSync).mockImplementation((_cmd, args) => {
+      const argv = args as string[];
+      if (argv.includes("migration") && argv.includes("list")) {
+        migrationListCallCount += 1;
+        // Call 1 (before push): a fresh state -- both expand and enforce
+        // files are pending. Call 2 (the final verification, after the
+        // mocked push): only --enforce remains, simulating that the push
+        // genuinely applied the expand files for real.
+        const pendingVersions =
+          migrationListCallCount === 1
+            ? [...EXPAND_FILES, ...ENFORCE_FILES]
+            : [...ENFORCE_FILES];
+        return JSON.stringify({
+          migrations: pendingVersions.map((f) => ({ local: f.split("_")[0], remote: "" })),
+        });
+      }
+      if (argv.includes("push")) {
+        capturedPushArgs = argv;
+        const workdirIndex = argv.indexOf("--workdir");
+        if (workdirIndex !== -1) {
+          const workdir = argv[workdirIndex + 1];
+          capturedWorkdirHasConfig = existsSync(path.join(workdir, "supabase", "config.toml"));
+          capturedWorkdirMigrations = existsSync(path.join(workdir, "supabase", "migrations"))
+            ? readdirSync(path.join(workdir, "supabase", "migrations")).sort()
+            : null;
+        }
+        return "";
+      }
+      throw new Error(`Unexpected execFileSync call in this test: ${JSON.stringify(argv)}`);
+    });
+  });
+
+  function baseArgs(overrides: Record<string, unknown> = {}) {
+    return {
+      target: "production",
+      environment: "production",
+      allowedOrigin: "https://example.com",
+      supabaseProjectRef: "ref",
+      dbUrl: "postgresql://postgres:pw@db.ref.supabase.co:5432/postgres",
+      expand: EXPAND_FILES,
+      enforce: ENFORCE_FILES,
+      dryRun: false,
+      ...overrides,
+    };
+  }
+
+  it("assembles a workdir containing every --expand file and config.toml, excluding every --enforce file", () => {
+    runPrepare(baseArgs());
+    expect(capturedWorkdirHasConfig).toBe(true);
+    expect(capturedWorkdirMigrations).not.toBeNull();
+    for (const file of EXPAND_FILES) {
+      expect(capturedWorkdirMigrations).toContain(file);
+    }
+    for (const file of ENFORCE_FILES) {
+      expect(capturedWorkdirMigrations).not.toContain(file);
+    }
+  });
+
+  it("points supabase db push at the temporary workdir, not the real supabase/migrations directory", () => {
+    runPrepare(baseArgs());
+    expect(capturedPushArgs).not.toBeNull();
+    const workdirIndex = capturedPushArgs!.indexOf("--workdir");
+    expect(workdirIndex).toBeGreaterThanOrEqual(0);
+    const workdir = capturedPushArgs![workdirIndex + 1];
+    expect(path.resolve(workdir)).not.toBe(path.resolve(REAL_MIGRATIONS_DIR, ".."));
+    expect(capturedPushArgs).toContain("--include-all");
+    expect(capturedPushArgs).toContain("--yes");
+  });
+
+  it("never modifies the real supabase/migrations/ directory -- identical contents before and after", () => {
+    const before = readdirSync(REAL_MIGRATIONS_DIR).sort();
+    runPrepare(baseArgs());
+    const after = readdirSync(REAL_MIGRATIONS_DIR).sort();
+    expect(after).toEqual(before);
+    // Specifically confirms the --enforce file was never removed from (or
+    // added to) the real directory -- the exact property the old
+    // renameSync-based design could violate on a crash.
+    expect(after).toContain(ENFORCE_FILES[0]);
+  });
+
+  it("cleans up the temporary workdir after a successful run -- nothing left behind", () => {
+    runPrepare(baseArgs());
+    expect(capturedWorkdirMigrations).not.toBeNull();
+    const workdirIndex = capturedPushArgs!.indexOf("--workdir");
+    const workdir = capturedPushArgs![workdirIndex + 1];
+    expect(existsSync(workdir)).toBe(false);
+  });
+
+  it("uses --dry-run instead of --yes, and still assembles/cleans up the workspace, when args.dryRun is set", () => {
+    runPrepare(baseArgs({ dryRun: true }));
+    expect(capturedPushArgs).toContain("--dry-run");
+    expect(capturedPushArgs).not.toContain("--yes");
+    expect(capturedWorkdirMigrations).not.toBeNull();
+    const workdirIndex = capturedPushArgs!.indexOf("--workdir");
+    const workdir = capturedPushArgs![workdirIndex + 1];
+    expect(existsSync(workdir)).toBe(false);
+  });
+
+  it("skips the entire workspace-assembly step (never calls push, never touches the temp directory) when --expand is empty", () => {
+    vi.mocked(execFileSync).mockImplementation((_cmd, args) => {
+      const argv = args as string[];
+      if (argv.includes("migration") && argv.includes("list")) {
+        return JSON.stringify({ migrations: [] });
+      }
+      throw new Error(`Unexpected execFileSync call: ${JSON.stringify(argv)} -- push should never be reached`);
+    });
+    runPrepare(baseArgs({ expand: [], enforce: [] }));
+    expect(capturedPushArgs).toBeNull();
+  });
+
+  it("still cleans up the temporary workdir even when the push itself throws", () => {
+    vi.mocked(execFileSync).mockImplementation((_cmd, args) => {
+      const argv = args as string[];
+      if (argv.includes("migration") && argv.includes("list")) {
+        return JSON.stringify({
+          migrations: [...EXPAND_FILES, ...ENFORCE_FILES].map((f) => ({ local: f.split("_")[0], remote: "" })),
+        });
+      }
+      if (argv.includes("push")) {
+        const workdirIndex = argv.indexOf("--workdir");
+        capturedWorkdirMigrations = ["captured-before-throw"];
+        const workdir = argv[workdirIndex + 1];
+        // Record the workdir path for the post-throw existence check below,
+        // then simulate the push itself failing.
+        capturedPushArgs = argv;
+        expect(existsSync(workdir)).toBe(true);
+        const err = new Error("simulated db push failure") as Error & { status: number; stdout: string; stderr: string };
+        err.status = 1;
+        err.stdout = "";
+        err.stderr = "";
+        throw err;
+      }
+      throw new Error(`Unexpected execFileSync call: ${JSON.stringify(argv)}`);
+    });
+
+    expect(() => runPrepare(baseArgs())).toThrow();
+    const workdirIndex = capturedPushArgs!.indexOf("--workdir");
+    const workdir = capturedPushArgs![workdirIndex + 1];
+    expect(existsSync(workdir)).toBe(false);
+  });
+});
+
+/**
+ * Found during a second independent review: pollHealth's fetch() carried
+ * no timeout/abort signal at all -- a single hanging response (a
+ * half-open connection, a misbehaving proxy or load balancer, a server
+ * that accepts the connection but never replies) could block for the
+ * ENTIRE remaining deploy timeout on one request, defeating the retry
+ * loop this function exists to run at all: instead of many short, cheap
+ * retries against a genuinely still-deploying target, an operator would
+ * silently wait out the whole --deploy-timeout-seconds budget stuck on a
+ * single unresponsive request with zero further attempts. Fixed with
+ * AbortSignal.timeout(), capped by whatever's actually left of the
+ * overall deadline.
+ */
+describe("pollHealth aborts a hanging request instead of blocking the whole retry loop on it", () => {
+  const EXPECTED_SHA = "a".repeat(40);
+  let servers: http.Server[] = [];
+
+  afterEach(async () => {
+    await Promise.all(servers.map((s) => new Promise<void>((resolve) => s.close(() => resolve()))));
+    servers = [];
+  });
+
+  function startServer(handler: (req: http.IncomingMessage, res: http.ServerResponse) => void): Promise<http.Server> {
+    return new Promise((resolve) => {
+      const server = http.createServer(handler);
+      servers.push(server);
+      server.listen(0, "127.0.0.1", () => resolve(server));
+    });
+  }
+
+  function urlFor(server: http.Server) {
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    return `http://127.0.0.1:${port}/api/health`;
+  }
+
+  it(
+    "a request that hangs forever (accepts the connection, never responds) is aborted -- pollHealth fails within its own timeout budget, not indefinitely",
+    async () => {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars -- deliberately never calls res.write()/res.end() to simulate a half-open connection or a server that accepts but never replies
+      const server = await startServer((_req, _res) => {});
+      const start = Date.now();
+      await expect(pollHealth(urlFor(server), EXPECTED_SHA, "production", 2)).rejects.toThrow(/Timed out/);
+      const elapsedMs = Date.now() - start;
+      // If the abort signal never fired, this request would instead hang
+      // for however long the underlying socket/Node default allows --
+      // typically far longer than this, when it resolves at all. Bounding
+      // this loosely (well above the 2s pollHealth timeout plus one 5s
+      // retry-interval sleep) is enough to prove the hang was actually cut
+      // short, not that it happened to resolve quickly by chance.
+      expect(elapsedMs).toBeLessThan(15_000);
+    },
+    20000,
+  );
 });
 
 /**

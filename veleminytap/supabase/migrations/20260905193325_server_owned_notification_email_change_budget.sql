@@ -16,15 +16,15 @@
 --   found (and a separate migration, 20260906090000, corrects) in the
 --   round-3 version already in production. Fixed here by NEVER
 --   generating/returning the token from the authenticated-callable
---   function at all: request_notification_email_change() now only
---   validates, rate-limits, and reserves a pending request, returning
---   just a `log_id` (not a secret). The actual token is minted by a new,
---   separate function -- issue_notification_email_change_token() --
---   granted to `service_role` ONLY, callable exclusively from trusted
---   server code via the admin client, never from a browser or any
---   authenticated session. This mirrors this project's own established
---   pattern of using a service_role-only boundary for anything that must
---   never reach client code (see lib/supabase/admin.ts).
+--   function at all: the function now only validates, rate-limits, and
+--   reserves a pending request, returning just a `log_id` (not a secret).
+--   The actual token is minted by a new, separate function --
+--   issue_notification_email_change_token() -- granted to `service_role`
+--   ONLY, callable exclusively from trusted server code via the admin
+--   client, never from a browser or any authenticated session. This
+--   mirrors this project's own established pattern of using a
+--   service_role-only boundary for anything that must never reach client
+--   code (see lib/supabase/admin.ts).
 --
 --   R6-04 (MEDIUM): the original signature accepted p_cooldown_minutes/
 --   p_org_hourly_budget as plain caller-supplied arguments with defaults
@@ -37,7 +37,51 @@
 --   change_send() is also now service_role-only (previously callable by
 --   `authenticated` with a caller-supplied delivery result) -- clients can
 --   no longer mark their own reservation delivered/failed.
-create table private.notification_email_change_log (
+--
+-- Renamed request_notification_email_change() -> reserve_notification_
+-- email_change() in place, for a second independent review's HIGH finding
+-- discovered before this file ever reached production: production's own
+-- migration 16 already defines request_notification_email_change(bigint,
+-- text, int default 1440) (a 3-argument function, the third parameter
+-- defaulted). PostgREST resolves an RPC call to a specific pg_proc
+-- overload purely by matching the CALLABLE parameter shape -- a call
+-- naming exactly (p_organization_id, p_email), the only way this RPC has
+-- ever been invoked, old code and new code alike, matches BOTH a
+-- 2-argument function of this same name AND the 3-argument one (via its
+-- default) SIMULTANEOUSLY. The moment both are defined at once, EVERY
+-- caller gets PGRST203 ("Could not choose the best candidate function"),
+-- not just one side of the compatibility window -- confirmed exactly this
+-- way by 20260906100000's own header comment, which reproduced it directly
+-- against this file's original 2-argument request_notification_email_
+-- change(bigint, text). The DEPLOYMENT.md rollout plan applied this
+-- 2-argument function during `prepare` (before the legacy 3-argument one
+-- is ever touched) and only dropped the legacy one during `finalize`,
+-- after code deploy and drain -- meaning the documented procedure itself
+-- guaranteed an ambiguous-overload outage window between those two steps,
+-- for every caller, old and new code alike, not a bounded acceptable risk.
+--
+-- There is no version of "keep both under the same name, even temporarily"
+-- that is safe once one has a default overlapping the other's arity --
+-- the only genuinely safe fix is a name that can never collide with
+-- anything, at any point in the rollout, which is what this rename gives:
+-- reserve_notification_email_change() is a distinct identifier from the
+-- legacy request_notification_email_change() from the moment this
+-- migration first creates it, so the two can coexist for the entire
+-- expand/deploy/enforce window with zero ambiguity -- the legacy
+-- 3-argument function is untouched here and stays exactly what
+-- 20260906090000/20260906100000 (unchanged) revoke and drop once the new,
+-- distinctly-named code path is live and old code is drained. See
+-- DECISIONS.md for the full incident and DEPLOYMENT.md's rollout-ordering
+-- section for the corrected timeline.
+-- `if not exists`/`if not exists` on the table and index below (harmless,
+-- behavior-identical for a genuine first-ever application) so this file
+-- stays safely re-runnable against an environment that already has these
+-- objects from an earlier draft's apply -- specifically the isolated test
+-- project, whose bookkeeping was repaired (migration repair --status
+-- reverted) to reapply this file's own corrected function rename without
+-- re-running the (unchanged) table/index creation it would otherwise
+-- collide with.
+create table if not exists private.notification_email_change_log (
   id bigint generated always as identity primary key,
   organization_id bigint not null references public.organizations (id) on delete cascade,
   status text not null default 'reserved' check (status in ('reserved', 'delivered', 'failed')),
@@ -46,14 +90,14 @@ create table private.notification_email_change_log (
   failed_at timestamptz
 );
 
-create index notification_email_change_log_org_reserved_at_idx
+create index if not exists notification_email_change_log_org_reserved_at_idx
   on private.notification_email_change_log (organization_id, reserved_at);
 
 -- Not exposed to PostgREST (private schema) and no RLS policies for
 -- anon/authenticated -- same pattern as private.alert_email_log. Selected
 -- and updated only by the two service_role-only functions below (INVOKER,
 -- so they need the explicit grants that follow), never by
--- request_notification_email_change() -- that one is SECURITY DEFINER and
+-- reserve_notification_email_change() -- that one is SECURITY DEFINER and
 -- reaches this table as its owning role regardless of service_role's own
 -- grants, the same reasoning documented for private.alert_email_log.
 alter table private.notification_email_change_log enable row level security;
@@ -73,7 +117,7 @@ alter table private.notification_email_change_log enable row level security;
 -- directly (the explicit grants below); an authenticated org member has no
 -- path to it at all, so this is not a second, indirect way to defeat the
 -- rate limit the direct-RPC-parameter approach was removed for.
-create table private.notification_email_change_config (
+create table if not exists private.notification_email_change_config (
   organization_id bigint primary key references public.organizations (id) on delete cascade,
   cooldown_minutes int not null default 5,
   org_hourly_budget int not null default 5
@@ -84,13 +128,26 @@ grant select, update on private.notification_email_change_log to service_role;
 grant select, insert, update, delete on private.notification_email_change_config to service_role;
 
 drop function if exists public.request_notification_email_change(bigint, text, int, int, int);
+drop function if exists public.reserve_notification_email_change(bigint, text, int, int, int);
+-- Only relevant when re-applying this migration by hand against an
+-- environment that already ran an earlier draft of this same file under
+-- the OLD name (request_notification_email_change, before the rename --
+-- see this file's own header comment for the PGRST203 incident that
+-- caused it) -- drops that stale 2-argument object outright so it can
+-- never coexist with production's real 3-argument function of the same
+-- name. No-op on a true first-ever application, which never creates this
+-- name at all.
+drop function if exists public.request_notification_email_change(bigint, text);
 
 -- SECURITY DEFINER, same reasoning as create_organization_atomic: must run
 -- as the calling member's own session (auth.uid() + membership check), and
 -- there is no broader UPDATE policy that would let a member set these
 -- columns themselves. Returns ONLY a log_id -- see R6-01 above for why it
--- must never return the token itself.
-create or replace function public.request_notification_email_change(
+-- must never return the token itself. Named distinctly from production's
+-- request_notification_email_change(bigint, text, int) specifically so the
+-- two can never collide as ambiguous PostgREST overloads -- see this
+-- file's own header comment.
+create or replace function public.reserve_notification_email_change(
   p_organization_id bigint,
   p_email text
 )
@@ -191,8 +248,8 @@ begin
 end;
 $$;
 
-revoke execute on function public.request_notification_email_change(bigint, text) from public, anon, service_role;
-grant execute on function public.request_notification_email_change(bigint, text) to authenticated;
+revoke execute on function public.reserve_notification_email_change(bigint, text) from public, anon, service_role;
+grant execute on function public.reserve_notification_email_change(bigint, text) to authenticated;
 
 -- R6-01: the only function that ever sees the plaintext token. SECURITY
 -- INVOKER, not DEFINER -- its only caller is the admin client
@@ -244,7 +301,7 @@ grant execute on function public.issue_notification_email_change_token(bigint, i
 -- supplied p_delivered result and an auth.uid()+membership ownership check
 -- standing in for authorization. Now service_role-only, called
 -- exclusively from trusted server code immediately after that same
--- code's own request_notification_email_change()/
+-- code's own reserve_notification_email_change()/
 -- issue_notification_email_change_token() calls in the same request --
 -- there is no longer an arbitrary caller whose identity needs checking,
 -- so the ownership check is removed along with the authenticated grant,

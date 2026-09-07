@@ -16,14 +16,16 @@ import { connectToTestDb } from "./support/db-connection";
  * address -- a real spam-relay risk once combined with round-2's
  * budget-limited (but still real) email sending capability.
  *
- * Fixed with a genuine confirmation flow: request_notification_email_change()
+ * Fixed with a genuine confirmation flow: reserve_notification_email_change()
  * validates and rate-limits, then reserves a pending address; the actual
  * confirmation token is minted separately (round-6 R6-01, see below) and
  * emailed as a link; confirm_notification_email_change() promotes the
  * pending address to the active notification_email only when called with a
  * token whose hash matches a non-expired pending request.
  *
- * Round-6 finding R6-01 (HIGH): request_notification_email_change() used
+ * Round-6 finding R6-01 (HIGH): this RPC (renamed reserve_notification_
+ * email_change during a second independent review -- see supabase/
+ * migrations/20260905193325's header comment) used
  * to return the raw token directly to its `authenticated` caller -- so any
  * org member could call the RPC directly (bypassing the settings Server
  * Action and Resend entirely) and read a live token out of the response,
@@ -31,7 +33,7 @@ import { connectToTestDb } from "./support/db-connection";
  * inbox. Fixed by splitting the token out into a separate function,
  * issue_notification_email_change_token(), granted to `service_role`
  * ONLY -- reachable exclusively from trusted server code via the admin
- * client. request_notification_email_change() now returns only a log_id.
+ * client. reserve_notification_email_change() now returns only a log_id.
  *
  * Round-6 finding R6-04 (MEDIUM): the cooldown/budget used to be plain
  * caller-suppliable parameters (p_cooldown_minutes/p_org_hourly_budget)
@@ -88,7 +90,7 @@ async function requestAndIssueToken(
   email: string,
   expiresInMinutes?: number,
 ) {
-  const { data: logId, error: requestError } = await client.rpc("request_notification_email_change", {
+  const { data: logId, error: requestError } = await client.rpc("reserve_notification_email_change", {
     p_organization_id: orgId,
     p_email: email,
   });
@@ -104,7 +106,7 @@ async function requestAndIssueToken(
 
 test("R3-03: requesting a new address sets it as pending, not active", async () => {
   const client = await userClient(member.email, member.password);
-  const { data: logId, error } = await client.rpc("request_notification_email_change", {
+  const { data: logId, error } = await client.rpc("reserve_notification_email_change", {
     p_organization_id: member.orgId,
     p_email: "candidate@example.com",
   });
@@ -121,13 +123,13 @@ test("R3-03: requesting a new address sets it as pending, not active", async () 
   expect(org?.notification_email_pending).toBe("candidate@example.com");
 });
 
-test("R6-01: request_notification_email_change does not return the token -- it must be issued separately", async () => {
+test("R6-01: reserve_notification_email_change does not return the token -- it must be issued separately", async () => {
   // This is the direct regression test for the vulnerability: the raw
   // response from the authenticated-callable RPC must never contain
   // anything that looks like the 64-hex-character token
   // issue_notification_email_change_token() would otherwise mint.
   const client = await userClient(member.email, member.password);
-  const { data, error } = await client.rpc("request_notification_email_change", {
+  const { data, error } = await client.rpc("reserve_notification_email_change", {
     p_organization_id: member.orgId,
     p_email: "candidate@example.com",
   });
@@ -138,7 +140,7 @@ test("R6-01: request_notification_email_change does not return the token -- it m
 
 test("R6-01: an authenticated client cannot call issue_notification_email_change_token directly (service_role only)", async () => {
   const client = await userClient(member.email, member.password);
-  const { data: logId } = await client.rpc("request_notification_email_change", {
+  const { data: logId } = await client.rpc("reserve_notification_email_change", {
     p_organization_id: member.orgId,
     p_email: "candidate@example.com",
   });
@@ -160,7 +162,7 @@ test("R6-04: an authenticated client cannot override the cooldown/budget -- the 
   // error or an unrelated failure would pass an "any error" assertion just
   // as easily without actually proving there's no overload left to tune.
   const client = await userClient(member.email, member.password);
-  const { data, error } = await client.rpc("request_notification_email_change", {
+  const { data, error } = await client.rpc("reserve_notification_email_change", {
     p_organization_id: member.orgId,
     p_email: "candidate@example.com",
     p_cooldown_minutes: 0,
@@ -183,12 +185,25 @@ test("R6-01: the round-3 3-argument function no longer exists at all -- it was d
   // the SPECIFIC class, not just "some error", per round-7 R7-03's general
   // principle that an unconstrained error assertion proves nothing about
   // which failure actually occurred.
+  // Deliberately still calls the OLD name (request_notification_email_change,
+  // 3 arguments) here, NOT the current reserve_notification_email_change --
+  // this test exists specifically to prove the LEGACY round-3 function is
+  // gone. Found during an independent adversarial review: an earlier draft
+  // of this file had a blanket rename sweep that renamed this call site
+  // too, which made the test pass vacuously -- reserve_notification_email_
+  // change was NEVER a 3-argument function, so calling IT with 3 args
+  // always returns PGRST202 regardless of whether the legacy function had
+  // actually been dropped, silently defeating the entire point of this
+  // test. `as never` bypasses the generated Database type, which no longer
+  // lists this function at all (it's genuinely gone) -- that absence is
+  // exactly what this test is proving, so a type error here would be
+  // fighting the test's own purpose, not a real bug.
   const client = await userClient(member.email, member.password);
-  const { data, error } = await client.rpc("request_notification_email_change", {
+  const { data, error } = await client.rpc("request_notification_email_change" as never, {
     p_organization_id: member.orgId,
     p_email: "candidate@example.com",
     p_expires_in_minutes: 1440,
-  });
+  } as never);
   expect(data).toBeNull();
   expect(error?.code).toBe("PGRST202");
 });
@@ -277,7 +292,7 @@ test("R3-03: requesting a second address overwrites the first pending request; t
  * Round-6 finding R6-05 (MEDIUM): confirm_notification_email_change() used
  * to SELECT the organization by token hash, then separately UPDATE it by
  * id alone, with no re-check of the token -- a TOCTOU race. A concurrent
- * request_notification_email_change() call for the same org, landing
+ * reserve_notification_email_change() call for the same org, landing
  * between those two statements, replaces the pending address/token before
  * the UPDATE runs, which then blindly promotes the NEW pending address
  * using the OLD token's authority. Fixed by collapsing both statements
@@ -321,7 +336,7 @@ test("R6-05: a token cannot be used to confirm a DIFFERENT pending address reque
 
 test("R3-03: clearing the notification email needs no confirmation and works even with a pending request outstanding", async () => {
   const client = await userClient(member.email, member.password);
-  await client.rpc("request_notification_email_change", {
+  await client.rpc("reserve_notification_email_change", {
     p_organization_id: member.orgId,
     p_email: "candidate@example.com",
   });
@@ -344,7 +359,7 @@ test("R3-03: a member of a DIFFERENT organization cannot request a change for th
   const other = await seedOrgWithMember("notif-email-verify-other");
   try {
     const otherClient = await userClient(other.email, other.password);
-    const { error } = await otherClient.rpc("request_notification_email_change", {
+    const { error } = await otherClient.rpc("reserve_notification_email_change", {
       p_organization_id: member.orgId,
       p_email: "attacker@example.com",
     });
@@ -411,7 +426,7 @@ test("R3-03: the Settings page shows a pending-confirmation notice, and visiting
 });
 
 /**
- * Round-5 finding R5-12: request_notification_email_change() had no
+ * Round-5 finding R5-12: reserve_notification_email_change() had no
  * cooldown or budget at all -- an authenticated member could trigger
  * unbounded real Resend sends by repeatedly submitting candidate
  * addresses. Fixed with the same dual-control pattern already proven for
@@ -423,13 +438,13 @@ test("R3-03: the Settings page shows a pending-confirmation notice, and visiting
 test("R5-12: a second request within the cooldown window is rejected", async () => {
   test.skip(!dbClient, "No direct Postgres connection available in this environment.");
   const client = await userClient(member.email, member.password);
-  const first = await client.rpc("request_notification_email_change", {
+  const first = await client.rpc("reserve_notification_email_change", {
     p_organization_id: member.orgId,
     p_email: "first@example.com",
   });
   expect(first.error).toBeNull();
 
-  const second = await client.rpc("request_notification_email_change", {
+  const second = await client.rpc("reserve_notification_email_change", {
     p_organization_id: member.orgId,
     p_email: "second@example.com",
   });
@@ -448,7 +463,7 @@ test("R5-12: an organization-wide hourly budget caps total requests, proven unde
   const client = await userClient(member.email, member.password);
   const results = await Promise.all(
     Array.from({ length: 5 }, (_, i) =>
-      client.rpc("request_notification_email_change", {
+      client.rpc("reserve_notification_email_change", {
         p_organization_id: member.orgId,
         p_email: `candidate-${i}@example.com`,
       }),
@@ -465,14 +480,14 @@ test("R5-12: an organization-wide hourly budget caps total requests, proven unde
  * Found during this round's own independent adversarial self-review, not
  * one of R7-01 through R7-08 as originally listed -- but the identical bug
  * class as R7-05 (claim_negative_alert_send), in the very function R6-04
- * had already partially fixed for it. request_notification_email_change()
+ * had already partially fixed for it. reserve_notification_email_change()
  * captures clock_timestamp() correctly for its cooldown/budget CHECKS, but
  * the row it inserts right after used to rely on reserved_at's column
  * DEFAULT (now(), frozen at this transaction's own start -- before it
  * waited on the advisory lock), not the same clock_timestamp() value.
  *
  * This test forces the exact skew that bug depended on: a second raw
- * connection holds the same advisory lock request_notification_email_change
+ * connection holds the same advisory lock reserve_notification_email_change
  * itself acquires (hashtext('notification_email_change:' || orgId)) for a
  * fixed, known duration, so the RPC call's transaction is genuinely queued
  * behind it -- not a timing assumption about how fast the RPC happens to
@@ -510,7 +525,7 @@ test("R7-05-class: reserved_at reflects when the reservation actually happened, 
     const client = await userClient(member.email, member.password);
     let rpcStillBlocked = true;
     const rpcPromise = client
-      .rpc("request_notification_email_change", { p_organization_id: member.orgId, p_email: "skew-check@example.com" })
+      .rpc("reserve_notification_email_change", { p_organization_id: member.orgId, p_email: "skew-check@example.com" })
       .then((r) => {
         rpcStillBlocked = false;
         return r;
@@ -557,7 +572,7 @@ test("R5-12: a failed send does not permanently consume the budget it never actu
   await setRateLimitConfig(member.orgId, 0, BUDGET);
 
   const client = await userClient(member.email, member.password);
-  const attempt1 = await client.rpc("request_notification_email_change", {
+  const attempt1 = await client.rpc("reserve_notification_email_change", {
     p_organization_id: member.orgId,
     p_email: "attempt1@example.com",
   });
@@ -577,7 +592,7 @@ test("R5-12: a failed send does not permanently consume the budget it never actu
 
   // A second attempt, same tiny budget -- must succeed, because the first
   // one's failure freed the budget slot it reserved but never delivered.
-  const attempt2 = await client.rpc("request_notification_email_change", {
+  const attempt2 = await client.rpc("reserve_notification_email_change", {
     p_organization_id: member.orgId,
     p_email: "attempt2@example.com",
   });
@@ -587,7 +602,7 @@ test("R5-12: a failed send does not permanently consume the budget it never actu
 /**
  * Round-7 finding R7-06 (LOW): settings-actions.ts used to return
  * immediately if issue_notification_email_change_token failed, without
- * ever finalizing the reservation request_notification_email_change had
+ * ever finalizing the reservation reserve_notification_email_change had
  * already created -- stranding it as 'reserved' (consuming its budget
  * slot until it ages out of the trailing-hour window on its own) for a
  * token that was never even minted, let alone sent. Fixed with a
@@ -616,7 +631,7 @@ test("R7-06: issue_notification_email_change_token fails (VT205) for an already-
   // token for it at all -- e.g. a crash between reserving and issuing, in
   // the real flow. Attempting to issue a token for it now must fail with
   // VT205, proving that check is real, not merely documented.
-  const reservation1 = await client.rpc("request_notification_email_change", {
+  const reservation1 = await client.rpc("reserve_notification_email_change", {
     p_organization_id: member.orgId,
     p_email: "attempt1@example.com",
   });
@@ -639,7 +654,7 @@ test("R7-06: issue_notification_email_change_token fails (VT205) for an already-
   // call the test above already proved frees budget), and capacity must
   // still be available for a THIRD, later attempt despite two prior
   // reservations against a budget of only 2.
-  const reservation2 = await client.rpc("request_notification_email_change", {
+  const reservation2 = await client.rpc("reserve_notification_email_change", {
     p_organization_id: member.orgId,
     p_email: "attempt2@example.com",
   });
@@ -651,7 +666,7 @@ test("R7-06: issue_notification_email_change_token fails (VT205) for an already-
   });
   expect(finalizeIssuanceFailure.error).toBeNull();
 
-  const reservation3 = await client.rpc("request_notification_email_change", {
+  const reservation3 = await client.rpc("reserve_notification_email_change", {
     p_organization_id: member.orgId,
     p_email: "attempt3@example.com",
   });
@@ -669,7 +684,7 @@ test("R7-06: issue_notification_email_change_token fails (VT205) for an already-
  */
 test("R6-04: an authenticated client cannot call finalize_notification_email_change_send directly (service_role only)", async () => {
   const client = await userClient(member.email, member.password);
-  const { data: logId } = await client.rpc("request_notification_email_change", {
+  const { data: logId } = await client.rpc("reserve_notification_email_change", {
     p_organization_id: member.orgId,
     p_email: "candidate@example.com",
   });
