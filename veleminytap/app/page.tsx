@@ -6,9 +6,9 @@ import { RatingDemo } from "@/features/marketing/rating-demo";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = {
-  title: "VéleményTap — NFC visszajelzés, ami sosem rejt el egy rossz értékelést",
+  title: "VéleményTap — minden csillag számít",
   description:
-    "Helyezz ki egy NFC-kártyát a pultra. A vásárlók öt másodperc alatt értékelik a látogatást, és ugyanazt a Google-értékelési linket kapják — válogatás nélkül.",
+    "NFC-kártyát teszel ki a pultra. A vásárlóid pár másodperc alatt értékelnek, és utána mindenki ugyanazt a Google-értékelési linket kapja, a csillagok számától függetlenül.",
 };
 
 const fraunces = Fraunces({
@@ -20,7 +20,7 @@ const fraunces = Fraunces({
 
 const VERTICALS = [
   "Kávézók és éttermek",
-  "Szalonok és wellness",
+  "Szalonok és wellness-stúdiók",
   "Rendelők és klinikák",
   "Edzőtermek és stúdiók",
   "Üzletek",
@@ -31,17 +31,17 @@ const STEPS = [
   {
     n: "01",
     title: "Koppintás",
-    body: "A vásárló a telefonjával megérinti a kártyát. Nincs alkalmazás, nincs bejelentkezés, nem kell URL-t beírni.",
+    body: "A vásárló odaérinti a telefonját a kártyához. Nincs mit letölteni, nincs bejelentkezés, nem kell semmit beírnia.",
   },
   {
     n: "02",
     title: "Értékelés",
-    body: "1-től 5 csillagig értékel, és írhat hozzá megjegyzést is, ha szeretne. Mindössze öt másodperc.",
+    body: "Egytől öt csillagig értékel, és ha akar, írhat is pár szót hozzá. Ennyi az egész, öt másodperc alatt.",
   },
   {
     n: "03",
     title: "Te mindent látsz",
-    body: "Azonnal megjelenik az irányítópultodon. Alacsony értékelésnél e-mail is érkezik a csapatodnak, még ugyanabban a percben.",
+    body: "Azonnal megjelenik az irányítópultodon. Alacsony értékelésnél e-mailes értesítést is beállíthatsz, hogy időben léphess.",
   },
 ];
 
@@ -49,17 +49,17 @@ const DASHBOARD_CARDS = [
   {
     icon: Inbox,
     title: "Vélemény-postaláda",
-    body: "Minden értékelés egy helyen, szűrhető helyszín, kártya vagy státusz szerint. Semmi sem vész el egy fiókban, amit elfelejtesz megnézni.",
+    body: "Az összes értékelés egy helyen van, szűrhetsz helyszín, kártya vagy státusz szerint. Semmi nem vész el egy olyan postafiókban, amit elfelejtesz megnézni.",
   },
   {
     icon: Mail,
-    title: "Azonnali jelzés a rosszakról",
-    body: "Egy 1 vagy 2 csillagos értékelés azonnal e-mailt küld a csapatodnak — mielőtt nyilvános véleménnyé válna.",
+    title: "Értesítés a rossz értékelésekről",
+    body: "Az egy- és kétcsillagos véleményekhez e-mailes értesítést is beállíthatsz, hogy időben reagálhass.",
   },
   {
     icon: BarChart3,
     title: "Trendek időben",
-    body: "Átlagos értékelés, mennyiség, és hogy melyik helyszín vagy kártya teljesít gyengén — nem csak a mai szám.",
+    body: "Látod az átlagot, a mennyiséget, és hogy melyik helyszín vagy kártya marad el a többitől. Nem csak a mai napot, a trendet is.",
   },
 ];
 
@@ -100,7 +100,7 @@ function SiteNav() {
         Vélemény
         <span
           className="bg-clip-text text-transparent"
-          style={{ backgroundImage: "var(--pf-accent-gradient)" }}
+          style={{ backgroundImage: "var(--pf-accent-gradient-text)" }}
         >
           Tap
         </span>
@@ -142,27 +142,26 @@ function Hero() {
     <section className="mx-auto max-w-6xl px-5 pt-8 pb-20 sm:px-8 sm:pt-14 sm:pb-28">
       <div className="grid items-center gap-12 lg:grid-cols-[1.05fr_0.95fr] lg:gap-10">
         <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-3 motion-safe:duration-700">
-          <Eyebrow>NFC visszajelzés üzleteknek</Eyebrow>
+          <Eyebrow>NFC-kártya a pultodra</Eyebrow>
           <h1
             className="mt-4 text-4xl leading-[1.08] font-medium text-balance sm:text-5xl lg:text-[3.4rem]"
             style={{ fontFamily: "var(--font-display)" }}
           >
             Koppints a kártyára.
             <br />
-            Halld az{" "}
             <span
               className="bg-clip-text text-transparent italic"
-              style={{ backgroundImage: "var(--pf-accent-gradient)" }}
+              style={{ backgroundImage: "var(--pf-accent-gradient-text)" }}
             >
-              igazat.
+              Válogatás nélkül.
             </span>
           </h1>
           <p className="mt-5 max-w-lg text-base leading-relaxed text-[var(--pf-ink-muted)] sm:text-lg">
-            Egy NFC-kártya a pultnál öt másodperc alatt valódi értékeléssé
-            alakít minden látogatást. Minden vásárló ugyanazt a
-            Google-értékelési linket kapja — akár 1, akár 5 csillagot adott.
-            A vélemények szelektálása sérti a Google szabályzatát. Mi nem
-            válogatunk.
+            Kiteszed a kártyát a pultra. A vásárlód hozzáérinti a
+            telefonját, és pár másodperc alatt kész az értékelés. Utána
+            mindenki ugyanahhoz a Google-értékelési linkhez jut, egy
+            csillagtól ötig — válogatásra nincs mód, ezt a Google
+            szabályzata sem engedné.
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-4">
             <Link
@@ -204,7 +203,7 @@ function ProofRow() {
           className="mt-3 max-w-xl text-2xl font-medium sm:text-3xl"
           style={{ fontFamily: "var(--font-display)" }}
         >
-          Minden értékelés ugyanoda vezet.
+          Egy csillagtól ötig, mindenki ugyanoda jut.
         </h2>
         <div className="mt-8 grid grid-cols-2 gap-3 sm:grid-cols-5 sm:gap-4">
           {[1, 2, 3, 4, 5].map((n) => (
@@ -280,7 +279,7 @@ function BuiltFor() {
           className="mt-3 max-w-xl text-2xl font-medium sm:text-3xl"
           style={{ fontFamily: "var(--font-display)" }}
         >
-          Minden helyre, ahova betérnek az emberek.
+          Bárhol, ahol ügyfelek betérnek.
         </h2>
         <div className="mt-7 flex flex-wrap gap-2.5">
           {VERTICALS.map((v) => (
@@ -305,7 +304,7 @@ function DashboardPreview() {
         className="mt-3 max-w-xl text-2xl font-medium sm:text-3xl"
         style={{ fontFamily: "var(--font-display)" }}
       >
-        Egy felület minden koppintáshoz.
+        Minden visszajelzés egyetlen irányítópulton.
       </h2>
       <div className="mt-10 grid gap-5 sm:grid-cols-3">
         {DASHBOARD_CARDS.map(({ icon: Icon, title, body }) => (
@@ -331,18 +330,27 @@ function FinalCta() {
   return (
     <section
       className="text-center"
-      style={{ backgroundImage: "var(--pf-accent-gradient)" }}
+      // Round-5 R5-08: was --pf-accent-gradient (blue-to-cyan) -- computed
+      // contrast for the white text sitting on top of it ranged as low as
+      // ~1.5:1 near the cyan end, failing WCAG AA badly. This section is a
+      // background FILL carrying text, not decorative gradient text, so
+      // it needs the same accessible blue-to-teal formula, not just a
+      // lighter touch -- see globals.css's --pf-accent-gradient-text.
+      style={{ backgroundImage: "var(--pf-accent-gradient-text)" }}
     >
       <div className="mx-auto max-w-6xl px-5 py-16 sm:px-8 sm:py-20">
         <Nfc className="mx-auto size-8 text-white" strokeWidth={1.5} />
+        <p className="mt-4 font-mono text-xs font-medium tracking-[0.14em] text-white uppercase">
+          Minden csillag számít
+        </p>
         <h2
-          className="mt-5 text-3xl font-medium text-white sm:text-4xl"
+          className="mt-3 text-3xl font-medium text-white sm:text-4xl"
           style={{ fontFamily: "var(--font-display)" }}
         >
           Tedd ki az első kártyát a pultra.
         </h2>
-        <p className="mx-auto mt-3 max-w-md text-sm text-white/80 sm:text-base">
-          Ingyenesen indulhatsz. Nincs szükség bankkártyára, nincs szerződés.
+        <p className="mx-auto mt-3 max-w-md text-sm text-white/90 sm:text-base">
+          Ingyen kipróbálhatod, bankkártya és aláírás nélkül.
         </p>
         <Link
           href="/signup"

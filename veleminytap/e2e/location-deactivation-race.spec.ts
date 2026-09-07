@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
-import { Client } from "pg";
 import { randomUUID } from "node:crypto";
+import { connectToTestDb } from "./support/db-connection";
 import {
   seedOrgWithMember,
   cleanupOrgWithMember,
@@ -44,23 +44,12 @@ import {
  * that needs the raw protocol, since holding a transaction open across
  * controlled interleaving isn't expressible any other way). Skips
  * gracefully, not a hard failure, if that connection can't be established
- * within a few seconds -- this project's own experience this session is
- * that direct Postgres ports (5432/6543) can be blocked by a restrictive
- * network even when the app's normal HTTPS traffic works fine.
+ * LOCALLY within a few seconds -- this project's own experience this
+ * session is that direct Postgres ports (5432/6543) can be blocked by a
+ * restrictive network even when the app's normal HTTPS traffic works
+ * fine. In CI, round-4 finding R4-04 makes this mandatory instead --
+ * see e2e/support/db-connection.ts.
  */
-
-const DB_URL = process.env.SUPABASE_DB_URL;
-
-async function tryConnect(): Promise<Client | null> {
-  if (!DB_URL) return null;
-  const client = new Client({ connectionString: DB_URL, connectionTimeoutMillis: 5000 });
-  try {
-    await client.connect();
-    return client;
-  } catch {
-    return null;
-  }
-}
 
 let member: SeededOrgMember;
 let locationId: number;
@@ -90,8 +79,8 @@ test.afterEach(async () => {
 });
 
 test("R2-05: a deactivation holding its lock blocks a concurrent submission, which then correctly sees the location as inactive", async () => {
-  const clientB = await tryConnect(); // the manager's deactivation
-  const clientA = await tryConnect(); // the customer's submission
+  const clientB = await connectToTestDb(); // the manager's deactivation
+  const clientA = await connectToTestDb(); // the customer's submission
   test.skip(!clientB || !clientA, "No direct Postgres connection available in this environment.");
   if (!clientB || !clientA) return;
 
@@ -137,8 +126,8 @@ test("R2-05: a deactivation holding its lock blocks a concurrent submission, whi
 });
 
 test("R2-05: a submission holding its lock blocks a concurrent deactivation, serializing the two instead of letting the deactivation race ahead unordered", async () => {
-  const clientA = await tryConnect(); // the customer's submission
-  const clientB = await tryConnect(); // the manager's deactivation
+  const clientA = await connectToTestDb(); // the customer's submission
+  const clientB = await connectToTestDb(); // the manager's deactivation
   test.skip(!clientA || !clientB, "No direct Postgres connection available in this environment.");
   if (!clientA || !clientB) return;
 

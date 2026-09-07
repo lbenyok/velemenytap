@@ -23,6 +23,9 @@ const PUBLIC_PATHS = [
   // signature check (app/api/webhooks/stripe/route.ts) is the real
   // security boundary here, not this allowlist.
   "/api/webhooks/stripe",
+  // Round-4 R4-01: polled by CI's post-deploy verification job and by the
+  // rollout script (scripts/rollout.mjs), neither of which has a session.
+  "/api/health",
 ];
 
 function isPublicPath(pathname: string): boolean {

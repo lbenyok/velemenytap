@@ -1,74 +1,79 @@
 # Test Plan
 
-## Automated
+Round-4 finding R4-08: this file previously hardcoded test counts (82 unit / 35 e2e) that had already drifted from reality by two rounds' worth of changes. Exact counts are not repeated here going forward — run `npm run test` / `npm run test:e2e` (or `npx playwright test --list`) for the current numbers rather than trusting a number in prose that nothing keeps in sync automatically.
 
-`npm run test` (Vitest, 110 tests / 7 files). Covers pure logic only — nothing that needs a database, a browser, or Next.js's server runtime:
+## Automated: Vitest (`npm run test`)
 
-- **`features/analytics/aggregate.test.ts`** — `ratingDistribution`, `dailySeries`, `resolvedStats`, `byLocation`, `byCard`. Zero-row/zero-division edge cases, UTC day bucketing, unknown-id fallbacks.
-- **`features/feedback/schema.test.ts`** — the public submission zod schema (`features/feedback/schema.ts`, extracted from `actions.ts` specifically so it's importable without pulling in `server-only`/`next/server`). Includes the **review-gating regression test at the schema level**: `it.each([1, 2, 3, 4, 5])("accepts rating %i", ...)` asserts the validator itself has no rating-dependent branching — every rating is equally valid input, which is the ground floor the CTA-visibility guarantee below is built on.
-- **`lib/sentry-redact.test.ts`** (22 tests) — the `beforeSend` hook that strips `feedback_text`/`internal_note` from every Sentry event before it's sent (`SECURITY.md` § Error handling / logging). Canary-based: asserts against the fully serialized event, not just specific keys — request-body dropping, extra/context/breadcrumb key-based redaction, JSON-stringified content, repeated (non-circular) references, circular references, and pathologically deep structures.
-- **`lib/safe-redirect.test.ts`** (29 tests) — the shared open-redirect guard (`SECURITY.md` § Redirect safety): valid internal paths, absolute external URLs, protocol-relative URLs, the backslash bypass and its variants, control characters, encoded variants, and malformed input.
-- **`features/analytics/fetch-all-rows.test.ts`** (7 tests) — the pagination helper that fixed the analytics row-cap truncation (`SECURITY.md`, `DECISIONS.md`): single-page, multi-page with parallel remaining-page fetches, the `maxRows` ceiling, error handling, and a short-first-page edge case.
-- **`features/billing/status.test.ts`** (13 tests) — `isBillingActive()`, the paywall's entire access decision: no billing row, an active Stripe subscription, a not-yet-expired no-card trial, an expired one, a genuine Stripe-side trial (subscription exists, status `trialing`), and every inactive Stripe status (`past_due`/`canceled`/`incomplete`/`incomplete_expired`/`unpaid`/`paused`).
-- **`app/api/webhooks/stripe/route.test.ts`** (9 tests) — the webhook handler with `stripe`/the admin client mocked: missing/invalid signature rejected before touching the database, a genuine event updates the org's billing row, a duplicate event id is a no-op (not reapplied), a non-duplicate insert failure asks Stripe to retry (5xx), the `stripe_customer_id` fallback lookup when subscription metadata is missing, a resolvable-organization miss no-ops rather than crashing, an unrecognized future Stripe status maps to `incomplete` instead of failing the update, and an irrelevant event type is acknowledged without action.
+Pure logic only — nothing that needs a database, a browser, or Next.js's server runtime:
 
-`npm run typecheck` and `npm run lint` run clean on every change (not test suites, but part of the same verification gate — see `Definition of Done` in the product skill).
+- **`lib/safe-redirect.test.ts`** — the shared open-redirect guard (`SECURITY.md` § Redirect safety): valid internal paths, absolute external URLs, protocol-relative URLs, the backslash bypass, the round-3 dot-segment/double-slash-pathname bypass (R2-01 round 2), control characters, encoded variants, malformed input.
+- **`lib/sentry-redact.test.ts`** — the `beforeSend` hook stripping `feedback_text`/`internal_note` from every Sentry event before it's sent. Canary-based: asserts against the fully serialized event, including circular-reference and JSON-stringified-content cases.
+- **`features/feedback/schema.test.ts`** — the public submission zod schema, including the **review-gating regression test at the schema level**: `it.each([1,2,3,4,5])` asserts the validator has no rating-dependent branching.
+- **`features/analytics/parse-snapshots.test.ts`** — parses `get_feedback_overview_snapshot`/`get_feedback_period_analytics`'s `jsonb` RPC results into typed shapes, discriminating a query error/null result into `{ unavailable: true }` (round-2 R2-04) rather than a silently-empty stats page.
+- **`e2e/support/env.test.ts`** — e2e credential resolution (round-2 R2-06, round-3 R3-01): fail-closed on missing config, single-source resolution (never a file/process-env mix), the approved-project allowlist, force-disabled email/telemetry keys.
+- **`e2e/support/db-connection.test.ts`** — round-4 R4-04: `SUPABASE_DB_URL`'s CI-mandatory/local-optional split, the approved-project-ref check, unreachable-in-CI failing loud.
+- **`app/api/health/route.test.ts`** — round-4 R4-01: `/api/health` reports `ok:false`/503 when release metadata (`VERCEL_GIT_COMMIT_SHA`) is missing in a production/preview environment, `ok:true` locally and whenever a commit SHA is present.
+- **`features/onboarding-tour/actions.test.ts`** — found during an independent review that no e2e test could deterministically exercise `setOnboardingTourStatusAction`'s own zero-affected-row disambiguation (the UPDATE and its follow-up read are two calls inside one server-side function, with no black-box hook to steer what either returns mid-flight). Mocks `@/lib/supabase/server` and `@/features/organizations/current` (`vi.hoisted` + `vi.mock`, a chainable mock query builder standing in for the real Supabase client's fluent API) and drives every branch directly: one-row success, each zero-row outcome (confirmed-completed success; readable-but-not-completed error; unreadable error; a read-back database error), the initial UPDATE erroring, and the invalid-status guard. First Server-Action unit test in this codebase — see its own file comment for why this specific function is the exception to the rule below.
+- **`features/billing/status.test.ts`** — `isBillingActive()`, the paywall's entire access decision: no billing row, an active Stripe subscription, a not-yet-expired no-card trial, an expired one, a genuine Stripe-side trial (subscription exists, status `trialing`), every inactive Stripe status (`past_due`/`canceled`/`incomplete`/`incomplete_expired`/`unpaid`/`paused`), and grandfathering (a pre-existing organization backfilled with a non-expiring `grandfathered_at` — see `DECISIONS.md`): active with no trial/subscription at all, never expires, and stops applying once a real Stripe subscription exists.
+- **`features/billing/plans.test.ts`** — the billing-interval allowlist (`isBillingInterval`) a crafted form submission must not bypass, and `stripePriceId`'s env-var resolution per interval.
+- **`features/billing/actions.test.ts`** — found during an independent review, the same reasoning as `onboarding-tour/actions.test.ts` above: `getOrCreateStripeCustomerId`'s missing-row/error/concurrency handling and `createCheckoutSessionAction`'s already-subscribed guard have no black-box e2e hook that can reliably force those exact states. Mocks the collaborators these actions call and drives each branch directly: a missing `organization_billing` row now fails safe instead of creating an orphaned Stripe customer, a concurrent customer-id-persist race resolves to the winner's id, and a second Checkout session is refused outright for an organization that already has a `stripe_subscription_id`.
+- **`app/api/webhooks/stripe/route.test.ts`** — the webhook handler with `stripe`/the admin client mocked: missing/invalid signature rejected before touching the database, a genuine event applies its update and then records it, a duplicate delivery reprocesses idempotently rather than being skipped outright (found during an independent review: recording an event as done *before* confirming its effect was applied could permanently lose a paid subscription on a crash between the two — see `DECISIONS.md`), an out-of-order/stale event is skipped without being treated as a failure, a missing `organization_billing` row asks Stripe to retry instead of silently succeeding, the `stripe_customer_id` fallback lookup when subscription metadata is missing, an unresolvable organization asks for a retry rather than no-opping, an unrecognized future Stripe status maps to `incomplete` instead of failing the update, and an irrelevant event type is acknowledged without action.
+
+`npm run typecheck` and `npm run lint` run clean on every change — part of the same verification gate as the test suites, not test suites themselves.
 
 ### What's deliberately not covered by Vitest
 
-Anything that touches Supabase, RLS, Server Actions, cookies, or rendered UI — those need a real database and/or a real browser, which Vitest (running plain Node, no `react-server` condition) can't provide; that's what the e2e suite below is for. `features/notifications/negative-feedback-alert.ts`'s `isNegativeRating()` is pure but wasn't extracted like the feedback schema was, since it's a one-line threshold check with low drift risk.
+Anything that needs a *real* database, RLS enforcement, cookies, or rendered UI needs a real browser and a real Supabase project, which Vitest (plain Node, no `react-server` condition) can't provide — that's what the e2e suite below is for. A Server Action's own internal logic is a narrower exception (`actions.test.ts` above): mocking its Supabase/lookup collaborators can exercise branches no e2e test can reach deterministically, but it proves nothing about RLS, real query behavior, or the action's actual database access — that half of the picture still needs e2e coverage alongside it, not instead of it.
 
-## e2e (Playwright)
+## Automated: Playwright e2e (`npm run test:e2e`)
 
-`npm run test:e2e`, against a **dedicated, isolated Supabase test project** (`.env.test.local`, gitignored) — not the shared dev/production project. See `e2e/README.md` for the setup and `DECISIONS.md` for why this changed from the original shared-project approach.
+Against a **dedicated, isolated Supabase test project** (`.env.test.local`, gitignored) — never the production project. See `e2e/README.md` for setup and `DECISIONS.md` for why there's no Docker-based local stack instead. Every spec file carries its own doc comment explaining what it verifies and why; this is a map of what exists, not a restatement of each file's reasoning:
 
-**The list below predates several rounds of additions and is not the authoritative current file list** — `e2e/README.md` is (16 spec files as of this branch; it names and describes every one). Kept here for the tests with enough narrative detail to be worth repeating, plus the newest addition:
+| Area | File(s) |
+|---|---|
+| Review-gating (Google Review CTA identical across ratings 1–5) | `review-gating.spec.ts` |
+| Open-redirect fix, both call sites, both round-2/round-3 payloads | `redirect-safety.spec.ts` |
+| Cross-tenant isolation (reads, writes, RPCs, dashboard rendering) | `tenant-isolation.spec.ts` |
+| Feedback/card column-level immutability (RLS is row-level, not column-level) | `feedback-and-card-integrity.spec.ts` |
+| Public submission safety: card-deactivation race, per-card rate limit | `public-submission-safety.spec.ts` |
+| Location-deactivation race (round-2 R2-05) — real two-Postgres-connection concurrency | `location-deactivation-race.spec.ts` |
+| Feedback inbox cursor pagination under tied timestamps | `feedback-pagination.spec.ts` |
+| Analytics: row-count-ceiling removal, single-snapshot consistency under concurrent inserts | `analytics-aggregation.spec.ts` |
+| Analytics period-day validation (round-3 R3-04) | `analytics-period-validation.spec.ts` |
+| Organization onboarding: atomicity, idempotency, per-user serialization, slug collision | `organization-onboarding.spec.ts` |
+| Negative-feedback alert abuse controls: server-owned cooldown, org-wide budget, real concurrency | `negative-feedback-alert-abuse.spec.ts` |
+| Negative-feedback alert attempt/delivery status accounting | `negative-feedback-alert-finalize.spec.ts` |
+| Card-editor location immutability at the UI/server-action/database layers | `nfc-card-location-lock.spec.ts` |
+| Notification-email recipient confirmation flow, end-to-end including the real browser confirm-link round trip | `notification-email-verification.spec.ts` |
+| RPC role-allowlist matrix (5+ functions × anon/authenticated/service_role), direct catalog introspection | `rpc-privilege-matrix.spec.ts` |
+| Dashboard nav accessibility (accessible names, `aria-current`, keyboard) and responsive behavior at 320/375/768/desktop widths | `dashboard-nav-accessibility.spec.ts` |
+| First-time dashboard onboarding tour: state model (`not_started`/`completed`/`skipped`), every dismissal path, `completed`'s terminal-state guarantee, reopened-tour promotion, backfilled-organization protection, nav highlight/responsive degradation, async close failure handling, CHECK-constraint enforcement independent of the Server Action's own validation | `onboarding-tour.spec.ts` (cross-tenant case in `tenant-isolation.spec.ts`) |
+| Subscription paywall gates the dashboard (a lapsed org is redirected from any `/dashboard/*` route to `/dashboard/billing`, which itself never redirects) but never the public product: feedback submission through `/r/{publicId}` keeps working, unauthenticated, for an organization with an inactive subscription | `billing-paywall.spec.ts` |
 
-- **`e2e/billing-paywall.spec.ts`** — the subscription paywall gates the dashboard (a lapsed org is redirected from any `/dashboard/*` route to `/dashboard/billing`, which itself never redirects) but never the public product: feedback submission through `/r/{publicId}` keeps working, unauthenticated, for an organization with an inactive subscription. See `SECURITY.md` § Billing.
+**`rpc-privilege-matrix.spec.ts` and `location-deactivation-race.spec.ts` need a direct Postgres connection** (`SUPABASE_DB_URL`) — optional locally (skip gracefully without it), **mandatory in CI** as of round-4 R4-04 (`e2e/support/db-connection.ts` throws rather than skipping when CI is set and the connection is missing, invalid, or doesn't resolve to the approved isolated project). A skipped run of either is not equivalent to a passing one — check the run's own output for a `skipped` count, not just the absence of failures.
 
-- **`e2e/review-gating.spec.ts`** — the product skill's Review-Gating Regression Test, automated for real: for each rating 1–5, load `/r/{publicId}` in a real browser, submit that rating, and assert the "Leave a Google review" CTA is visible with the correct `href`. Plus a duplicate-submission test (same card, same browser context, rejected on the second attempt).
-- **`e2e/tenant-isolation.spec.ts`** — Org A's own signed-in, RLS-bound client cannot read or write any of Org B's organization/location/nfc_card/feedback/membership rows, through direct API calls, not just the app's own query shapes.
-- **`e2e/feedback-and-card-integrity.spec.ts`** — an org member cannot rewrite a feedback row's `rating`/`feedback_text` or relocate an `nfc_card`'s `location_id` via direct `UPDATE`, but can still edit `status`/`internal_note`/`display_name`.
-- **`e2e/public-submission-safety.spec.ts`** — a card deactivated between page load and submission is caught atomically (not just at page load); the per-card rate limit rejects a 21st submission within its window; the alert-cooldown claim lets exactly one of two concurrent attempts through.
-- **`e2e/feedback-pagination.spec.ts`** — 25 rows seeded with an identical `created_at` all appear exactly once across two inbox pages, none skipped or duplicated.
-- **`e2e/analytics-row-cap.spec.ts`** — 1200 real rows seeded; the dashboard overview shows 1200, not PostgREST's 1000-row cap.
-- **`e2e/organization-onboarding.spec.ts`** — one call creates exactly one org+membership with an accent-stripped slug; a second call for the same user is a no-op; two concurrent calls for the same user still produce exactly one organization; a slug collision falls back correctly; the real onboarding UI works end-to-end.
-- **`e2e/redirect-safety.spec.ts`** — drives the real login and email-confirmation flows against the open-redirect backslash bypass.
-- Runs locally against `npm run dev` (Playwright's `webServer` starts it automatically, with the isolated project's env injected) and in CI (`.github/workflows/ci.yml`'s `e2e` job) — the CI job needs `NEXT_PUBLIC_SUPABASE_URL`/`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`/`SUPABASE_SECRET_KEY` as repository secrets, pointed at the isolated project (**confirm this was updated** — they may still point at the old shared project), and skips (not fails) if they're not yet configured.
-
-## Manual (performed this session, against a real linked Supabase project and a real browser)
-
-Every item below was executed end-to-end in Phase 14 verification, not merely code-reviewed: a QA account was created, confirmed, and used to build a real organization/location/NFC card, then deleted afterward (`DECISIONS.md` has no entry for this since it's routine hygiene, not a product decision).
-
-- **Review-Gating Regression Test (the one from the product skill, run for real):** submitted 1-star feedback through the public `/r/{publicId}` page → confirmed the "Leave a Google review" CTA rendered identically to how it does for a positive rating. (5-star was also submitted, blocked by the duplicate-cookie guard as expected — see below — but the 1-star → CTA-present check is the one that matters most and was directly observed.)
-- **Duplicate-submission cookie:** submitted once successfully, immediately retried on the same card → rejected with "You've already sent feedback for this visit." No second row was written (confirmed via the feedback inbox showing exactly one item).
-- **Feedback inbox:** priority badge ("High priority") rendered correctly for a rating-≤2 item; unresolved-high-priority row visibly highlighted; NFC card filter dropdown populated with "Front counter (Main Street)" and correctly filtered the list when selected; detail dialog showed the same priority badge next to the star rating.
-- **Settings page:** business name / notification email / logo URL saved via the form, "Saved." confirmation shown, values persisted correctly across a full page reload.
-- **Overview page:** all five stat tiles (Total, Average, Today, This week, Unresolved negative) and the rating-distribution bar rendered correctly for real data.
-- **Onboarding → dashboard flow:** signup → email confirmation (via admin API, since no email inbox was available in this environment) → login → organization creation → dashboard landing, all worked without error.
-
-## Manual (performed in earlier phases, not re-verified this session)
-
-Locations CRUD, NFC card CRUD (activate/deactivate), analytics page (volume-over-time, location/card comparisons), auth (signup/login/signout), tenant-isolation smoke checks. See prior commit history for what was verified when each of these was originally built.
+Runs locally against `npm run dev` (Playwright's `webServer` starts it automatically, isolated-project env injected — see `playwright.config.ts`) and in CI's `e2e` job (needs the four secrets in `DEPLOYMENT.md` § 4; skips the whole job, not individual tests, if any are missing).
 
 ## Review-Gating Regression Test (standing checklist)
 
 Per the product skill, re-run this whenever the public rating/review flow changes:
 
 - [ ] 1 star → Google Review CTA available, same placement/prominence as other ratings
-- [ ] 2 stars → Google Review CTA available
-- [ ] 3 stars → Google Review CTA available
-- [ ] 4 stars → Google Review CTA available
-- [ ] 5 stars → Google Review CTA available
+- [ ] 2–5 stars → same
 - [ ] No code path conditions CTA visibility on rating, sentiment, or AI analysis
 - [ ] `features/feedback/schema.test.ts`'s `it.each([1,2,3,4,5])` still passes (schema-level guard)
-- [ ] `npm run test:e2e` (`e2e/review-gating.spec.ts`) still passes (browser-level guard, now automated in CI on every push/PR)
+- [ ] `e2e/review-gating.spec.ts` still passes (browser-level guard, automated in CI)
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every push/PR to `master`: `typecheck` → `lint` → `npm run test` (Vitest) unconditionally, then `npm run test:e2e` (Playwright) if the required Supabase secrets are configured on the repo (see `e2e/README.md`) — otherwise that job skips rather than failing CI outright.
+See `DEPLOYMENT.md` § 5 for the full job graph and gating model. In brief: `checks` (typecheck/lint/unit tests) → `e2e` (Playwright, needs all four secrets or skips) → `verify-production-deployment` (push to `master` only, confirms the live production `/api/health` reports the pushed commit — round-4 R4-01).
+
+## Manual verification (this project's discipline, not a substitute for the above)
+
+Whenever a change is only verifiable by actually using the app (a UI change, a flow that's awkward to script), it gets a real browser pass against the isolated test project before being called done — never against production, and never by asking the user to manually check something an automated test could instead cover permanently. See individual commit messages and `STATUS.md`'s round-by-round entries for what was manually verified when, rather than a separate manual checklist here that would just go stale the same way the old test counts did.
 
 ## Known gaps (tracked, not silently skipped)
 
-- ~~No tenant-isolation automated test.~~ **Resolved** — `e2e/tenant-isolation.spec.ts`.
-- **No automated notification test.** "Qualifying negative feedback triggers an alert; positive feedback doesn't" is currently verified by reading `features/notifications/negative-feedback-alert.ts` and the `isNegativeRating` threshold, not by a test that actually asserts an email was (or wasn't) sent. The new alert-cooldown *claim mechanism* (the atomic `UPDATE ... WHERE ... RETURNING` pattern) is tested directly (`e2e/public-submission-safety.spec.ts`), but sending the actual email through Resend remains unverified by any automated test — this test project deliberately has no `RESEND_API_KEY` configured (`e2e/README.md`), so exercising the real send would need either a second, Resend-key-bearing test configuration or a mocked Resend client.
+- **No automated test that a real email is actually delivered via Resend.** The alert-cooldown/budget *claim mechanism* is tested directly (`negative-feedback-alert-abuse.spec.ts`, `negative-feedback-alert-finalize.spec.ts`); the isolated test project deliberately has no `RESEND_API_KEY` (`e2e/README.md`), so an actual Resend API call is never exercised by CI. Exercising it would need either a second, Resend-key-bearing test configuration or a mocked Resend client — not currently justified by risk (the claim/budget logic, which is where the actual abuse-prevention value is, is fully covered).
+- **`verify-production-deployment` (round-4 R4-01) has not yet had a real failure to prove it actually catches the failure mode it's for** — it's designed and reasoned from the actual historical incident (`STATUS.md`), but its own alarm has not fired for real (by design, ideally never). Worth deliberately testing once, in a low-stakes way (e.g., temporarily pointing `PRODUCTION_HEALTH_URL` at a `--expected-sha` that will never match, on a non-`master` branch, to confirm the job actually goes red) rather than trusting the design alone forever.
+- **No e2e coverage of the actual Stripe Checkout/webhook flow** — `billing-paywall.spec.ts` drives the paywall gate directly through `organization_billing`, never a real Stripe call (see `e2e/README.md`), and `app/api/webhooks/stripe/route.test.ts`/`features/billing/actions.test.ts` mock Stripe entirely. Nothing in this suite creates a real test-mode Checkout session, completes it, and asserts on a real resulting webhook delivery — the mocked coverage is thorough for the handler's own branching logic (idempotency ordering, out-of-order rejection, the concurrency guards), but proves nothing about Stripe's actual request/response shapes, webhook signature format, or event delivery timing. Exercising this for real needs Stripe test-mode credentials (`STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET`/`STRIPE_PRICE_ID_MONTHLY`/`STRIPE_PRICE_ID_YEARLY`) and either the Stripe CLI (`stripe listen --forward-to`) or Stripe's own test clocks/fixtures in CI — not currently set up, and not exercised in this repository's history as of this fix.

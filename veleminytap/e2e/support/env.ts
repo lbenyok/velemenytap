@@ -27,7 +27,9 @@ const FORCE_DISABLED_KEYS = ["RESEND_API_KEY", "NEXT_PUBLIC_SENTRY_DSN"] as cons
 // (https://<ref>.supabase.co) for the dedicated e2e project documented in
 // e2e/README.md -- not a secret; it's the same string already public in
 // every request this app's own browser client makes.
-const APPROVED_TEST_PROJECT_REF = "nowcuhwgeerzqlpweyxj";
+// Exported for reuse by e2e/support/db-connection.ts (round-4 R4-04),
+// which needs to validate SUPABASE_DB_URL against the same allowlist.
+export const APPROVED_TEST_PROJECT_REF = "nowcuhwgeerzqlpweyxj";
 
 function parseEnvFile(filePath: string): Record<string, string> {
   const vars: Record<string, string> = {};

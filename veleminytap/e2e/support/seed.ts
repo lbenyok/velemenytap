@@ -226,10 +226,21 @@ export type SeededOrgMember = {
  * org-less authenticated user to /onboarding, so without a membership,
  * *any* post-login redirect test would land there regardless of its actual
  * target, masking the thing under test.)
+ *
+ * `onboardingTourStatus` defaults to "completed", NOT the
+ * `onboarding_tour_status` column's own "not_started" default -- this
+ * helper is used by dozens of pre-existing specs that sign in and interact
+ * with the dashboard immediately, none of which expect a modal dialog to
+ * be sitting on top of it (found the hard way: seeding a genuinely
+ * "not_started" org here made the onboarding tour's welcome dialog
+ * intercept pointer events in e2e/dashboard-nav-accessibility.spec.ts,
+ * which predates this feature and has nothing to do with it). Only
+ * e2e/onboarding-tour.spec.ts itself passes "not_started" explicitly.
  */
 export async function seedOrgWithMember(
   namePrefix: string,
   role: "owner" | "admin" | "manager" | "staff" = "owner",
+  onboardingTourStatus: "not_started" | "completed" | "skipped" = "completed",
 ): Promise<SeededOrgMember> {
   const admin = adminClient();
   // Date.now() alone collides under parallel workers (millisecond
@@ -254,7 +265,11 @@ export async function seedOrgWithMember(
     const { data: org, error: orgError } = await retryOnClockSkew(() =>
       admin
         .from("organizations")
-        .insert({ name: `E2E ${namePrefix} ${unique}`, slug: `e2e-${namePrefix}-${unique}` })
+        .insert({
+          name: `E2E ${namePrefix} ${unique}`,
+          slug: `e2e-${namePrefix}-${unique}`,
+          onboarding_tour_status: onboardingTourStatus,
+        })
         .select("id")
         .single(),
     );
