@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import { CircleCheck, TriangleAlert, Star } from "lucide-react";
 import { getCurrentOrganization } from "@/features/organizations/current";
 import { getOrganizationBilling } from "@/features/billing/queries";
-import { isBillingActive } from "@/features/billing/status";
+import { isBillingActive, hasLiveSubscription } from "@/features/billing/status";
 import { createCheckoutSessionAction, createPortalSessionAction } from "@/features/billing/actions";
 import { PLAN_PRICING, type BillingInterval } from "@/features/billing/plans";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -20,7 +20,14 @@ const YEARLY_SAVINGS_MONTHS = Math.round(YEARLY_SAVINGS_HUF / PLAN_PRICING.month
 
 const PLAN_FEATURES = [
   "Korlátlan helyszín és NFC kártya",
-  "Azonnali e-mail értesítés negatív véleményről",
+  // Found during an independent review: "Azonnali e-mail értesítés"
+  // (instant email notification) overstated a system with a per-card
+  // cooldown, an organization-wide hourly send budget, and possible
+  // provider failures -- matching the wording already corrected on the
+  // homepage (app/page.tsx) and in the onboarding tour (features/
+  // onboarding-tour/tour-steps.ts): conditional ("beállíthatsz" -- you
+  // can set up), never a guaranteed-immediate promise.
+  "E-mailes értesítést állíthatsz be negatív véleményekhez",
   "Teljes elemzés és trendek",
   "Nincs válogatás — minden vélemény, minden csillag",
 ];
@@ -45,7 +52,12 @@ export default async function BillingPage({
   const sp = await searchParams;
   const billing = await getOrganizationBilling(organization.id);
   const active = isBillingActive(billing);
-  const hasSubscription = billing?.stripe_subscription_id != null;
+  // hasLiveSubscription, not a bare stripe_subscription_id check -- found
+  // during an independent review: a canceled or never-completed
+  // (incomplete_expired) subscription must show the Checkout forms again,
+  // not the "manage subscription" Portal button for a subscription that
+  // no longer meaningfully exists. See features/billing/status.ts.
+  const hasSubscription = hasLiveSubscription(billing);
   const trialing = billing?.status === "trialing" && !hasSubscription;
   const trialDaysLeft =
     trialing && billing?.trial_ends_at
@@ -101,6 +113,12 @@ export default async function BillingPage({
           <TriangleAlert />
           <AlertTitle>Már van előfizetésed.</AlertTitle>
           <AlertDescription>Az előfizetésed kezeléséhez használd a lenti gombot.</AlertDescription>
+        </Alert>
+      ) : sp.error === "unauthorized" ? (
+        <Alert variant="destructive">
+          <TriangleAlert />
+          <AlertTitle>Nincs jogosultságod a számlázás kezeléséhez.</AlertTitle>
+          <AlertDescription>Ehhez tulajdonosi vagy admin szerepkör szükséges — kérd meg a szervezet tulajdonosát.</AlertDescription>
         </Alert>
       ) : null}
 

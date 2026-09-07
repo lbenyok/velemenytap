@@ -86,7 +86,10 @@ export interface Database {
           current_period_end: string | null;
           cancel_at_period_end: boolean;
           grandfathered_at: string | null;
-          last_synced_event_created_at: string | null;
+          activated_at: string | null;
+          pending_checkout_session_id: string | null;
+          pending_checkout_expires_at: string | null;
+          last_synced_at: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -99,7 +102,10 @@ export interface Database {
           current_period_end?: string | null;
           cancel_at_period_end?: boolean;
           grandfathered_at?: string | null;
-          last_synced_event_created_at?: string | null;
+          activated_at?: string | null;
+          pending_checkout_session_id?: string | null;
+          pending_checkout_expires_at?: string | null;
+          last_synced_at?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -112,7 +118,10 @@ export interface Database {
           current_period_end?: string | null;
           cancel_at_period_end?: boolean;
           grandfathered_at?: string | null;
-          last_synced_event_created_at?: string | null;
+          activated_at?: string | null;
+          pending_checkout_session_id?: string | null;
+          pending_checkout_expires_at?: string | null;
+          last_synced_at?: string | null;
           created_at?: string;
           updated_at?: string;
         };

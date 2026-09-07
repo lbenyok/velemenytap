@@ -93,7 +93,7 @@ export function DashboardNav() {
 
   return (
     <>
-      {/* Desktop (>= xl): every link's icon AND label always visible.
+      {/* Desktop (>= 2xl): every link's icon AND label always visible.
           Round-4 R4-05 found the previous version hid the label below
           `lg` entirely, leaving six icon-only links with no accessible
           name at tablet widths -- fixed by never hiding it once shown.
@@ -107,11 +107,25 @@ export function DashboardNav() {
           default, so this doesn't show up as a scrollbar (`scrollWidth`
           staying equal to the viewport), only as actual visual overlap,
           which is why the previous e2e coverage (checking scrollWidth
-          only, and only at 768/1280) missed it. `xl` (1280px) is the
-          first breakpoint with enough room for real-world org names, not
-          just the four-character one this was originally eyeballed
-          against. */}
-      <nav aria-label="Irányítópult navigáció" className="hidden items-center gap-1 xl:flex">
+          only, and only at 768/1280) missed it.
+
+          Found again during an independent review, after billing added a
+          seventh link: `xl` (1280px) stopped being enough the moment that
+          link existed. Measured directly with real bounding boxes
+          (getBoundingClientRect, not scrollWidth, which -- same flexbox
+          reason as above -- still reported zero overflow at 1280px even
+          with a real, visible ~25px overlap between the nav and the org
+          name): at 1280px the nav's own right edge landed at x=967.5
+          while the org name's left edge started at x=942.7. 1366px (a
+          very common laptop width) leaves only ~29px of margin -- too
+          thin to trust against a longer real-world org name or a
+          different font-metrics environment. `2xl` (1536px) was the
+          first *standard* Tailwind breakpoint measured with a
+          comfortable margin (~199px) rather than the tightest one that
+          happens to pass today; matches this project's own established
+          preference (R5-07's own reasoning, above) for a simple, robust
+          breakpoint over a narrowly-tuned custom one. */}
+      <nav aria-label="Irányítópult navigáció" className="hidden items-center gap-1 2xl:flex">
         {NAV_ITEMS.map((item) => (
           <NavLink key={item.href} {...item} active={isActive(pathname, item.href)} />
         ))}
@@ -124,13 +138,14 @@ export function DashboardNav() {
           mount timing for the Sheet's content rather than anything this
           code controls. The Sheet's copy is stripped of tourTarget just
           below for exactly this reason -- a step whose target lives only
-          below `xl` correctly finds nothing and renders as a plain
+          below `2xl` correctly finds nothing and renders as a plain
           centered step instead. */}
 
-      {/* Below xl (round-5 R5-07 -- was lg/1024px, measured to still
-          overlap the org name; see the desktop nav's own comment above):
-          a labelled menu button opens the same links in a side panel,
-          full label always visible there too. */}
+      {/* Below 2xl (moved here from xl/1280px after billing added a
+          seventh link -- see the desktop nav's own comment above for the
+          measurements; before that, round-5 R5-07 moved it from
+          lg/1024px): a labelled menu button opens the same links in a
+          side panel, full label always visible there too. */}
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetTrigger
           render={
@@ -138,7 +153,7 @@ export function DashboardNav() {
               type="button"
               variant="ghost"
               size="icon-sm"
-              className="xl:hidden"
+              className="2xl:hidden"
               aria-label="Menü megnyitása"
             />
           }

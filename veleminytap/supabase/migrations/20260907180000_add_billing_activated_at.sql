@@ -1,0 +1,35 @@
+-- Found during an independent review: isBillingActive() switched entirely
+-- to Stripe's own status the instant stripe_subscription_id was set,
+-- abandoning grandfathering/trial access even for a subscription that had
+-- NEVER successfully activated -- so a grandfathered organization whose
+-- very first payment attempt failed (Stripe status 'incomplete', then
+-- 'incomplete_expired') ended up locked out, strictly worse off than
+-- before it tried to pay. Checkout's own "already subscribed" guard had
+-- the mirror problem: any non-null stripe_subscription_id blocked a new
+-- Checkout attempt, including a canceled or never-completed one, so a
+-- customer whose subscription lapsed (or whose first payment simply
+-- failed) had no way to start a replacement subscription at all.
+--
+-- `activated_at` is the missing signal both bugs needed: set exactly once,
+-- the first time (and only the first time -- see the application code's
+-- own comment for why it's never overwritten) a subscription for this
+-- organization is observed with status = 'active', i.e. a real payment
+-- has genuinely succeeded at least once. Application code (features/
+-- billing/status.ts's isBillingActive) now treats it as the switch that
+-- decides which access rule applies:
+--   - activated_at IS NULL: this organization has never actually paid --
+--     grandfathering or the no-card trial is still the operative grant,
+--     regardless of whatever Stripe-side subscription status currently
+--     exists alongside it (incomplete, incomplete_expired, even a
+--     canceled abandoned attempt). Checkout is still allowed to retry.
+--   - activated_at IS NOT NULL: real billing has genuinely started at
+--     least once -- grandfathering/trial no longer apply even if the
+--     current subscription later lapses (canceled) or fails (past_due) --
+--     only the current Stripe status governs access from this point on,
+--     the same as the original design already did.
+-- Purely additive (a new nullable column, backfilled by nothing -- every
+-- existing row correctly starts as "never activated," which is accurate:
+-- no organization on this branch has ever had a real Stripe payment
+-- succeed yet) -- safe to apply at any point, exactly like migration 18.
+alter table public.organization_billing
+  add column activated_at timestamptz;

@@ -109,9 +109,32 @@ export async function signInAction(
     if (target !== "/dashboard/billing" && !target.startsWith("/dashboard/billing/")) {
       const organization = await getCurrentOrganization();
       if (organization) {
-        const billing = await getOrganizationBilling(organization.id);
-        if (!isBillingActive(billing)) {
-          redirect("/dashboard/billing");
+        // getOrganizationBilling now throws on a genuine database error
+        // (features/billing/queries.ts's own comment) rather than
+        // silently returning null -- correct for the security-relevant
+        // callers, but this specific check is only a UX optimization
+        // (avoiding a second, layout-triggered redirect; see the comment
+        // above), not itself the security boundary. A transient failure
+        // here must not break sign-in entirely -- skip straight to the
+        // plain redirect below and let the layout's own identical query
+        // be the actual enforcement point on the very next render,
+        // throwing loudly there instead if the problem persists.
+        try {
+          const billing = await getOrganizationBilling(organization.id);
+          if (!isBillingActive(billing)) {
+            redirect("/dashboard/billing");
+          }
+        } catch (err) {
+          // redirect() above throws to work -- its error carries a
+          // `digest` starting with "NEXT_REDIRECT" (Next.js's own,
+          // documented mechanism; see node_modules/next/dist/client/
+          // components/redirect.js) and must always be rethrown
+          // unchanged, never treated as the billing-check failure this
+          // catch exists for.
+          if (err && typeof err === "object" && "digest" in err && typeof err.digest === "string" && err.digest.startsWith("NEXT_REDIRECT")) {
+            throw err;
+          }
+          console.error(`signInAction: billing check failed, deferring to the dashboard layout's own check: ${err instanceof Error ? err.message : err}`);
         }
       }
     }

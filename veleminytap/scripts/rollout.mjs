@@ -737,7 +737,7 @@ export async function pollHealth(healthUrl, expectedSha, expectedEnvironment, ti
  * code never breaks the currently-live old code. Needs no commit SHA and
  * does not touch /api/health at all.
  */
-function runPrepare(args) {
+export function runPrepare(args) {
   console.log(`Target: "${args.target}" (${args.environment}) -- ${args.allowedOrigin}, project ref ${args.supabaseProjectRef}`);
   console.log("=== Prepare: validate the plan against the database ===");
   const pendingAtStart = getPendingMigrations(args.dbUrl);
@@ -809,18 +809,39 @@ function runPrepare(args) {
  * live, drains, re-checks, and applies ONLY the enforce migrations.
  * Refuses outright if anything other than --enforce is still pending.
  */
-async function runFinalize(args) {
+export async function runFinalize(args) {
   console.log(`Target: "${args.target}" (${args.environment}) -- ${args.allowedOrigin}, project ref ${args.supabaseProjectRef}`);
   console.log("=== Finalize, step 1: confirm only --enforce is pending ===");
   const pendingAtStart = getPendingMigrations(args.dbUrl);
   const { remaining } = validateFinalizePlan(pendingAtStart, args.enforce, listMigrationFiles());
-  if (remaining.length === 0) {
-    console.log("Nothing pending at all -- finalize already completed on a prior run. Nothing further to do.");
-    return;
+  const nothingToApply = remaining.length === 0;
+
+  // Found during an independent review: this used to return here
+  // immediately when nothing was pending, without ever polling health --
+  // so an operator who ran finalize with the WRONG --expected-sha (or
+  // against a database where the enforce migrations became applied some
+  // other way -- an out-of-band change, or a genuinely completed prior
+  // run under a DIFFERENT expected SHA) still saw finalize report success,
+  // with nothing ever having confirmed the live deployment actually
+  // matches what was asked for THIS time. An empty "remaining" set proves
+  // the database side is done; it proves nothing about the application
+  // side, which is the other half of what finalize exists to confirm. So
+  // the health poll below (step 2) now always runs -- only the
+  // migration-application-specific steps (drain, the pre-apply smoke
+  // check, and the push itself) are skipped when there's nothing to apply.
+  if (nothingToApply) {
+    console.log(
+      "Nothing pending at all -- enforce migrations already applied on a prior run. Still verifying the live deployment before declaring success.",
+    );
+  } else {
+    console.log(`Confirmed: ${remaining.length} of ${args.enforce.length} --enforce migration(s) remain pending: ${remaining.join(", ")}.`);
   }
-  console.log(`Confirmed: ${remaining.length} of ${args.enforce.length} --enforce migration(s) remain pending: ${remaining.join(", ")}.`);
 
   if (args.dryRun) {
+    if (nothingToApply) {
+      console.log("\n--dry-run: nothing pending, nothing to preview.");
+      return;
+    }
     console.log("\n--dry-run: previewing the enforce push without waiting for health or applying anything.");
     sh(NPX, ["supabase", "db", "push", "--db-url", args.dbUrl, "--include-all", "--dry-run"]);
     return;
@@ -831,6 +852,13 @@ async function runFinalize(args) {
   console.log("(APP_ENV must already be set in Vercel for this environment -- DEPLOYMENT.md § 3 -- or this can never succeed.)");
   await pollHealth(args.healthUrl, args.expectedSha, args.environment, args.deployTimeoutSeconds);
   console.log(`Confirmed: ${args.environment} is serving the expected commit.`);
+
+  if (nothingToApply) {
+    console.log(
+      "\nNothing left to apply, and the live deployment genuinely matches --expected-sha/--enforce -- finalize was already completed on a prior run. Nothing further to do.",
+    );
+    return;
+  }
 
   console.log(`\n=== Finalize, step 3: drain window (${args.drainSeconds}s) ===`);
   await new Promise((resolve) => setTimeout(resolve, args.drainSeconds * 1000));

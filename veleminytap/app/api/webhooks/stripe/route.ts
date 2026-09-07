@@ -2,7 +2,9 @@ import { type NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
 import { createStripeClient } from "@/lib/stripe";
 import { createAdminClient } from "@/lib/supabase/admin";
-import type { BillingStatus } from "@/lib/supabase/database.types";
+import type { BillingStatus, Database } from "@/lib/supabase/database.types";
+
+type OrganizationBillingUpdate = Database["public"]["Tables"]["organization_billing"]["Update"];
 
 // Stripe's own Subscription.Status type is forward-compatible (a plain
 // `string` fallback alongside its named members) since Stripe can add new
@@ -44,33 +46,37 @@ function toBillingStatus(status: Stripe.Subscription.Status): BillingStatus {
  *      subscription to any organization_id an attacker guesses.
  *   2. Idempotent, crash-safe processing -- Stripe explicitly documents
  *      at-least-once, possibly-duplicate delivery (retries on anything but
- *      a 2xx response, and occasional redelivery even without one).
- *      Found during an independent review: this used to record the event
- *      id as processed FIRST, then update organization_billing as a
- *      separate, later, unchecked call -- two independent Supabase
- *      requests, not one transaction. If the process crashed, timed out,
- *      or the update simply failed for any reason between those two
- *      calls, the event was permanently marked done while its actual
- *      effect was never applied -- and Stripe would never retry it, either
- *      because a 200 had already gone out, or because a retried delivery
- *      hit the already-recorded event id and short-circuited before
- *      reaching the update at all. A real paid subscription could vanish
- *      silently, looking identical to success. Fixed by reordering: the
- *      state-changing update now happens FIRST and its own success is
- *      checked, and the event is only recorded as processed AFTER that
- *      succeeds -- syncSubscription's update is naturally idempotent (it
- *      always sets fields to the exact snapshot the current event
- *      describes, never increments or appends), so re-running it on a
- *      genuine retry is always safe. A failure at any point now returns a
- *      non-2xx status and leaves the event unrecorded, so Stripe retries
- *      it for real instead of being told it succeeded.
- *   3. Out-of-order-safe -- Stripe does not guarantee delivery order.
- *      syncSubscription only applies an event if its own `created`
- *      timestamp is newer than the last one already applied for that
- *      organization, enforced inside the UPDATE's own WHERE clause so the
- *      check and the write happen atomically even under concurrent
- *      deliveries for the same organization, not just sequential-but-
- *      reordered ones.
+ *      a 2xx response, and occasional redelivery even without one). The
+ *      state-changing update runs FIRST and its own success is checked;
+ *      the event is only recorded as processed in stripe_webhook_events
+ *      AFTER that succeeds -- syncSubscription's update is idempotent (it
+ *      always writes Stripe's own current state, never increments or
+ *      appends), so re-running it on a genuine retry is always safe. A
+ *      failure at any point returns a non-2xx status and leaves the event
+ *      unrecorded, so Stripe retries it for real instead of being told it
+ *      succeeded -- the previous, opposite ordering (record first, update
+ *      second) meant a crash between the two calls permanently marked a
+ *      never-applied event as done.
+ *   3. Order-independent by construction -- Stripe does not guarantee
+ *      webhook delivery order, and its own `created` timestamps only have
+ *      one-second resolution, so two genuinely distinct events for the
+ *      same subscription can share an identical timestamp. An earlier
+ *      version of this handler tried to compare `created` timestamps to
+ *      reject "stale" events and lost data on exactly that tie (the
+ *      second same-second event's `<` comparison against the first's
+ *      already-recorded timestamp evaluated false, so it was skipped as
+ *      stale even though it carried the real, newer state). Fixed by
+ *      never trusting an event's own embedded snapshot at all:
+ *      syncSubscription re-fetches the subscription directly from Stripe
+ *      (`stripe.subscriptions.retrieve`, Stripe's own documented pattern
+ *      for this exact class of problem) and writes whatever that
+ *      canonical, live lookup returns. Every event just triggers a
+ *      "go check what's actually true right now" -- since that's what
+ *      gets written regardless of which event fired it or in what order,
+ *      there is no timestamp comparison left to have a precision bug in.
+ *      See DECISIONS.md for the fuller reasoning, including the narrow,
+ *      self-healing residual race under genuinely concurrent deliveries
+ *      for the same subscription.
  */
 export async function POST(request: NextRequest) {
   const signature = request.headers.get("stripe-signature");
@@ -95,8 +101,12 @@ export async function POST(request: NextRequest) {
     case "customer.subscription.created":
     case "customer.subscription.updated":
     case "customer.subscription.deleted": {
-      const subscription = event.data.object as Stripe.Subscription;
-      handled = await syncSubscription(admin, subscription, new Date(event.created * 1000));
+      // Only the id is trusted from the event body itself -- everything
+      // else this handler writes comes from a fresh retrieve() below, not
+      // this embedded object, which may already be stale by the time this
+      // request is processed.
+      const subscriptionId = (event.data.object as Stripe.Subscription).id;
+      handled = await syncSubscription(stripe, admin, subscriptionId);
       break;
     }
     default:
@@ -114,8 +124,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "failed to apply event" }, { status: 500 });
   }
 
-  // Recorded only now, after the event's effect has actually been applied
-  // (or correctly determined not to need applying -- see syncSubscription).
+  // Recorded only now, after the event's effect has actually been applied.
   // A duplicate delivery of an already-recorded event still reaches this
   // point and reprocesses -- harmless, since the update above is
   // idempotent -- and is reported as a duplicate once it hits this insert's
@@ -129,17 +138,27 @@ export async function POST(request: NextRequest) {
 }
 
 /**
- * Applies one subscription event's effect to organization_billing.
- * Returns false if the event's effect was NOT applied and Stripe should
- * retry; true if it was applied, or if it was correctly determined not to
- * need applying (a stale/out-of-order event, or a genuine duplicate of one
- * already applied).
+ * Applies a subscription's current, canonically-fetched Stripe state to
+ * organization_billing. Returns false if the event should be retried
+ * (the retrieve() call itself failed, the organization couldn't be
+ * resolved, the update errored, or organization_billing has no row for
+ * it); true once the fetched state has been durably written.
  */
 async function syncSubscription(
+  stripe: Stripe,
   admin: ReturnType<typeof createAdminClient>,
-  subscription: Stripe.Subscription,
-  eventCreatedAt: Date,
+  subscriptionId: string,
 ): Promise<boolean> {
+  let subscription: Stripe.Subscription;
+  try {
+    subscription = await stripe.subscriptions.retrieve(subscriptionId);
+  } catch (err) {
+    console.error(
+      `Failed to retrieve canonical state for Stripe subscription ${subscriptionId}: ${err instanceof Error ? err.message : err}`,
+    );
+    return false;
+  }
+
   const organizationId = await resolveOrganizationId(admin, subscription);
   if (organizationId === null) {
     console.error(
@@ -148,25 +167,67 @@ async function syncSubscription(
     return false;
   }
 
+  // Read first, rather than inferring existence from a zero-row UPDATE
+  // result: this sync also needs to know whether activated_at is already
+  // set, to decide whether this event marks the organization's FIRST
+  // successful activation (see status.ts's isBillingActive and the
+  // activated_at migration's own comment for why that's a one-time,
+  // never-overwritten signal, not the current subscription's own status).
+  const { data: current, error: readError } = await admin
+    .from("organization_billing")
+    .select("activated_at")
+    .eq("organization_id", organizationId)
+    .maybeSingle();
+
+  if (readError) {
+    console.error(`Failed to read organization_billing for organization ${organizationId}: ${readError.message}`);
+    return false;
+  }
+  if (!current) {
+    // A real data-integrity problem, not a legitimate state -- every
+    // organization should always have a row (see the grandfathering
+    // migration's comment for why).
+    console.error(
+      `organization_billing has no row for organization ${organizationId} -- cannot sync Stripe subscription ${subscription.id}`,
+    );
+    return false;
+  }
+
   const item = subscription.items.data[0];
-  const eventCreatedIso = eventCreatedAt.toISOString();
+  const updatePayload: OrganizationBillingUpdate = {
+    stripe_customer_id:
+      typeof subscription.customer === "string" ? subscription.customer : subscription.customer.id,
+    stripe_subscription_id: subscription.id,
+    status: toBillingStatus(subscription.status),
+    current_period_end: item ? new Date(item.current_period_end * 1000).toISOString() : null,
+    cancel_at_period_end: subscription.cancel_at_period_end,
+    // Diagnostic only (DECISIONS.md) -- when this organization's billing
+    // state was last synced, not tied to any particular event's own
+    // timestamp. Never read back or compared against.
+    last_synced_at: new Date().toISOString(),
+    // A real subscription now genuinely exists for this organization --
+    // any pending Checkout intent (features/billing/actions.ts's
+    // claimAndCreateCheckoutSession) has been fulfilled, successfully or
+    // not, and must not keep blocking a future legitimate attempt. Always
+    // cleared here rather than left to its own expiry, so a completed
+    // checkout is reflected immediately, not just after the lease's own
+    // (up to 24h) timeout.
+    pending_checkout_session_id: null,
+    pending_checkout_expires_at: null,
+  };
+  // Set only on the transition INTO 'active' for an organization that has
+  // never activated before -- omitted from the payload entirely (not set
+  // to null) once already set, so it is never overwritten by a later
+  // cancellation, a later reactivation, or a differently-timed duplicate
+  // delivery of this same event.
+  if (subscription.status === "active" && current.activated_at == null) {
+    updatePayload.activated_at = new Date().toISOString();
+  }
 
   const { data: updated, error: updateError } = await admin
     .from("organization_billing")
-    .update({
-      stripe_customer_id:
-        typeof subscription.customer === "string" ? subscription.customer : subscription.customer.id,
-      stripe_subscription_id: subscription.id,
-      status: toBillingStatus(subscription.status),
-      current_period_end: item ? new Date(item.current_period_end * 1000).toISOString() : null,
-      cancel_at_period_end: subscription.cancel_at_period_end,
-      last_synced_event_created_at: eventCreatedIso,
-    })
+    .update(updatePayload)
     .eq("organization_id", organizationId)
-    // Out-of-order guard, enforced atomically in the same statement as the
-    // write: only apply this event if it's newer than the last one this
-    // organization actually had applied (or nothing has been applied yet).
-    .or(`last_synced_event_created_at.is.null,last_synced_event_created_at.lt.${eventCreatedIso}`)
     .select("organization_id")
     .maybeSingle();
 
@@ -174,28 +235,12 @@ async function syncSubscription(
     console.error(`Failed to sync billing state for organization ${organizationId}: ${updateError.message}`);
     return false;
   }
-
-  if (updated) {
-    return true;
-  }
-
-  // The update matched zero rows. Two very different reasons that can
-  // happen, and only one of them is a failure:
-  //   - organization_billing has no row at all for this organization -- a
-  //     real data-integrity problem (see the grandfathering migration's
-  //     comment for why every organization should always have one).
-  //   - the row exists, but this event is older than (or exactly as old
-  //     as) one already applied -- correctly skipped, not a failure.
-  const { data: existing, error: existError } = await admin
-    .from("organization_billing")
-    .select("organization_id")
-    .eq("organization_id", organizationId)
-    .maybeSingle();
-
-  if (existError || !existing) {
-    console.error(
-      `organization_billing has no row for organization ${organizationId} -- cannot sync Stripe subscription ${subscription.id}`,
-    );
+  if (!updated) {
+    // The row existed moments ago (the read above) but the update
+    // matched zero rows -- there is no legitimate way for that to happen
+    // (nothing deletes organization_billing rows), so this is a genuine,
+    // unexpected failure worth a retry rather than a silent success.
+    console.error(`organization_billing row for organization ${organizationId} vanished between read and update`);
     return false;
   }
 

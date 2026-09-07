@@ -98,6 +98,16 @@ test.describe("existing organizations are protected from the tour", () => {
   });
 
   test("an organization backfilled to completed never sees the tour appear on its own", async ({ page }) => {
+    // Explicit, >= 2xl (dashboard-nav.tsx's own breakpoint, moved there
+    // after billing added a seventh link) -- found during an independent
+    // review: this test used to rely on Playwright's own default 1280x720
+    // viewport to find the inline nav's "Helyszínek" link directly, which
+    // silently started timing out once the nav's breakpoint moved past
+    // that default. What this test actually verifies (navigating around
+    // the dashboard doesn't trigger the tour) has nothing to do with the
+    // nav's own responsive breakpoint, so it's pinned wide rather than
+    // left to whatever Playwright's default happens to be.
+    await page.setViewportSize({ width: 1536, height: 900 });
     await signIn(page);
     await expect(page.getByRole("dialog")).toHaveCount(0);
     // Navigating around the dashboard afterward must not trigger it either.
@@ -276,7 +286,7 @@ test.describe("reopening the tour", () => {
     expect(data?.onboarding_tour_status).toBe("completed");
   });
 
-  test("the reopen button is reachable on both the desktop nav row and the mobile menu button's own header row", async ({
+  test("the reopen button is reachable on both a wide viewport and a narrow one -- it lives in the header, not gated by the nav's own breakpoint", async ({
     page,
   }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
@@ -338,10 +348,16 @@ test.describe("desktop nav highlight and mobile degradation", () => {
     member = await seedOrgWithMember("tour-viewport", "owner", "not_started");
   });
 
-  test("desktop (>= xl): the current step's real nav link is highlighted via its data-tour attribute", async ({
+  test("desktop (>= 2xl): the current step's real nav link is highlighted via its data-tour attribute", async ({
     page,
   }) => {
-    await page.setViewportSize({ width: 1280, height: 900 });
+    // Found during an independent review: the desktop nav's own breakpoint
+    // moved from xl (1280px) to 2xl (1536px) after billing added a
+    // seventh link (see dashboard-nav.tsx's own comment for the real
+    // bounding-box measurements behind that) -- this test's viewport must
+    // track it, or it silently starts exercising the below-breakpoint
+    // (Sheet-menu, no highlight target) path instead of the one it's for.
+    await page.setViewportSize({ width: 1536, height: 900 });
     await signIn(page);
     await page.getByRole("button", { name: "Kezdjük" }).click();
     await page.getByRole("button", { name: "Következő" }).click(); // -> Helyszínek step
@@ -355,14 +371,14 @@ test.describe("desktop nav highlight and mobile degradation", () => {
     await expect(target).not.toHaveClass(/tour-highlight/);
   });
 
-  test("below xl: the desktop nav link doesn't exist as a visible element, so the tour renders the same step as a plain dialog instead of pointing at nothing", async ({
+  test("below 2xl: the desktop nav link doesn't exist as a visible element, so the tour renders the same step as a plain dialog instead of pointing at nothing", async ({
     page,
   }) => {
     await page.setViewportSize({ width: 375, height: 720 });
     await signIn(page);
 
     // The exact R4-06 assertion this project already uses elsewhere: below
-    // xl, the inline nav link is not present as a visible element at all.
+    // 2xl, the inline nav link is not present as a visible element at all.
     await expect(page.getByRole("link", { name: "Helyszínek" })).toHaveCount(0);
 
     await page.getByRole("button", { name: "Kezdjük" }).click();

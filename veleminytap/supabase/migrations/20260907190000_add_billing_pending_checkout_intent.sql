@@ -1,0 +1,40 @@
+-- Found during an independent review: Checkout's own duplicate-session
+-- protection was a 30-second Stripe idempotency key keyed on
+-- organization+interval+time-bucket -- real protection against a rapid
+-- double form-submit landing in the SAME 30-second bucket, but no
+-- protection at all against two submissions a minute apart, or two
+-- different intervals (monthly vs. yearly) submitted close together:
+-- neither shares an idempotency key, so both would happily create a
+-- separate, real Stripe Checkout Session (and, if both are completed, two
+-- real subscriptions) for the same organization. Browser button state
+-- (disabling the submit button after a click) was the only thing standing
+-- between a user and a second tab, a slow page, or a second attempt after
+-- the first appeared to hang -- never something server-side code should
+-- rely on for a financial action.
+--
+-- These two columns give createCheckoutSessionAction (features/billing/
+-- actions.ts) a real, database-backed lease per organization: before
+-- calling Stripe at all, it atomically claims a short-lived "in progress"
+-- window (pending_checkout_expires_at a minute or so out,
+-- pending_checkout_session_id still null) -- a concurrent second request
+-- for the same organization sees the claim (its own attempt to set the
+-- same window fails to match any row, since the existing one hasn't
+-- expired yet) and is told to retry shortly instead of racing ahead to
+-- create its own Stripe session. Once Stripe actually responds,
+-- pending_checkout_session_id is filled in and the expiry extended to
+-- match the Checkout Session's own real expiry -- a THIRD request in that
+-- window reuses the existing open session (retrieved fresh from Stripe
+-- and redirected to) instead of creating a new one at all.
+--
+-- Cleared by the webhook once a subscription genuinely exists for this
+-- organization (app/api/webhooks/stripe/route.ts's syncSubscription) --
+-- the intent has been fulfilled at that point, successfully or not, and
+-- must not keep blocking a future legitimate retry. Otherwise, the
+-- columns' own expiry is what "clears" a lease that was never followed
+-- through (an abandoned tab, a crashed request) -- no separate cron or
+-- Stripe event needed for that half.
+--
+-- Purely additive -- safe to apply at any point, exactly like migration 18.
+alter table public.organization_billing
+  add column pending_checkout_session_id text,
+  add column pending_checkout_expires_at timestamptz;

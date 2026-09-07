@@ -13,6 +13,7 @@ import {
   credentialSecretsFromArgs,
   pollHealth,
   getPendingMigrations,
+  runFinalize,
 } from "./rollout.mjs";
 
 vi.mock("node:child_process", () => ({ execFileSync: vi.fn() }));
@@ -1054,4 +1055,118 @@ describe("pollHealth surfaces /api/health's own diagnostic error text on a faile
     });
     await expect(pollHealth(urlFor(server), EXPECTED_SHA, "production", 1)).rejects.toThrow(/APP_ENV/);
   }, 10000);
+});
+
+/**
+ * Found during an independent review, after the prepare/finalize split
+ * above had already shipped: runFinalize used to return immediately, as a
+ * success, the moment validateFinalizePlan reported nothing pending --
+ * without ever polling /api/health. An empty "remaining" set only proves
+ * the DATABASE side is done; it proves nothing about whether the
+ * application actually running in production is the one that was meant to
+ * be there. That gap meant an operator who ran finalize with the wrong
+ * --expected-sha (a typo, or a stale value copied from an earlier
+ * attempt), or against a database where the enforce migrations became
+ * applied some other way entirely (an out-of-band change, or a genuinely
+ * completed prior run for a DIFFERENT release), still saw finalize print
+ * success -- with the live deployment never actually checked against what
+ * was asked for this time. These tests use real local HTTP servers for
+ * the health endpoint (matching the R7-04 tests above, not a mocked
+ * fetch), and mock only execFileSync (the `supabase migration list` call)
+ * to report nothing pending, so runFinalize takes the exact
+ * nothing-to-apply path this finding is about.
+ */
+describe("runFinalize verifies live health even when nothing is pending to apply", () => {
+  const REAL_ENFORCE_FILE = "20260907160000_fix_organization_billing_grandfathering_and_event_ordering.sql";
+  const EXPECTED_SHA = "a".repeat(40);
+  let servers: http.Server[] = [];
+
+  beforeEach(() => {
+    vi.mocked(execFileSync).mockReset();
+    // Nothing pending at all -- simulating "the enforce migrations are
+    // already applied," the exact state that used to short-circuit
+    // straight to success.
+    vi.mocked(execFileSync).mockReturnValue(JSON.stringify({ migrations: [] }));
+  });
+
+  afterEach(async () => {
+    await Promise.all(servers.map((s) => new Promise<void>((resolve) => s.close(() => resolve()))));
+    servers = [];
+  });
+
+  function startServer(handler: (req: http.IncomingMessage, res: http.ServerResponse) => void): Promise<http.Server> {
+    return new Promise((resolve) => {
+      const server = http.createServer(handler);
+      servers.push(server);
+      server.listen(0, "127.0.0.1", () => resolve(server));
+    });
+  }
+
+  function urlFor(server: http.Server) {
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    return `http://127.0.0.1:${port}/api/health`;
+  }
+
+  function baseArgs(healthUrl: string, expectedSha: string, deployTimeoutSeconds: number) {
+    return {
+      target: "production",
+      environment: "production",
+      allowedOrigin: "https://example.com",
+      healthUrl,
+      supabaseProjectRef: "ref",
+      dbUrl: `postgresql://postgres:pw@db.ref.supabase.co:5432/postgres`,
+      enforce: [REAL_ENFORCE_FILE],
+      expectedSha,
+      deployTimeoutSeconds,
+      drainSeconds: 0,
+      dryRun: false,
+    };
+  }
+
+  it(
+    "refuses to report success when nothing is pending but the live deployment does NOT match --expected-sha",
+    async () => {
+      const server = await startServer((_req, res) => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        // A real, live deployment -- just not the one --expected-sha names.
+        res.end(JSON.stringify({ ok: true, commitSha: "b".repeat(40), environment: "production" }));
+      });
+      await expect(runFinalize(baseArgs(urlFor(server), EXPECTED_SHA, 1))).rejects.toThrow(/Timed out/);
+    },
+    10000,
+  );
+
+  it(
+    "refuses to report success when nothing is pending but /api/health itself is unreachable",
+    async () => {
+      // A port nothing is listening on -- the health check must fail, not
+      // be skipped.
+      await expect(runFinalize(baseArgs("http://127.0.0.1:1/api/health", EXPECTED_SHA, 1))).rejects.toThrow(
+        /Timed out/,
+      );
+    },
+    10000,
+  );
+
+  it(
+    "succeeds when nothing is pending AND the live deployment genuinely matches --expected-sha -- confirming a real prior success is still recognized as one",
+    async () => {
+      const server = await startServer((_req, res) => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, commitSha: EXPECTED_SHA, environment: "production" }));
+      });
+      let requestCount = 0;
+      server.on("request", () => {
+        requestCount += 1;
+      });
+      await expect(runFinalize(baseArgs(urlFor(server), EXPECTED_SHA, 5))).resolves.toBeUndefined();
+      // Drain/smoke-check/apply are all specific to actually applying a
+      // migration -- with nothing to apply, exactly one health check
+      // should run (step 2), not the extra smoke-check poll step 4 would
+      // add for a real apply.
+      expect(requestCount).toBe(1);
+    },
+    10000,
+  );
 });

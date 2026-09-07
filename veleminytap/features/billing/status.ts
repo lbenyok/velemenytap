@@ -1,4 +1,21 @@
-import type { BillingStatus } from "@/lib/supabase/database.types";
+import type { BillingStatus, MembershipRole } from "@/lib/supabase/database.types";
+
+/**
+ * Found during an independent review: createCheckoutSessionAction and
+ * createPortalSessionAction previously authorized on organization
+ * membership alone -- any role at all, including `manager`/`staff` --
+ * ignoring the role `getCurrentOrganization()` already returns. Billing is
+ * a financial/administrative action (creating a real recurring charge,
+ * or opening a portal that can cancel one); restricted to the two roles
+ * this product's role model treats as administrative, matching how most
+ * SaaS products scope billing access. Only `owner` memberships are
+ * actually created today (there is no invite flow yet), so this has no
+ * visible effect until one exists -- enforced now anyway, so a future
+ * invite flow doesn't have to remember to add this check retroactively.
+ */
+export function canManageBilling(role: MembershipRole): boolean {
+  return role === "owner" || role === "admin";
+}
 
 export type OrganizationBilling = {
   status: BillingStatus;
@@ -7,34 +24,73 @@ export type OrganizationBilling = {
   cancel_at_period_end: boolean;
   stripe_subscription_id: string | null;
   grandfathered_at: string | null;
+  activated_at: string | null;
 };
 
 /**
- * Whether the dashboard should be reachable. Three distinct ways in,
- * checked in this order:
- *   - A Stripe subscription exists: its own status is authoritative and
- *     everything else below is ignored entirely -- this covers both a
- *     normal paid subscription ('active') and a genuine Stripe-side trial
- *     ('trialing', e.g. a promo granted manually in the Stripe dashboard,
- *     distinct from this app's own pre-signup trial below). Checkout
- *     itself never requests a Stripe trial (see
- *     features/billing/actions.ts), so this path is rare in practice, but
- *     treating it as active is what Stripe's own status actually means.
- *     Checked first so that once an organization actually subscribes,
- *     Stripe's real status always wins over the two no-subscription paths
- *     below -- grandfathering in particular is a one-time bridge, not a
- *     permanent exemption that would otherwise mask a lapsed or canceled
- *     real subscription.
- *   - No Stripe subscription, but grandfathered: an organization that
- *     already existed before billing was introduced (see the
- *     grandfathering migration's own comment for the full policy) --
- *     always active, with no expiry, until it actually subscribes.
- *   - No Stripe subscription, not grandfathered: only this app's own
- *     no-card 14-day trial (organizations_after_insert_provision_trial,
- *     see the billing migration) can grant access, and only while
- *     trial_ends_at hasn't passed. Computed at call time rather than a
- *     stored "expired" status, so nothing needs a cron job to flip it --
- *     see DECISIONS.md.
+ * Stripe subscription statuses that represent a live or recoverable
+ * subscription -- one that a second, concurrent Checkout Session would
+ * risk double-charging the organization for. `canceled` and
+ * `incomplete_expired` are deliberately excluded: both are terminal,
+ * dead ends that Checkout's own guard (features/billing/actions.ts) must
+ * let an organization start a fresh subscription past, not be
+ * permanently blocked by. See DECISIONS.md for the full transition table
+ * this set and isBillingActive below were both derived from.
+ */
+const LIVE_SUBSCRIPTION_STATUSES: ReadonlySet<BillingStatus> = new Set([
+  "trialing",
+  "active",
+  "past_due",
+  "incomplete",
+  "unpaid",
+  "paused",
+]);
+
+export function hasLiveSubscription(billing: Pick<OrganizationBilling, "status" | "stripe_subscription_id"> | null): boolean {
+  if (!billing?.stripe_subscription_id) return false;
+  return LIVE_SUBSCRIPTION_STATUSES.has(billing.status);
+}
+
+/**
+ * Whether the dashboard should be reachable. The explicit state machine,
+ * found to be incomplete during an independent review (the previous
+ * version switched to Stripe's status the instant ANY subscription
+ * existed, even one that had never successfully activated -- see
+ * DECISIONS.md and the activated_at migration's own comment for the full
+ * incident), checked in this order:
+ *
+ *   1. A real Stripe subscription (`stripe_subscription_id` set) whose
+ *      `status` is `'active'` or `'trialing'`: always allowed. A
+ *      genuinely good current Stripe status is the strongest, most direct
+ *      signal there is, and is authoritative on its own -- checked first,
+ *      independent of anything else on the row. Gated on
+ *      `stripe_subscription_id` specifically because `status` defaults to
+ *      `'trialing'` at the database level even for a row that has never
+ *      had a real Stripe subscription at all (the column's own default,
+ *      shared with the no-card signup trial's row shape) -- without this
+ *      guard, every fresh signup would read as "Stripe-trialing" and
+ *      bypass its own `trial_ends_at` expiry entirely.
+ *   2. Otherwise, `activated_at` set (a real payment has genuinely
+ *      succeeded for this organization at least once, ever, even if the
+ *      subscription has since lapsed): blocked. Grandfathering/the
+ *      no-card trial are a one-time bridge to get an organization to its
+ *      first real activation, not something to fall back to once real
+ *      billing has genuinely started -- a canceled or past-due paying
+ *      customer does not regain access by virtue of having been
+ *      grandfathered a year ago, or of a trial that expired long before
+ *      it ever subscribed.
+ *   3. Otherwise (status isn't active/trialing, and billing has never
+ *      actually activated -- whether because no subscription exists at
+ *      all, or one does but never got past incomplete/incomplete_expired/
+ *      canceled-before-ever-paying): access comes from whichever
+ *      pre-payment grant applies --
+ *       - grandfathered_at set: always active, no expiry (see
+ *         DECISIONS.md's grandfathering entry). This is what keeps a
+ *         grandfathered organization's access intact through a failed
+ *         first payment attempt (incomplete -> incomplete_expired) --
+ *         exactly the case the previous version got wrong.
+ *       - otherwise: the no-card signup trial, active only while
+ *         trial_ends_at hasn't passed.
  *
  * Deliberately does NOT gate anything but the dashboard itself -- the
  * public NFC landing page and feedback submission never check this. See
@@ -44,9 +100,11 @@ export type OrganizationBilling = {
 export function isBillingActive(billing: OrganizationBilling | null): boolean {
   if (!billing) return false;
 
-  if (billing.stripe_subscription_id) {
-    return billing.status === "active" || billing.status === "trialing";
+  if (billing.stripe_subscription_id && (billing.status === "active" || billing.status === "trialing")) {
+    return true;
   }
+
+  if (billing.activated_at) return false;
 
   if (billing.grandfathered_at) return true;
 
