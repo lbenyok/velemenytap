@@ -4,6 +4,15 @@ Last updated: 2026-09-08. This round reviewed a parallel implementation, integra
 
 ## Fifth round, part three: a second, stricter pass on the same reasoning, and the rest of the lifecycle (2026-09-08)
 
+### Verification for this part
+
+- `npm run test` — **557/557** across 24 files (+4: the empty-search, failed-search, found-by-enumeration, incomplete-enumeration, window-bounding and no-recorded-time cases).
+- `npm run typecheck` / `npm run lint` / `npm run build` — clean.
+- `node scripts/verify-local-database.mjs` — **29 checks** against real PostgreSQL 17.
+- Full isolated browser suite — **186/186, zero failed, zero skipped**.
+- Both new regressions mutation-tested: reverting to "empty search authorizes creation" fails 5 tests; treating an incomplete enumeration as absent fails the page-cap test.
+
+
 ### The customer-recovery fix was still resting on an inference
 
 Part two replaced "trust the search" with "trust the search unless the attempt is old" — and that second version still authorized creating a chargeable Stripe object on the strength of an empty search result. The justification was that an existing Customer "would have been indexed by now," from Stripe's statement that propagation runs "up to an hour behind **during outages**." That is a description of typical behaviour with no stated upper bound, not a guarantee, and it was being used to license exactly the irreversible action it could not license.
