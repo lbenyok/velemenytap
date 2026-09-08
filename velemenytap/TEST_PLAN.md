@@ -131,3 +131,36 @@ Recovery and resend-confirmation go through **Supabase Auth's own mailer** (`aut
 Verified end to end against the real isolated project: the form renders, the Server Action calls Auth with the correct `redirectTo`, Auth mints a valid recovery token honouring that target, `/auth/callback` completes it, and `/auth/reset-password` renders the set-new-password form with a real session cookie established. An invalid or already-used link degrades to `/auth/auth-code-error` rather than anywhere authenticated.
 
 **Not verified: the SMTP hop itself.** Two sends against the isolated project returned `over_email_send_rate_limit`, which is the signature of Supabase's built-in mailer (a few messages per hour, deliverable only to project team members) rather than configured custom SMTP. Whether production has custom SMTP is unknown from here and needs the owner. Until it is confirmed, assume password reset and signup confirmation do not reach real customers.
+
+## Subscription lifecycle beyond the initial purchase (Stripe test clocks)
+
+The initial monthly purchase was verified by hand through the real UI. Everything *after* it is verified by a scripted test-clock lifecycle, because renewals and dunning cannot be driven by clicking. Each phase asserts what **this app** persisted, not what Stripe reports, since the app's own convergence is what is under test.
+
+| Phase | Verified |
+|---|---|
+| Annual checkout | Real Checkout Session on the yearly price through the app's own Server Action, paid with `4242`; reconciled to `active` with `current_period_end` exactly **365 days** out, generations 5/5 |
+| Renewal | Clock advanced one month; renewal charged, still `active`, `current_period_end` rolled forward |
+| Failed payment | Default payment method swapped to a failing card, clock advanced; lands in `past_due` (a recoverable status, not a terminal one) |
+| Recovery | Good card restored and the open invoice paid; returns to `active` |
+| Cancellation | Subscription cancelled; entitlement revoked to `canceled` |
+| Resubscription | New subscription created; entitlement restored and `stripe_subscription_id` points at the NEW subscription, not the cancelled one |
+| Convergence | `billing_sync_requested == billing_sync_completed` and `needs_reconciliation = false` after the whole lifecycle |
+| `activated_at` | Set once on first activation and never rewritten across renewal, failure, cancellation or resubscription |
+
+**One property of the harness worth knowing before reading its output.** A webhook whose reconciliation defers (another writer holds the lease) returns HTTP 500 *on purpose*, so Stripe redelivers it — with the durable dirty flag and the scheduled sweep as the guarantee underneath. `stripe listen` does **not** redeliver on 5xx, so a local run silently loses exactly the retries production would make, and phase results vary run to run purely on which event lost a lease race. Driving the sweep from the harness restores the half of the production contract the CLI cannot model. Separately, `get_billing_reconciliation_candidates` backs off any organization attempted in the last minute, so a sweep fired immediately after a burst correctly reports nothing to do — the final convergence assertion has to wait that window out, which the 15-minute production schedule does by construction.
+
+A related harness lesson: linking the organization to its Stripe customer *before* creating a subscription made the script emit `customer.created` / `payment_method.attached` / `customer.updated` against a subscription-less organization. A reconciler then correctly recorded "nothing to reconcile" and marked the generation satisfied — a true result for a state the real product never produces, since its Stripe customer is created inside checkout and a subscription always follows. The harness now links the organization only once a subscription exists.
+
+## Supabase Auth email delivery — measured, not inferred
+
+Against the **isolated** project, with a real readable mailbox (a disposable `mail.tm` address polled over its API):
+
+- `auth.signUp` → **HTTP 429 `over_email_send_rate_limit`** (project-wide hourly cap).
+- `auth.resend` → accepted, **no error** — and nothing arrived within 120 s.
+- `auth.resetPasswordForEmail` → accepted, **no error** — and nothing arrived within 120 s.
+
+"Accepted, then never delivered" to an ordinary external address is the signature of Supabase's built-in email service, which only delivers to project team members and caps sends at a few per hour; configured custom SMTP raises that cap substantially. Two independent signals therefore point the same way, and the practical conclusion does not depend on choosing between them: **a normal customer's confirmation and password-reset emails do not arrive on this configuration.**
+
+What that does *not* establish is production's configuration, which is a separate project and cannot be read from here without a Management API token (`supabase projects list` fails with `LegacyPlatformAuthRequiredError`). Nor does an API acceptance response distinguish "queued and delivered" from "queued and dropped" — only a mailbox does, which is why this test uses one.
+
+Everything either side of the SMTP hop is verified: the forms render, the Server Actions call Auth with the correct `redirectTo`, Auth mints valid tokens honouring those targets, `/auth/callback` completes both server-readable link shapes, `/auth/reset-password` renders with a real session, and an invalid or already-used link degrades to `/auth/auth-code-error`.

@@ -1,6 +1,52 @@
 # Status
 
-Last updated: 2026-09-08, after reviewing a parallel implementation of the same product, integrating its two better billing mechanisms via forward migrations, then checking this project's own claims about Stripe against Stripe's documentation -- which found a third defect and reversed one of the integration's own decisions -- and completing a real Stripe test-mode lifecycle against the result. Branch `feature/billing-subscriptions`, PR #4 (`github.com/lbenyok/velemenytap/pull/4`), still open, still not merged to `master`. Nothing deployed to production.
+Last updated: 2026-09-08. This round reviewed a parallel implementation, integrated its two better billing mechanisms via forward migrations, then twice corrected this project's own reasoning about Stripe against Stripe's documentation — the second time removing an inference that was authorizing a chargeable action. The full test-mode payment lifecycle (annual, renewal, failure, recovery, cancellation, resubscription) is now verified, and Auth email delivery has been measured against a real mailbox rather than inferred. Branch `feature/billing-subscriptions`, PR #4 (`github.com/lbenyok/velemenytap/pull/4`), still open, still not merged to `master`. Nothing deployed to production.
+
+## Fifth round, part three: a second, stricter pass on the same reasoning, and the rest of the lifecycle (2026-09-08)
+
+### The customer-recovery fix was still resting on an inference
+
+Part two replaced "trust the search" with "trust the search unless the attempt is old" — and that second version still authorized creating a chargeable Stripe object on the strength of an empty search result. The justification was that an existing Customer "would have been indexed by now," from Stripe's statement that propagation runs "up to an hour behind **during outages**." That is a description of typical behaviour with no stated upper bound, not a guarantee, and it was being used to license exactly the irreversible action it could not license.
+
+**The asymmetry that does hold.** Search's documented weakness is staleness, so it can only produce FALSE NEGATIVES — it may miss a Customer that exists, but will not invent one that doesn't. So a positive search result is proof; an empty one proves nothing at any age. `customers.list` is the canonical read: no consistency caveat, a `created` interval filter, and pagination. A COMPLETED enumeration of the bounded window in which an attempt could have created anything is therefore a negative that means something.
+
+**Now:** creation is authorized only by that completed enumeration. Anything that prevents it finishing — an API error, or more pages than the cap — is `unknown`, and the attempt is left **pending**, with its identity and recorded timestamp untouched, for a later request to re-check. Nothing is created and nothing is rotated on an ambiguous outcome. A failed search no longer blocks a decidable case either, because the enumeration decides.
+
+**Verified against real Stripe, not argued:** a Customer created and then immediately searched for returned **zero results**, while `list({created:{gte}})` found it on the first page — precisely the false negative the previous version would have turned into a duplicate. Both regressions were mutation-tested: reverting to "empty search authorizes creation" fails 5 tests, and treating an incomplete enumeration as absent fails the page-cap test.
+
+### The rest of the payment lifecycle
+
+The initial monthly purchase (part two) was one point on a curve. Everything after it is now verified too, via Stripe test clocks — renewals and dunning cannot be driven by clicking:
+
+| Phase | Result |
+|---|---|
+| **Annual checkout** | Real Session on the yearly price through the app's own Server Action; `active`, `current_period_end` exactly **365 days** out, generations 5/5 |
+| **Renewal** | Clock +1 month; charged, still `active`, period rolled forward |
+| **Failed payment** | Failing card + clock advance; lands in `past_due` — recoverable, not terminal |
+| **Recovery** | Good card restored, open invoice paid; back to `active` |
+| **Cancellation** | Entitlement revoked to `canceled` |
+| **Resubscription** | Restored, and pointed at the NEW subscription id |
+| **Convergence** | `requested == completed`, `needs_reconciliation = false` |
+| **`activated_at`** | Set once, never rewritten across any of the above |
+
+**Two harness properties that produced misleading runs before being understood**, both worth recording because they will mislead the next person too:
+
+1. A webhook whose reconciliation defers returns **HTTP 500 on purpose**, so Stripe redelivers it. `stripe listen` does **not** redeliver on 5xx — so a local run loses exactly the retries production makes, and phases pass or fail run to run purely on which event lost a lease race. Early runs scored 6/8, 7/10, 10/10, 8/10 for this reason alone. Driving the sweep from the harness restores the half of the contract the CLI cannot model.
+2. Linking the organization to its Stripe customer *before* creating a subscription made the script emit `customer.created` / `payment_method.attached` / `customer.updated` against a subscription-less organization. A reconciler then correctly recorded "nothing to reconcile" and marked the generation satisfied — a true answer about a state the real product never produces, since its customer is created inside checkout with a subscription following immediately.
+
+Neither was an application defect, and chasing the first as though it were would have been wasted work.
+
+### Auth email delivery, now measured against a real mailbox
+
+Against the isolated project, with a disposable `mail.tm` address polled over its API:
+
+- `auth.signUp` → **429 `over_email_send_rate_limit`**
+- `auth.resend` → accepted, no error, **nothing arrived** in 120 s
+- `auth.resetPasswordForEmail` → accepted, no error, **nothing arrived** in 120 s
+
+"Accepted then never delivered" to an ordinary external address is the signature of Supabase's built-in mailer, which delivers only to project team members and caps sends at a few per hour. Two independent signals agree, and the practical conclusion does not depend on choosing between them: **on this configuration a normal customer's confirmation and reset emails do not arrive.** An API acceptance response cannot distinguish queued-and-delivered from queued-and-dropped — only a mailbox can, which is why this test now uses one.
+
+Production's own configuration is a separate project and still cannot be read from here: `supabase projects list` fails with `LegacyPlatformAuthRequiredError`, and no `SUPABASE_ACCESS_TOKEN` is set in this environment.
 
 ## Fifth round, part two: verifying the integration against Stripe's actual documented behaviour, and the real test-mode lifecycle (2026-09-08)
 
@@ -65,10 +111,12 @@ Recorded because the failure mode is genuinely misleading -- a broad, alarming f
 
 Ordered by what stops a paying customer from succeeding.
 
-1. **Supabase Auth custom SMTP, on production.** Owner action. Without it, signup confirmation and password reset do not reach real customers at all — the built-in service only delivers to project team members, a few per hour. Resend is already an account here with a verified `velemenytap.hu` domain, so the work is configuring it as Auth's SMTP provider, not choosing a vendor. **Verification once configured:** send one real reset email to a mailbox you control, click it, and confirm it lands on `/auth/reset-password` and not `/auth/auth-code-error`. That single click also settles the link-shape question above.
+1. **Supabase Auth custom SMTP.** Owner action, and no longer a suspicion: against the isolated project, `resend` and `resetPasswordForEmail` were both **accepted with no error while nothing arrived** at a real external mailbox, and `signUp` hit the project-wide hourly cap. That is the built-in mailer, which delivers only to project team members. Production is a separate project whose setting still cannot be read from here (`supabase projects list` → `LegacyPlatformAuthRequiredError`, no `SUPABASE_ACCESS_TOKEN` set), so it must be checked, and configured if unset. Resend is already an account here with a verified `velemenytap.hu` domain, so this is configuration, not vendor selection. **Verification once configured:** one real reset email to a mailbox you control, clicked — it should land on `/auth/reset-password`, not `/auth/auth-code-error`. That single click also settles the link-shape question above.
 2. **Stripe production configuration.** Live-mode Product and Prices, the webhook endpoint and its signing secret, and `RECONCILE_SWEEP_SECRET` plus the matching GitHub Actions secret and `PRODUCTION_RECONCILE_SWEEP_URL` for the sweep. None are set. `assertStripeConfigurationValid` fails closed, so checkout stays unavailable rather than misbehaving until they are.
 3. **The billing migration set has never been applied to production.** Production is still on migration 17. The rollout manifest in `DEPLOYMENT.md` § 7 lists all of `20260907150000`–`20260908120000` as `--expand`; the reasoning that makes the signature-changing ones safe depends on none of them having been deployed yet, and expires the moment any of them is.
 4. **A real live-mode transaction has never been made.** Test mode is now genuinely proven end to end, but live mode has its own Product, Prices, keys and webhook endpoint, and the `livemode` guard is deliberately strict.
+
+5. **`RECONCILE_SWEEP_SECRET` is load-bearing, not optional.** The lifecycle work made this concrete rather than theoretical. A webhook whose reconciliation defers returns HTTP 500 so Stripe redelivers it, and the durable dirty flag plus the scheduled sweep are the guarantee underneath — but with the secret unset the endpoint answers **503** and that backstop does not exist. A burst of renewal or resubscription events can then leave entitlement stale with no page load to self-heal it, since renewals involve no customer visit. Set the Vercel env var, the matching GitHub Actions secret, and `PRODUCTION_RECONCILE_SWEEP_URL` together, and confirm one run returns 200.
 
 Pending owner confirmation, deliberately not decided here:
 

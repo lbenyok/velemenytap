@@ -290,37 +290,30 @@ async function getOrCreateStripeCustomerId(
   } else {
     // The key may have been pruned ("we generate a new request if a key is
     // reused after the original is pruned"), so replaying it could create a
-    // SECOND Customer. Search is now the only thing that can tell us
-    // whether one already exists -- and it has to actually work.
-    //
-    // A failed search is not a negative result. It is no result. Failing
-    // closed here costs this organization one retry; getting it wrong
-    // charges a real customer on a Customer this app will never look at
-    // again.
-    let found: Stripe.Customer | null;
-    try {
-      const search = await stripe.customers.search({
-        query: `metadata['organization_id']:'${organizationId}'`,
-        limit: 1,
-      });
-      found = search.data[0] ?? null;
-    } catch (err) {
-      throw new Error(
-        `Stripe customer recovery search failed for organization ${organizationId}, and this creation attempt is ` +
-          `too old for its idempotency key to be relied on -- refusing to create a customer that may duplicate an ` +
-          `existing one: ${err instanceof Error ? err.message : err}`,
-      );
-    }
+    // SECOND Customer. Something else has to establish whether this
+    // attempt already produced one -- and the two available mechanisms are
+    // sound in opposite directions, so each is used only where it holds.
+    const found = await findExistingCustomer(stripe, organizationId, claim.started_at);
 
-    if (found) {
-      customerId = found.id;
+    if (found.outcome === "found") {
+      customerId = found.customer.id;
+    } else if (found.outcome === "unknown") {
+      // Ambiguous, so the attempt stays PENDING: its creation identity and
+      // recorded timestamp are left exactly as they are, and a later
+      // request (or the owner simply trying again) re-enters this same path
+      // and re-checks. Nothing is created and nothing is rotated, because
+      // this request cannot tell the difference between "no Customer
+      // exists" and "one exists that I failed to observe."
+      throw new Error(
+        `Cannot establish whether organization ${organizationId} already has a Stripe customer from an earlier ` +
+          `interrupted creation, and this attempt is too old for its idempotency key to be relied on. Leaving the ` +
+          `attempt pending rather than risking a duplicate: ${found.reason}`,
+      );
     } else {
-      // A successful, empty search on an attempt recorded more than 23
-      // hours ago. Stripe documents worst-case search propagation as "up
-      // to an hour behind during outages", so an existing Customer would
-      // have been indexed roughly 22 hours ago -- this is as strong as
-      // negative evidence about Stripe's own state can get from outside.
-      // The dead key is retired for a fresh one before creating.
+      // outcome === "absent": a COMPLETED enumeration of the canonical list
+      // endpoint over the whole window in which this attempt could have
+      // created anything, which found nothing. That is a sound negative --
+      // see findExistingCustomer for why an empty search alone is not.
       const { data: rotated, error: rotateError } = await admin.rpc("rotate_stripe_customer_creation", {
         p_organization_id: organizationId,
         p_creation_id: creationId,
@@ -352,6 +345,126 @@ async function getOrCreateStripeCustomerId(
 
   // The creation identity was superseded, or another caller recorded first.
   return resolvePersistedCustomerId(admin, organizationId);
+}
+
+// How far before the recorded attempt time the canonical enumeration starts,
+// covering clock skew between this database and Stripe.
+const CUSTOMER_PROBE_SLACK_MS = 5 * 60 * 1000;
+
+// Pages of 100 the enumeration will walk before giving up. Hitting this cap
+// means "I could not finish looking", which is deliberately NOT the same
+// answer as "I looked everywhere and found nothing" -- see below.
+const CUSTOMER_PROBE_MAX_PAGES = 20;
+
+type CustomerProbe =
+  | { outcome: "found"; customer: Stripe.Customer }
+  | { outcome: "absent" }
+  | { outcome: "unknown"; reason: string };
+
+/**
+ * Answers "did an earlier, interrupted attempt already create this
+ * organization's Stripe Customer?" once the frozen idempotency key is too
+ * old to answer it for us.
+ *
+ * The two mechanisms Stripe offers are sound in OPPOSITE directions, and
+ * conflating them is what makes this dangerous:
+ *
+ *   * **Search** is an index Stripe explicitly documents as lagging -- "up
+ *     to an hour behind during outages", and with no stated upper bound at
+ *     all. Its failure mode is therefore *staleness*, which can only ever
+ *     produce a FALSE NEGATIVE: it may fail to show a Customer that exists,
+ *     but it will not invent one that doesn't. So a POSITIVE search result
+ *     is trustworthy and is taken as proof; an EMPTY one proves nothing,
+ *     however old the attempt is. "Old enough that it would surely be
+ *     indexed by now" is an inference from a soft statement about typical
+ *     behaviour, not a documented guarantee, and this code no longer
+ *     authorizes creating a chargeable object on it.
+ *
+ *   * **List** is the canonical API read -- sorted by creation date,
+ *     filterable by a `created` interval, and carrying none of search's
+ *     consistency caveats. Walking it over the bounded window in which this
+ *     attempt could possibly have created anything gives a NEGATIVE that
+ *     actually means something. That enumeration is what authorizes
+ *     creation; nothing else does.
+ *
+ * The window is bounded because the create() call either reached Stripe
+ * within its own request lifetime or never did (`lib/stripe.ts` caps that
+ * at a 20s timeout with 2 retries), so a Customer produced by this attempt
+ * carries a `created` within minutes of the recorded attempt time. Rows
+ * backfilled by migration 20260908120000 have a less precise recorded time,
+ * so the window deliberately runs to the present for them rather than
+ * assuming a tight bound -- at the cost of more pages, not of soundness.
+ *
+ * Anything that stops the enumeration finishing -- an API error, or more
+ * pages than the cap -- returns "unknown", never "absent". The caller keeps
+ * the attempt pending on "unknown". One extra retry for the organization is
+ * a far cheaper mistake than a duplicate Customer that silently strands a
+ * real payment.
+ */
+async function findExistingCustomer(
+  stripe: Stripe,
+  organizationId: number,
+  attemptStartedAt: string | null,
+): Promise<CustomerProbe> {
+  const organizationTag = organizationId.toString();
+
+  // Cheap positive-only probe first. A hit here is conclusive; a miss is
+  // not, and deliberately does not short-circuit the enumeration below.
+  try {
+    const search = await stripe.customers.search({
+      query: `metadata['organization_id']:'${organizationTag}'`,
+      limit: 1,
+    });
+    const hit = search.data[0];
+    if (hit) return { outcome: "found", customer: hit };
+  } catch (err) {
+    // Not fatal on its own: the canonical enumeration is what decides.
+    console.error(
+      `Stripe customer search failed for organization ${organizationId}; falling back to the canonical list ` +
+        `enumeration: ${err instanceof Error ? err.message : err}`,
+    );
+  }
+
+  if (!attemptStartedAt) {
+    return { outcome: "unknown", reason: "no recorded creation-attempt time to bound the search window with" };
+  }
+  const startedAtMs = Date.parse(attemptStartedAt);
+  if (Number.isNaN(startedAtMs)) {
+    return { outcome: "unknown", reason: `unparseable creation-attempt time ${attemptStartedAt}` };
+  }
+  const createdGte = Math.floor((startedAtMs - CUSTOMER_PROBE_SLACK_MS) / 1000);
+
+  let startingAfter: string | undefined;
+  for (let page = 0; page < CUSTOMER_PROBE_MAX_PAGES; page++) {
+    let batch: Stripe.ApiList<Stripe.Customer>;
+    try {
+      batch = await stripe.customers.list({
+        created: { gte: createdGte },
+        limit: 100,
+        ...(startingAfter ? { starting_after: startingAfter } : {}),
+      });
+    } catch (err) {
+      return {
+        outcome: "unknown",
+        reason: `the canonical customer enumeration failed: ${err instanceof Error ? err.message : err}`,
+      };
+    }
+
+    for (const candidate of batch.data) {
+      if (candidate.metadata?.organization_id === organizationTag) {
+        return { outcome: "found", customer: candidate };
+      }
+    }
+
+    if (!batch.has_more) return { outcome: "absent" };
+    startingAfter = batch.data[batch.data.length - 1]?.id;
+    if (!startingAfter) return { outcome: "absent" };
+  }
+
+  return {
+    outcome: "unknown",
+    reason: `more than ${CUSTOMER_PROBE_MAX_PAGES * 100} customers created since this attempt -- enumeration did not complete`,
+  };
 }
 
 /**

@@ -64,6 +64,7 @@ vi.mock("next/navigation", () => ({
 const customersCreate = vi.fn();
 const customersUpdate = vi.fn();
 const customersSearch = vi.fn();
+const customersList = vi.fn();
 const checkoutSessionsCreate = vi.fn();
 const checkoutSessionsRetrieve = vi.fn();
 const checkoutSessionsExpire = vi.fn();
@@ -71,7 +72,7 @@ const billingPortalSessionsCreate = vi.fn();
 
 vi.mock("@/lib/stripe", () => ({
   createStripeClient: () => ({
-    customers: { create: customersCreate, update: customersUpdate, search: customersSearch },
+    customers: { create: customersCreate, update: customersUpdate, search: customersSearch, list: customersList },
     checkout: {
       sessions: { create: checkoutSessionsCreate, retrieve: checkoutSessionsRetrieve, expire: checkoutSessionsExpire },
     },
@@ -258,6 +259,9 @@ beforeEach(() => {
   });
 
   customersSearch.mockResolvedValue(SEARCH_EMPTY);
+  // The canonical enumeration finds nothing and completes, unless a test
+  // says otherwise.
+  customersList.mockResolvedValue({ data: [], has_more: false });
   customersCreate.mockResolvedValue({ id: "cus_new" });
   customersUpdate.mockResolvedValue({ id: "cus_new" });
   checkoutSessionsCreate.mockResolvedValue({ id: "cs_new", url: "https://checkout.stripe.com/session" });
@@ -428,20 +432,29 @@ describe("createCheckoutSessionAction", () => {
     });
 
     /**
-     * REGRESSION. The previous implementation caught a failed search, logged
-     * "proceeding to create", and created. Combined with a pruned key that
-     * produces a genuine second Stripe Customer for an organization that
-     * already has one -- and reconciliation only ever lists subscriptions
-     * for the customer persisted locally, so a customer who then pays on
-     * the other one is charged and stays locked out of the dashboard.
+     * The two mechanisms are sound in OPPOSITE directions, and the tests
+     * below pin each to the direction it actually holds in:
      *
-     * A failed search is not a negative result. It is no result.
+     *   search  -- lags, so it can only produce false NEGATIVES. A hit is
+     *              proof; a miss proves nothing, at any age.
+     *   list    -- the canonical read, no consistency caveat. A COMPLETED
+     *              enumeration finding nothing is what authorizes creating.
+     *
+     * Anything that stops the enumeration finishing is "unknown", and the
+     * attempt stays pending rather than being resolved either way.
      */
-    it("REGRESSION: outside the window, a FAILED search must not be treated as evidence that no customer exists", async () => {
+    it("REGRESSION: an empty search alone never authorizes creating, however old the attempt is", async () => {
       queueRpc("claim_checkout_attempt", claimResult());
       queue({ data: { stripe_customer_id: null }, error: null });
-      queueRpc("claim_stripe_customer_creation", customerClaim({ retry_safe: false }));
-      customersSearch.mockRejectedValue(new Error("search unavailable"));
+      queueRpc(
+        "claim_stripe_customer_creation",
+        customerClaim({ retry_safe: false, started_at: new Date(Date.now() - 40 * 24 * 3600 * 1000).toISOString() }),
+      );
+      customersSearch.mockResolvedValue({ data: [] });
+      // The canonical enumeration cannot complete, so the answer is
+      // "unknown" -- even though the search came back cleanly empty and
+      // the attempt is forty days old.
+      customersList.mockRejectedValue(new Error("list unavailable"));
 
       const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData()));
 
@@ -450,17 +463,74 @@ describe("createCheckoutSessionAction", () => {
       expect(rpcCalls.some((c) => c.name === "rotate_stripe_customer_creation")).toBe(false);
     });
 
-    /**
-     * REGRESSION, the other half: an empty search result is trusted ONLY
-     * because the recorded creation attempt is older than both the key
-     * lifetime and Stripe's documented worst-case propagation delay. The
-     * dead key is retired for a fresh one before creating, so the new
-     * Customer is created under an identity that can itself be recorded.
-     */
-    it("outside the window, a successful EMPTY search rotates the dead key before creating", async () => {
+    it("REGRESSION: a FAILED search is no result either -- but it does not by itself block a decidable case", async () => {
       queueRpc("claim_checkout_attempt", claimResult());
       queue({ data: { stripe_customer_id: null }, error: null });
       queueRpc("claim_stripe_customer_creation", customerClaim({ creation_id: "creation_old", retry_safe: false }));
+      queueRpc("rotate_stripe_customer_creation", { data: "creation_fresh", error: null });
+      queueRpc("record_stripe_customer", RECORD_CUSTOMER_OK);
+      customersSearch.mockRejectedValue(new Error("search unavailable"));
+      // The canonical enumeration still completes and finds nothing, which
+      // is a sound negative on its own -- search never had to work.
+      customersList.mockResolvedValue({ data: [], has_more: false });
+      queueRpc("renew_checkout_attempt", RENEW_OK);
+      queueRpc("record_checkout_session", RECORD_OK);
+
+      await redirectedTo(createCheckoutSessionAction(checkoutFormData()));
+
+      expect(customersList).toHaveBeenCalled();
+      expect(customersCreate).toHaveBeenCalledWith(
+        { metadata: { organization_id: "42" } },
+        { idempotencyKey: "customer-create:creation_fresh" },
+      );
+    });
+
+    it("a completed enumeration that FINDS the interrupted attempt's customer adopts it, never creating a second", async () => {
+      queueRpc("claim_checkout_attempt", claimResult());
+      queue({ data: { stripe_customer_id: null }, error: null });
+      queueRpc("claim_stripe_customer_creation", customerClaim({ retry_safe: false }));
+      queueRpc("record_stripe_customer", RECORD_CUSTOMER_OK);
+      // Search has not indexed it yet -- exactly the false negative the
+      // enumeration exists to catch.
+      customersSearch.mockResolvedValue({ data: [] });
+      customersList.mockResolvedValue({
+        data: [{ id: "cus_orphaned", metadata: { organization_id: "42" } }],
+        has_more: false,
+      });
+      queueRpc("renew_checkout_attempt", RENEW_OK);
+      queueRpc("record_checkout_session", RECORD_OK);
+
+      await redirectedTo(createCheckoutSessionAction(checkoutFormData()));
+
+      expect(customersCreate).not.toHaveBeenCalled();
+      expect(rpcCalls.some((c) => c.name === "rotate_stripe_customer_creation")).toBe(false);
+      expect(checkoutSessionsCreate).toHaveBeenCalledWith(expect.objectContaining({ customer: "cus_orphaned" }), expect.anything());
+    });
+
+    it("an enumeration that runs out of pages is UNKNOWN, not absent -- the attempt stays pending", async () => {
+      queueRpc("claim_checkout_attempt", claimResult());
+      queue({ data: { stripe_customer_id: null }, error: null });
+      queueRpc("claim_stripe_customer_creation", customerClaim({ retry_safe: false }));
+      customersSearch.mockResolvedValue({ data: [] });
+      // Always another page, and never a match: the enumeration can never
+      // conclude, so it must not be read as a negative.
+      customersList.mockResolvedValue({
+        data: Array.from({ length: 100 }, (_, i) => ({ id: `cus_other_${i}`, metadata: { organization_id: "99" } })),
+        has_more: true,
+      });
+
+      const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData()));
+
+      expect(target).toBe("/dashboard/billing?error=checkout_failed");
+      expect(customersCreate).not.toHaveBeenCalled();
+      expect(rpcCalls.some((c) => c.name === "rotate_stripe_customer_creation")).toBe(false);
+    });
+
+    it("bounds the enumeration by the recorded attempt time rather than scanning all history", async () => {
+      const startedAt = new Date(Date.now() - 30 * 3600 * 1000).toISOString();
+      queueRpc("claim_checkout_attempt", claimResult());
+      queue({ data: { stripe_customer_id: null }, error: null });
+      queueRpc("claim_stripe_customer_creation", customerClaim({ retry_safe: false, started_at: startedAt }));
       queueRpc("rotate_stripe_customer_creation", { data: "creation_fresh", error: null });
       queueRpc("record_stripe_customer", RECORD_CUSTOMER_OK);
       customersSearch.mockResolvedValue({ data: [] });
@@ -469,14 +539,23 @@ describe("createCheckoutSessionAction", () => {
 
       await redirectedTo(createCheckoutSessionAction(checkoutFormData()));
 
-      const rotate = rpcCalls.find((c) => c.name === "rotate_stripe_customer_creation");
-      expect(rotate?.args).toMatchObject({ p_organization_id: 42, p_creation_id: "creation_old" });
-      expect(customersCreate).toHaveBeenCalledWith(
-        { metadata: { organization_id: "42" } },
-        { idempotencyKey: "customer-create:creation_fresh" },
-      );
-      const record = rpcCalls.find((c) => c.name === "record_stripe_customer");
-      expect(record?.args).toMatchObject({ p_creation_id: "creation_fresh", p_customer_id: "cus_new" });
+      const call = customersList.mock.calls[0][0];
+      const expectedGte = Math.floor((Date.parse(startedAt) - 5 * 60 * 1000) / 1000);
+      expect(call.created.gte).toBe(expectedGte);
+      expect(call.limit).toBe(100);
+    });
+
+    it("an attempt with no recorded start time is UNKNOWN -- there is no window to bound a sound negative with", async () => {
+      queueRpc("claim_checkout_attempt", claimResult());
+      queue({ data: { stripe_customer_id: null }, error: null });
+      queueRpc("claim_stripe_customer_creation", customerClaim({ retry_safe: false, started_at: null }));
+      customersSearch.mockResolvedValue({ data: [] });
+
+      const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData()));
+
+      expect(target).toBe("/dashboard/billing?error=checkout_failed");
+      expect(customersCreate).not.toHaveBeenCalled();
+      expect(customersList).not.toHaveBeenCalled();
     });
 
     it("a rotation lost to a concurrent caller re-resolves rather than creating under an identity it no longer holds", async () => {
