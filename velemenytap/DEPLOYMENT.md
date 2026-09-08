@@ -75,6 +75,8 @@ This is a genuine open item, not a technical detail this document can resolve on
 2. **A fixed, manually-configured tax rate** on the Price/Checkout Session — simpler to set up, but requires the owner to get the applicable Hungarian VAT rate and any future rate changes right manually, with no automated jurisdiction handling if this app ever sells outside Hungary.
 3. **An external Hungarian invoicing provider**, issued alongside (not instead of) the Stripe payment — common where a business already has an existing accountant/invoicing relationship (e.g. for NAV/Hungarian tax-authority-compliant e-invoicing requirements Stripe's own invoices may not satisfy on their own) integrated via Stripe webhooks or a manual process.
 
+The open questions this raises for the owner and their accountant are collected in `BUSINESS_DECISIONS.md` § 2, deliberately phrased as questions rather than as claims about what Hungarian law requires.
+
 **This app's paid-launch readiness is explicitly blocked on this decision being made** — see `STATUS.md`'s "What's needed from the user" for this as a standalone open item. Until it's resolved, `tax_behavior: "inclusive"` being correctly configured on the Stripe Price is a necessary but explicitly *not sufficient* condition for actually being ready to accept real Hungarian customer payments in compliance with Hungarian VAT/invoicing law.
 
 ### Scheduled billing reconciliation sweep — `RECONCILE_SWEEP_SECRET` (fourth independent review, Finding 5) — not yet configured; an owner action

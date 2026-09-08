@@ -118,6 +118,8 @@ Recorded because the failure mode is genuinely misleading -- a broad, alarming f
 
 ### Launch blockers
 
+The actionable form of this list, with who has to do each step, is `LAUNCH_CHECKLIST.md`; the non-engineering decisions are in `BUSINESS_DECISIONS.md`. Both are kept short on purpose. What follows is the reasoning behind them.
+
 Ordered by what stops a paying customer from succeeding.
 
 1. **Supabase Auth custom SMTP.** Owner action, and no longer a suspicion: against the isolated project, `resend` and `resetPasswordForEmail` were both **accepted with no error while nothing arrived** at a real external mailbox, and `signUp` hit the project-wide hourly cap. That is the built-in mailer, which delivers only to project team members. Production is a separate project whose setting still cannot be read from here (`supabase projects list` → `LegacyPlatformAuthRequiredError`, no `SUPABASE_ACCESS_TOKEN` set), so it must be checked, and configured if unset. Resend is already an account here with a verified `velemenytap.hu` domain, so this is configuration, not vendor selection. **Verification once configured:** one real reset email to a mailbox you control, clicked — it should land on `/auth/reset-password`, not `/auth/auth-code-error`. That single click also settles the link-shape question above.
