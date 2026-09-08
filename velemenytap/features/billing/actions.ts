@@ -262,49 +262,132 @@ async function getOrCreateStripeCustomerId(
 
   const stripe = createStripeClient();
 
-  let customerId: string;
-  const recovered = await stripe.customers
-    .search({ query: `metadata['organization_id']:'${organizationId}'`, limit: 1 })
-    .catch((err) => {
-      console.error(
-        `Stripe customer recovery search failed for organization ${organizationId}, proceeding to create: ${err instanceof Error ? err.message : err}`,
-      );
-      return null;
-    });
+  const { data: claimRows, error: claimError } = await admin.rpc("claim_stripe_customer_creation", {
+    p_organization_id: organizationId,
+  });
+  if (claimError) {
+    throw new Error(`Failed to claim Stripe customer creation for organization ${organizationId}: ${claimError.message}`);
+  }
+  const claim = claimRows?.[0];
+  if (!claim) {
+    throw new Error(`claim_stripe_customer_creation returned no row for organization ${organizationId}`);
+  }
+  // Resolved by a concurrent caller between the read above and this claim.
+  if (claim.customer_id) {
+    return claim.customer_id;
+  }
 
-  if (recovered && recovered.data.length > 0) {
-    customerId = recovered.data[0].id;
+  let creationId = claim.creation_id!;
+  let customerId: string;
+
+  if (claim.retry_safe) {
+    // Inside the frozen key's lifetime. Replaying create() under it either
+    // returns the Customer a previous attempt already made, or makes the
+    // first one -- Stripe decides, authoritatively, and no search is
+    // involved at all. This is the case Stripe's own guidance rules out
+    // solving with search ("don't use search in read-after-write flows").
+    customerId = await createStripeCustomer(stripe, organizationId, creationId, organizationName);
   } else {
-    const customer = await stripe.customers.create(
-      { metadata: { organization_id: organizationId.toString() } },
-      { idempotencyKey: `customer-create:org-${organizationId}` },
-    );
-    customerId = customer.id;
+    // The key may have been pruned ("we generate a new request if a key is
+    // reused after the original is pruned"), so replaying it could create a
+    // SECOND Customer. Search is now the only thing that can tell us
+    // whether one already exists -- and it has to actually work.
+    //
+    // A failed search is not a negative result. It is no result. Failing
+    // closed here costs this organization one retry; getting it wrong
+    // charges a real customer on a Customer this app will never look at
+    // again.
+    let found: Stripe.Customer | null;
     try {
-      await stripe.customers.update(customerId, { name: organizationName });
+      const search = await stripe.customers.search({
+        query: `metadata['organization_id']:'${organizationId}'`,
+        limit: 1,
+      });
+      found = search.data[0] ?? null;
     } catch (err) {
-      console.error(`Failed to set the display name on Stripe customer ${customerId}: ${err instanceof Error ? err.message : err}`);
+      throw new Error(
+        `Stripe customer recovery search failed for organization ${organizationId}, and this creation attempt is ` +
+          `too old for its idempotency key to be relied on -- refusing to create a customer that may duplicate an ` +
+          `existing one: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+
+    if (found) {
+      customerId = found.id;
+    } else {
+      // A successful, empty search on an attempt recorded more than 23
+      // hours ago. Stripe documents worst-case search propagation as "up
+      // to an hour behind during outages", so an existing Customer would
+      // have been indexed roughly 22 hours ago -- this is as strong as
+      // negative evidence about Stripe's own state can get from outside.
+      // The dead key is retired for a fresh one before creating.
+      const { data: rotated, error: rotateError } = await admin.rpc("rotate_stripe_customer_creation", {
+        p_organization_id: organizationId,
+        p_creation_id: creationId,
+      });
+      if (rotateError) {
+        throw new Error(`Failed to rotate the Stripe customer creation key for organization ${organizationId}: ${rotateError.message}`);
+      }
+      if (!rotated) {
+        // Someone else rotated or resolved it first -- re-resolve rather
+        // than create under an identity this request no longer holds.
+        return resolvePersistedCustomerId(admin, organizationId);
+      }
+      creationId = rotated;
+      customerId = await createStripeCustomer(stripe, organizationId, creationId, organizationName);
     }
   }
 
-  // Concurrency guard: `.is("stripe_customer_id", null)` means this
-  // UPDATE only actually applies if nothing else has already set it since
-  // the read above.
-  const { data: updated, error: updateError } = await admin
-    .from("organization_billing")
-    .update({ stripe_customer_id: customerId })
-    .eq("organization_id", organizationId)
-    .is("stripe_customer_id", null)
-    .select("stripe_customer_id")
-    .maybeSingle();
-
-  if (updateError) {
-    throw new Error(`Failed to persist Stripe customer id for organization ${organizationId}: ${updateError.message}`);
+  const { data: recorded, error: recordError } = await admin.rpc("record_stripe_customer", {
+    p_organization_id: organizationId,
+    p_creation_id: creationId,
+    p_customer_id: customerId,
+  });
+  if (recordError) {
+    throw new Error(`Failed to persist Stripe customer id for organization ${organizationId}: ${recordError.message}`);
   }
-  if (updated) {
+  if (recorded === true) {
     return customerId;
   }
 
+  // The creation identity was superseded, or another caller recorded first.
+  return resolvePersistedCustomerId(admin, organizationId);
+}
+
+/**
+ * The idempotency key is derived from the durable creation identity, not
+ * from the organization id, so retiring a dead key is expressible at all --
+ * an org-derived key can never be rotated, which is what made the pruned-key
+ * case unrecoverable before.
+ *
+ * `name` is mutable (an organization can rename itself between a first
+ * attempt and a retry) and Stripe rejects a replay whose parameters differ,
+ * so it is never passed inside the idempotency-guarded create() -- it is set
+ * by a separate, ordinary update() afterwards, which carries no idempotency
+ * constraint and is safe to repeat with whatever the current name is.
+ */
+async function createStripeCustomer(
+  stripe: Stripe,
+  organizationId: number,
+  creationId: string,
+  organizationName: string,
+): Promise<string> {
+  const customer = await stripe.customers.create(
+    { metadata: { organization_id: organizationId.toString() } },
+    { idempotencyKey: `customer-create:${creationId}` },
+  );
+  try {
+    await stripe.customers.update(customer.id, { name: organizationName });
+  } catch (err) {
+    console.error(`Failed to set the display name on Stripe customer ${customer.id}: ${err instanceof Error ? err.message : err}`);
+  }
+  return customer.id;
+}
+
+async function resolvePersistedCustomerId(
+  admin: ReturnType<typeof createAdminClient>,
+  organizationId: number,
+): Promise<string> {
   const { data: raced, error: racedError } = await admin
     .from("organization_billing")
     .select("stripe_customer_id")

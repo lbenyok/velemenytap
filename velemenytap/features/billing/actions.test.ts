@@ -145,6 +145,7 @@ function queue(...entries: Array<{ data: unknown; error: unknown }>) {
 
 const CUSTOMER_EXISTS = { data: { stripe_customer_id: "cus_existing" }, error: null };
 
+
 function claimResult(overrides: Partial<{
   attempt_id: string;
   owner_token: string | null;
@@ -196,6 +197,35 @@ function storedRequest(priceId: string, marker = "stored") {
 }
 
 const RENEW_OK = { data: true, error: null };
+
+/**
+ * claim_stripe_customer_creation's result. `retrySafe: true` means the
+ * frozen idempotency key is still live at Stripe, so replaying create()
+ * cannot produce a second Customer; `false` means it may have been pruned
+ * ("we generate a new request if a key is reused after the original is
+ * pruned") and something else has to establish that none exists.
+ */
+function customerClaim(overrides: Partial<{
+  customer_id: string | null;
+  creation_id: string | null;
+  started_at: string | null;
+  retry_safe: boolean;
+}> = {}) {
+  return {
+    data: [
+      {
+        customer_id: null,
+        creation_id: "creation_1",
+        started_at: new Date().toISOString(),
+        retry_safe: true,
+        ...overrides,
+      },
+    ],
+    error: null,
+  };
+}
+
+const RECORD_CUSTOMER_OK = { data: true, error: null };
 const RECORD_OK = { data: true, error: null };
 const RELEASE_OK = { data: true, error: null };
 const SEARCH_EMPTY = { data: [] };
@@ -341,47 +371,163 @@ describe("createCheckoutSessionAction", () => {
     });
   });
 
-  describe("Finding 10: durable customer-creation recovery", () => {
-    it("recovers an existing Stripe customer via search before ever calling create()", async () => {
+  /**
+   * Stripe documents both halves of this problem explicitly, and neither
+   * mechanism is sufficient alone:
+   *
+   *   "Don't use search in read-after-write flows where strict consistency
+   *    is necessary... propagation of new or updated data can be up to an
+   *    hour behind during outages." -- /api/customers/search
+   *
+   *   "You can remove keys from the system automatically after they're at
+   *    least 24 hours old. We generate a new request if a key is reused
+   *    after the original is pruned." -- /api/idempotent_requests
+   *
+   * So the frozen key is authoritative from 0 to ~24 hours (where search
+   * may lag) and search is authoritative from ~1 hour onwards (where the
+   * key may be pruned). The durable creation record is what lets the code
+   * know which regime it is in.
+   */
+  describe("durable customer-creation identity (Stripe search is NOT read-after-write consistent)", () => {
+    it("inside the retry-safe window it replays create() under the frozen key and never searches at all", async () => {
       queueRpc("claim_checkout_attempt", claimResult());
-      queue(
-        { data: { stripe_customer_id: null }, error: null },
-        { data: { stripe_customer_id: "cus_recovered" }, error: null },
+      queue({ data: { stripe_customer_id: null }, error: null });
+      queueRpc("claim_stripe_customer_creation", customerClaim({ creation_id: "creation_abc", retry_safe: true }));
+      queueRpc("record_stripe_customer", RECORD_CUSTOMER_OK);
+      queueRpc("renew_checkout_attempt", RENEW_OK);
+      queueRpc("record_checkout_session", RECORD_OK);
+
+      await redirectedTo(createCheckoutSessionAction(checkoutFormData()));
+
+      // The search is the read-after-write use Stripe rules out; inside
+      // this window it is not merely unnecessary but wrong to consult.
+      expect(customersSearch).not.toHaveBeenCalled();
+      expect(customersCreate).toHaveBeenCalledWith(
+        { metadata: { organization_id: "42" } },
+        { idempotencyKey: "customer-create:creation_abc" },
       );
+      // The mutable name never rides inside the idempotent create, since
+      // Stripe rejects a replay whose parameters differ.
+      expect(customersUpdate).toHaveBeenCalledWith("cus_new", { name: "Test Org" });
+    });
+
+    it("outside the window, a successful search that FINDS the customer adopts it instead of creating", async () => {
+      queueRpc("claim_checkout_attempt", claimResult());
+      queue({ data: { stripe_customer_id: null }, error: null });
+      queueRpc("claim_stripe_customer_creation", customerClaim({ retry_safe: false }));
+      queueRpc("record_stripe_customer", RECORD_CUSTOMER_OK);
       customersSearch.mockResolvedValue({ data: [{ id: "cus_recovered" }] });
       queueRpc("renew_checkout_attempt", RENEW_OK);
       queueRpc("record_checkout_session", RECORD_OK);
+
       await redirectedTo(createCheckoutSessionAction(checkoutFormData()));
+
       expect(customersSearch).toHaveBeenCalledWith(expect.objectContaining({ query: expect.stringContaining("42") }));
       expect(customersCreate).not.toHaveBeenCalled();
       expect(checkoutSessionsCreate).toHaveBeenCalledWith(expect.objectContaining({ customer: "cus_recovered" }), expect.anything());
     });
 
-    it("creates a new customer with STABLE (name-free) idempotency-guarded params, then sets the name separately", async () => {
+    /**
+     * REGRESSION. The previous implementation caught a failed search, logged
+     * "proceeding to create", and created. Combined with a pruned key that
+     * produces a genuine second Stripe Customer for an organization that
+     * already has one -- and reconciliation only ever lists subscriptions
+     * for the customer persisted locally, so a customer who then pays on
+     * the other one is charged and stays locked out of the dashboard.
+     *
+     * A failed search is not a negative result. It is no result.
+     */
+    it("REGRESSION: outside the window, a FAILED search must not be treated as evidence that no customer exists", async () => {
       queueRpc("claim_checkout_attempt", claimResult());
       queue({ data: { stripe_customer_id: null }, error: null });
-      queueRpc("renew_checkout_attempt", RENEW_OK);
-      queueRpc("record_checkout_session", RECORD_OK);
-      await redirectedTo(createCheckoutSessionAction(checkoutFormData()));
-      expect(customersCreate).toHaveBeenCalledWith(
-        { metadata: { organization_id: "42" } },
-        { idempotencyKey: "customer-create:org-42" },
-      );
-      expect(customersUpdate).toHaveBeenCalledWith("cus_new", { name: "Test Org" });
+      queueRpc("claim_stripe_customer_creation", customerClaim({ retry_safe: false }));
+      customersSearch.mockRejectedValue(new Error("search unavailable"));
+
+      const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData()));
+
+      expect(target).toBe("/dashboard/billing?error=checkout_failed");
+      expect(customersCreate).not.toHaveBeenCalled();
+      expect(rpcCalls.some((c) => c.name === "rotate_stripe_customer_creation")).toBe(false);
     });
 
-    it("does not fail the whole checkout if the recovery search itself errors -- falls through to create()", async () => {
+    /**
+     * REGRESSION, the other half: an empty search result is trusted ONLY
+     * because the recorded creation attempt is older than both the key
+     * lifetime and Stripe's documented worst-case propagation delay. The
+     * dead key is retired for a fresh one before creating, so the new
+     * Customer is created under an identity that can itself be recorded.
+     */
+    it("outside the window, a successful EMPTY search rotates the dead key before creating", async () => {
+      queueRpc("claim_checkout_attempt", claimResult());
+      queue({ data: { stripe_customer_id: null }, error: null });
+      queueRpc("claim_stripe_customer_creation", customerClaim({ creation_id: "creation_old", retry_safe: false }));
+      queueRpc("rotate_stripe_customer_creation", { data: "creation_fresh", error: null });
+      queueRpc("record_stripe_customer", RECORD_CUSTOMER_OK);
+      customersSearch.mockResolvedValue({ data: [] });
+      queueRpc("renew_checkout_attempt", RENEW_OK);
+      queueRpc("record_checkout_session", RECORD_OK);
+
+      await redirectedTo(createCheckoutSessionAction(checkoutFormData()));
+
+      const rotate = rpcCalls.find((c) => c.name === "rotate_stripe_customer_creation");
+      expect(rotate?.args).toMatchObject({ p_organization_id: 42, p_creation_id: "creation_old" });
+      expect(customersCreate).toHaveBeenCalledWith(
+        { metadata: { organization_id: "42" } },
+        { idempotencyKey: "customer-create:creation_fresh" },
+      );
+      const record = rpcCalls.find((c) => c.name === "record_stripe_customer");
+      expect(record?.args).toMatchObject({ p_creation_id: "creation_fresh", p_customer_id: "cus_new" });
+    });
+
+    it("a rotation lost to a concurrent caller re-resolves rather than creating under an identity it no longer holds", async () => {
       queueRpc("claim_checkout_attempt", claimResult());
       queue(
         { data: { stripe_customer_id: null }, error: null },
-        { data: { stripe_customer_id: "cus_new" }, error: null },
+        { data: { stripe_customer_id: "cus_winner" }, error: null },
       );
-      customersSearch.mockRejectedValue(new Error("search unavailable"));
+      queueRpc("claim_stripe_customer_creation", customerClaim({ retry_safe: false }));
+      queueRpc("rotate_stripe_customer_creation", { data: null, error: null });
+      customersSearch.mockResolvedValue({ data: [] });
       queueRpc("renew_checkout_attempt", RENEW_OK);
       queueRpc("record_checkout_session", RECORD_OK);
-      const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData()));
-      expect(target).toBe("https://checkout.stripe.com/session");
-      expect(customersCreate).toHaveBeenCalledTimes(1);
+
+      await redirectedTo(createCheckoutSessionAction(checkoutFormData()));
+
+      expect(customersCreate).not.toHaveBeenCalled();
+      expect(checkoutSessionsCreate).toHaveBeenCalledWith(expect.objectContaining({ customer: "cus_winner" }), expect.anything());
+    });
+
+    it("a claim that comes back already resolved returns that customer without creating or searching", async () => {
+      queueRpc("claim_checkout_attempt", claimResult());
+      queue({ data: { stripe_customer_id: null }, error: null });
+      queueRpc("claim_stripe_customer_creation", customerClaim({ customer_id: "cus_concurrent", creation_id: null }));
+      queueRpc("renew_checkout_attempt", RENEW_OK);
+      queueRpc("record_checkout_session", RECORD_OK);
+
+      await redirectedTo(createCheckoutSessionAction(checkoutFormData()));
+
+      expect(customersCreate).not.toHaveBeenCalled();
+      expect(customersSearch).not.toHaveBeenCalled();
+      expect(checkoutSessionsCreate).toHaveBeenCalledWith(expect.objectContaining({ customer: "cus_concurrent" }), expect.anything());
+    });
+
+    it("record_stripe_customer reporting a superseded identity re-resolves instead of trusting its own creation", async () => {
+      queueRpc("claim_checkout_attempt", claimResult());
+      queue(
+        { data: { stripe_customer_id: null }, error: null },
+        { data: { stripe_customer_id: "cus_persisted_by_someone_else" }, error: null },
+      );
+      queueRpc("claim_stripe_customer_creation", customerClaim());
+      queueRpc("record_stripe_customer", { data: false, error: null });
+      queueRpc("renew_checkout_attempt", RENEW_OK);
+      queueRpc("record_checkout_session", RECORD_OK);
+
+      await redirectedTo(createCheckoutSessionAction(checkoutFormData()));
+
+      expect(checkoutSessionsCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ customer: "cus_persisted_by_someone_else" }),
+        expect.anything(),
+      );
     });
   });
 
@@ -709,9 +855,10 @@ describe("createCheckoutSessionAction", () => {
       queueRpc("claim_checkout_attempt", claimResult());
       queue(
         { data: { stripe_customer_id: null }, error: null },
-        { data: null, error: null },
         { data: { stripe_customer_id: "cus_winner" }, error: null },
       );
+      queueRpc("claim_stripe_customer_creation", customerClaim());
+      queueRpc("record_stripe_customer", { data: false, error: null });
       queueRpc("renew_checkout_attempt", RENEW_OK);
       queueRpc("record_checkout_session", RECORD_OK);
       await redirectedTo(createCheckoutSessionAction(checkoutFormData()));

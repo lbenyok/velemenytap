@@ -96,6 +96,8 @@ export interface Database {
           checkout_owner_token: string | null;
           checkout_request: Json | null;
           checkout_created_at: string | null;
+          customer_creation_id: string | null;
+          customer_creation_started_at: string | null;
           reconciliation_lease_owner: string | null;
           reconciliation_lease_expires_at: string | null;
           needs_reconciliation: boolean;
@@ -127,6 +129,8 @@ export interface Database {
           checkout_owner_token?: string | null;
           checkout_request?: Json | null;
           checkout_created_at?: string | null;
+          customer_creation_id?: string | null;
+          customer_creation_started_at?: string | null;
           reconciliation_lease_owner?: string | null;
           reconciliation_lease_expires_at?: string | null;
           needs_reconciliation?: boolean;
@@ -158,6 +162,8 @@ export interface Database {
           checkout_owner_token?: string | null;
           checkout_request?: Json | null;
           checkout_created_at?: string | null;
+          customer_creation_id?: string | null;
+          customer_creation_started_at?: string | null;
           reconciliation_lease_owner?: string | null;
           reconciliation_lease_expires_at?: string | null;
           needs_reconciliation?: boolean;
@@ -550,6 +556,32 @@ export interface Database {
           p_claim_seconds?: number;
         };
         Returns: boolean | null;
+      };
+      claim_stripe_customer_creation: {
+        Args: {
+          p_organization_id: number;
+        };
+        Returns: {
+          customer_id: string | null;
+          creation_id: string | null;
+          started_at: string | null;
+          retry_safe: boolean;
+        }[];
+      };
+      record_stripe_customer: {
+        Args: {
+          p_organization_id: number;
+          p_creation_id: string;
+          p_customer_id: string;
+        };
+        Returns: boolean;
+      };
+      rotate_stripe_customer_creation: {
+        Args: {
+          p_organization_id: number;
+          p_creation_id: string;
+        };
+        Returns: string | null;
       };
       request_billing_reconciliation: {
         Args: {

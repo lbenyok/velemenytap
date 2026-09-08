@@ -1,6 +1,81 @@
 # Status
 
-Last updated: 2026-09-08, after independently reviewing a parallel implementation of the same product built by another agent, and integrating its two genuinely-better billing mechanisms into this one via forward migrations. Branch `feature/billing-subscriptions`, PR #4 (`github.com/lbenyok/velemenytap/pull/4`), still open, still not merged to `master`. Nothing deployed to production.
+Last updated: 2026-09-08, after reviewing a parallel implementation of the same product, integrating its two better billing mechanisms via forward migrations, then checking this project's own claims about Stripe against Stripe's documentation -- which found a third defect and reversed one of the integration's own decisions -- and completing a real Stripe test-mode lifecycle against the result. Branch `feature/billing-subscriptions`, PR #4 (`github.com/lbenyok/velemenytap/pull/4`), still open, still not merged to `master`. Nothing deployed to production.
+
+## Fifth round, part two: verifying the integration against Stripe's actual documented behaviour, and the real test-mode lifecycle (2026-09-08)
+
+### A claim this project made about Stripe was wrong, and it was hiding a real duplicate
+
+The integration entry below records a decision not to take the parallel implementation's frozen customer-creation identity, on the grounds that this repo's Stripe metadata search was "authoritative even after the key has expired" and therefore "strictly stronger." Checked against Stripe's own reference, both halves of that are false:
+
+- *"Don't use search in read-after-write flows where strict consistency is necessary. Under normal operating conditions, data is searchable in less than a minute. Occasionally, propagation of new or updated data can be up to an hour behind during outages."* — `docs.stripe.com/api/customers/search`
+- *"You can remove keys from the system automatically after they're at least 24 hours old. We generate a new request if a key is reused after the original is pruned."* — `docs.stripe.com/api/idempotent_requests`
+
+The search was being used in precisely the read-after-write flow Stripe rules out, and the key genuinely does expire. Worse, `getOrCreateStripeCustomerId` caught a **failed** search, logged "proceeding to create", and created — treating no-information identically to a negative result. The concrete duplicate:
+
+1. `customers.create()` succeeds at Stripe; the response, or the database write that would record it, is lost. Nothing local records that `cus_X` exists.
+2. 25 hours later the owner retries. The search fails (an incident, a timeout, a rate limit) — or is still lagging.
+3. The code creates again. The key was pruned at 24 hours, so Stripe generates a new request: `cus_Y`.
+
+Reconciliation only ever lists subscriptions for the customer persisted locally, so a customer who then pays on the other one is **charged and stays locked out of the dashboard** — the worst failure this product has.
+
+**Fixed** by migration `20260908120000`, which restores the mechanism this round had rejected, on the merits: the two are complementary, not redundant. The frozen key is authoritative from 0 to ~24 hours (where search may lag); search is authoritative from ~1 hour onward (where the key may be pruned); and knowing which regime you are in requires a durable record of *when* the creation was attempted. Inside the retry-safe window the code now replays the frozen key and does not search at all — removing the read-after-write use of search entirely rather than making it more careful. Outside it, the search must SUCCEED; a failure fails the checkout closed. An empty result is trusted only because the recorded attempt is by then older than both the key lifetime and Stripe's documented worst-case propagation delay, with ~22 hours of margin.
+
+**Regression test, verified both ways** (`features/billing/actions.test.ts`): the new test asserting that a failed search must not license a create fails against the old swallow-and-create body and passes against the fix. Four more cover the retry-safe replay, the successful-empty rotation, a lost rotation race, and a superseded record. Four further checks in `scripts/verify-local-database.mjs` prove the identity semantics against real Postgres.
+
+### Real Stripe test-mode lifecycle, against the newly integrated flow
+
+Isolated Supabase project, Stripe test-mode keys, `stripe listen` forwarding. A seeded organization, a real browser session, a real redirect to Stripe's hosted Checkout, payment with `4242 4242 4242 4242`:
+
+- **14 signed webhook events, all HTTP 200.** Final state: `status: active`, real customer and subscription ids, `activated_at` set, `current_period_end` one month out, lease released, `needs_reconciliation: false`, every `checkout_*` column cleared.
+- **`billing_sync_requested` = `billing_sync_completed` = 3** — the new generation pair converged rather than leaving phantom outstanding work.
+- Mid-flight the row showed exactly the intended new shape: `checkout_attempt_id` and `checkout_request` present, `checkout_owner_token` **null** — the operation had finished while the attempt deliberately outlived it.
+- Stripe's hosted page rendered **HUF 5,990.00** for `unit_amount: 599000`, confirming the `plan.amountHuf * 100` fix against real Stripe data.
+- Exactly **one** Stripe Customer carried the organization's id afterwards, with exactly one subscription.
+
+The three claims about Stripe's own behaviour that the duplicate-prevention design rests on were verified directly, not assumed: replaying an attempt's key with identical parameters returns the **same** Session; replaying it with **different** parameters is rejected (`StripeIdempotencyError`, which is exactly why `checkout_request` must be a stored snapshot rather than rebuilt); a different attempt id yields a new Session. All test data was cleaned up afterwards (subscription cancelled, customers deleted, organization and users removed).
+
+One user-visible bug found by actually looking at the result: the billing page rendered "2026. október 8.." — a Hungarian formatted date already ends in a period, and the sentence added another. Fixed.
+
+### Supabase Auth recovery: proven except the one hop that matters most
+
+Recovery and resend-confirmation go through **Supabase Auth's own mailer**, not this app's Resend integration — a distinction that is easy to miss and that makes the verified `velemenytap.hu` Resend domain irrelevant to them unless it is also wired in as Auth's custom SMTP.
+
+Verified end to end against the real isolated project: the form renders, the Server Action calls Auth with the correct `redirectTo`, Auth mints a valid recovery token honouring that target, `/auth/callback` completes it, and `/auth/reset-password` renders the set-new-password form with a real session cookie established. An invalid or already-used link degrades to `/auth/auth-code-error`, not to anywhere authenticated.
+
+**A real fragility found doing this.** The first recovery link generated came back in the *implicit* shape (`#access_token=…`), and a fragment is never sent to the server, so `/auth/callback` — which read only `?code=` — dead-ended on the error page. Which shape Supabase sends depends on the project's email templates and on whether the generating request registered a PKCE challenge, neither of which this app controls; and the app already had a *second* route (`/auth/confirm`) handling the `token_hash` shape, which recovery did not point at. `/auth/callback` now accepts both server-readable shapes, verified against a real Supabase-minted `token_hash` link (307 → `/auth/reset-password`, session cookie set) and pinned by six unit tests in `app/auth/callback/route.test.ts`.
+
+**Not verified: the SMTP hop.** Two sends against the isolated project returned `over_email_send_rate_limit` — the signature of Supabase's built-in mailer (a few messages per hour, deliverable only to project team members) rather than configured custom SMTP. There is no management token here to read the projects' Auth settings, and no mailbox to receive a real message.
+
+### Verification for this part
+
+- `npm run test` — **553/553** across 24 files (a new `app/auth/callback/route.test.ts`, plus five new customer-creation tests replacing three that encoded the old behaviour — one of which had been asserting the bug).
+- `npm run typecheck` / `npm run lint` / `npm run build` — clean.
+- `node scripts/verify-local-database.mjs` — **29 checks** against real PostgreSQL 17 (up from 25; four new ones prove the creation-identity semantics: concurrent claims share one frozen identity, rotation is refused inside the retry-safe window, a retired identity cannot record, a resolved organization hands out no further identity and cannot be repointed at a second customer).
+- Full isolated browser suite — **186/186 passed, zero failed, zero skipped** (7.2 min, `--workers=1`, `SUPABASE_DB_URL` exported).
+- Migration `20260908120000` applied to the isolated project; 36 local migrations match 36 remote, zero drift.
+
+### A scare worth recording: eight failures that were not a regression
+
+A full suite run came back with 8 failures including **all five `review-gating` tests** -- nominally the product's single most important invariant breaking. It was not a regression. Playwright's `reuseExistingServer` had adopted a leftover dev server on port 3000 whose compiler worker had died, so every page returned a 500; the port check only asks whether *something* answers, not whether it is healthy. Killing the stale process and re-running the same specs passed 12/12 in 37 seconds.
+
+Recorded because the failure mode is genuinely misleading -- a broad, alarming failure set across unrelated public-flow specs, with no error in the app's own code -- and because the instinct to start patching the feedback flow would have been entirely wrong. `e2e/README.md` now carries the check to run first.
+
+### Launch blockers
+
+Ordered by what stops a paying customer from succeeding.
+
+1. **Supabase Auth custom SMTP, on production.** Owner action. Without it, signup confirmation and password reset do not reach real customers at all — the built-in service only delivers to project team members, a few per hour. Resend is already an account here with a verified `velemenytap.hu` domain, so the work is configuring it as Auth's SMTP provider, not choosing a vendor. **Verification once configured:** send one real reset email to a mailbox you control, click it, and confirm it lands on `/auth/reset-password` and not `/auth/auth-code-error`. That single click also settles the link-shape question above.
+2. **Stripe production configuration.** Live-mode Product and Prices, the webhook endpoint and its signing secret, and `RECONCILE_SWEEP_SECRET` plus the matching GitHub Actions secret and `PRODUCTION_RECONCILE_SWEEP_URL` for the sweep. None are set. `assertStripeConfigurationValid` fails closed, so checkout stays unavailable rather than misbehaving until they are.
+3. **The billing migration set has never been applied to production.** Production is still on migration 17. The rollout manifest in `DEPLOYMENT.md` § 7 lists all of `20260907150000`–`20260908120000` as `--expand`; the reasoning that makes the signature-changing ones safe depends on none of them having been deployed yet, and expires the moment any of them is.
+4. **A real live-mode transaction has never been made.** Test mode is now genuinely proven end to end, but live mode has its own Product, Prices, keys and webhook endpoint, and the `livemode` guard is deliberately strict.
+
+Pending owner confirmation, deliberately not decided here:
+
+- **Invoicing.** Stripe issues receipts, not Hungarian-compliant invoices. Whether that needs a Számlázz.hu/Billingo integration, and on what legal basis, is a business decision, not a code one.
+- **The physical NFC card price.** The parallel implementation's marketing copy stated 6,990 Ft. That number has no source anywhere in this repo and the card is sold through a separate storefront, so the pricing section was ported without it. The homepage renders subscription prices from `PLAN_PRICING` and says the card is ordered separately; it states no card price at all until you confirm one.
+
+Also still open and unchanged: the business, legal and support pages (imprint, terms, privacy policy, support contact) that a Hungarian SaaS needs before taking real money.
 
 ## Fifth round: independent review of a parallel implementation, then integration of its checkout-identity and reconciliation-completeness models (2026-09-08, on `feature/billing-subscriptions`)
 

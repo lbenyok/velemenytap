@@ -267,6 +267,91 @@ try {
   assert.equal((await checkout(client, id, "yearly", "price_year")).retry_safe, false);
   pass("an attempt older than the idempotency-key retention window reports retry_safe = false");
 
+  // ------------------------------------------- Stripe customer creation id
+  // Stripe documents that Customer Search is NOT read-after-write consistent
+  // ("up to an hour behind during outages") and that idempotency keys are
+  // pruned after ~24 hours ("we generate a new request if a key is reused
+  // after the original is pruned"). Neither covers the whole timeline, so
+  // the application has to know WHEN a creation was attempted -- which is
+  // what these two columns and three functions exist for.
+  const customerOrg = await org(client, "customer-creation-identity");
+
+  const [claimA, claimB] = await Promise.all([
+    client.query("select * from public.claim_stripe_customer_creation($1)", [customerOrg]),
+    second.query("select * from public.claim_stripe_customer_creation($1)", [customerOrg]),
+  ]);
+  const cA = claimA.rows[0];
+  const cB = claimB.rows[0];
+  // Concurrent callers must share ONE creation identity, so the idempotency
+  // key they each send is the same and Stripe deduplicates them against
+  // each other -- without this application serializing the network calls.
+  assert.equal(cA.creation_id, cB.creation_id);
+  assert.ok(cA.creation_id);
+  assert.equal(cA.customer_id, null);
+  assert.equal(cA.retry_safe, true);
+  pass("concurrent customer-creation claims share one frozen identity, inside the retry-safe window");
+
+  // A wrong identity may not record, and the right one is idempotent.
+  assert.notEqual(
+    (await client.query("select public.record_stripe_customer($1,$2,$3) as ok", [customerOrg, "not_the_creation_id", "cus_forged"])).rows[0].ok,
+    true,
+  );
+  assert.equal((await billing(client, customerOrg)).stripe_customer_id, null);
+
+  // Rotation must be refused while the frozen key is still live -- that key
+  // is the only thing preventing a duplicate in this window.
+  assert.equal(
+    (await client.query("select public.rotate_stripe_customer_creation($1,$2) as id", [customerOrg, cA.creation_id])).rows[0].id,
+    null,
+  );
+  pass("rotation is refused inside the retry-safe window, where the frozen key is still the protection");
+
+  // Age the attempt past the key's documented lifetime.
+  await client.query(
+    "update public.organization_billing set customer_creation_started_at = clock_timestamp() - interval '30 hours' where organization_id=$1",
+    [customerOrg],
+  );
+  const aged = (await client.query("select * from public.claim_stripe_customer_creation($1)", [customerOrg])).rows[0];
+  assert.equal(aged.creation_id, cA.creation_id);
+  assert.equal(aged.retry_safe, false);
+
+  // Only the holder of the current identity may retire it.
+  assert.equal(
+    (await client.query("select public.rotate_stripe_customer_creation($1,$2) as id", [customerOrg, "someone_elses_identity"])).rows[0].id,
+    null,
+  );
+  const rotated = (await client.query("select public.rotate_stripe_customer_creation($1,$2) as id", [customerOrg, cA.creation_id])).rows[0].id;
+  assert.ok(rotated);
+  assert.notEqual(rotated, cA.creation_id);
+  // And the retired identity is genuinely dead: it can no longer record.
+  assert.notEqual(
+    (await client.query("select public.record_stripe_customer($1,$2,$3) as ok", [customerOrg, cA.creation_id, "cus_from_dead_identity"])).rows[0].ok,
+    true,
+  );
+  assert.equal(
+    (await client.query("select public.record_stripe_customer($1,$2,$3) as ok", [customerOrg, rotated, "cus_real"])).rows[0].ok,
+    true,
+  );
+  assert.equal((await billing(client, customerOrg)).stripe_customer_id, "cus_real");
+  pass("a retired creation identity cannot record; only the rotated successor can");
+
+  // Once resolved, no further identity is ever handed out, and rotation is
+  // refused outright -- there is nothing left to create.
+  const resolved = (await client.query("select * from public.claim_stripe_customer_creation($1)", [customerOrg])).rows[0];
+  assert.equal(resolved.customer_id, "cus_real");
+  assert.equal(resolved.creation_id, null);
+  assert.equal(
+    (await client.query("select public.rotate_stripe_customer_creation($1,$2) as id", [customerOrg, rotated])).rows[0].id,
+    null,
+  );
+  // Recording a DIFFERENT customer over a resolved one is refused.
+  assert.notEqual(
+    (await client.query("select public.record_stripe_customer($1,$2,$3) as ok", [customerOrg, rotated, "cus_second"])).rows[0].ok,
+    true,
+  );
+  assert.equal((await billing(client, customerOrg)).stripe_customer_id, "cus_real");
+  pass("a resolved organization hands out no further creation identity and cannot be repointed at a second customer");
+
   // -------------------------------------------------- reconciliation lease
   const syncOrg = await org(client, "sync-concurrency");
   await seedCustomer(client, syncOrg);
@@ -463,6 +548,9 @@ try {
     "fail_billing_reconciliation",
     "get_billing_reconciliation_candidates",
     "record_billing_anomaly",
+    "claim_stripe_customer_creation",
+    "record_stripe_customer",
+    "rotate_stripe_customer_creation",
   ];
   const grants = (
     await client.query(

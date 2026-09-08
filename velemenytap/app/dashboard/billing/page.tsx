@@ -247,7 +247,11 @@ export default async function BillingPage({
               : trialing && trialDaysLeft !== null
                 ? `${trialDaysLeft} nap van hátra az ingyenes próbaidőszakból.`
                 : active && billing?.current_period_end
-                  ? `A következő számlázás dátuma: ${formatDate(billing.current_period_end)}${billing.cancel_at_period_end ? " (lemondva, ekkor szűnik meg)" : ""}.`
+                  ? // A Hungarian formatted date already ends in a period
+                    // ("2026. október 8."), so the sentence must not add a
+                    // second one -- found in the real Stripe test-mode run,
+                    // which rendered "2026. október 8..".
+                    `A következő számlázás dátuma: ${formatDate(billing.current_period_end)}${billing.cancel_at_period_end ? " (lemondva, ekkor szűnik meg)." : ""}`
                   : "Fizess elő, hogy folytathasd az irányítópult használatát."}
           </CardDescription>
         </CardHeader>

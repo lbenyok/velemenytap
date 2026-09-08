@@ -103,3 +103,31 @@ What it proves that nothing else does:
 - Every billing RPC denies `anon`/`authenticated` execute and allows only `service_role`, and an authenticated user sees only its own billing row and cannot grant itself a subscription.
 
 Point it at a cluster with `LOCAL_AUDIT_DATABASE_URL`; it refuses to run against anything but a `127.0.0.1:55439` `audit` cluster, so it cannot be aimed at a real project by accident.
+
+## Real Stripe test-mode lifecycle (2026-09-08, against the integrated flow)
+
+Run against the **isolated** Supabase project with Stripe **test-mode** keys and `stripe listen` forwarding — never production, and never live keys. What it established that no mock can:
+
+- A real Checkout Session, paid with Stripe's `4242` test card, produced **14 signed webhook events, all HTTP 200**, and converged to `status: active` with a real customer and subscription id, `activated_at` set, and `current_period_end` one month out.
+- `billing_sync_requested` and `billing_sync_completed` both reached **3 and matched** — the generation pair converged rather than leaving phantom outstanding work, and `needs_reconciliation` ended `false` with the lease released and every `checkout_*` column cleared.
+- Mid-flight, the row showed exactly the new design: `checkout_attempt_id` and `checkout_request` present with `checkout_owner_token` **null** — the operation had finished while the attempt deliberately outlived it.
+- Stripe's hosted page rendered **HUF 5,990.00** for `unit_amount: 599000`, confirming against real Stripe data that HUF is a two-decimal charging currency and that `plan.amountHuf * 100` is correct.
+- Exactly **one** Stripe Customer carried the organization's id afterwards, and exactly one subscription hung off it.
+
+Three claims about Stripe's own behaviour — the ones the whole duplicate-prevention design rests on — were verified directly rather than assumed:
+
+| Claim | Result |
+|---|---|
+| Replaying an attempt's idempotency key with identical parameters returns the SAME Session | confirmed, same `cs_test_…` id |
+| Replaying it with DIFFERENT parameters is rejected, not deduplicated | confirmed, `StripeIdempotencyError` |
+| A different attempt id yields a genuinely new Session | confirmed |
+
+The middle row is why `checkout_request` has to be an immutable stored snapshot rather than rebuilt per attempt: a takeover that rebuilt the request would hit that error rather than recovering.
+
+## Supabase Auth recovery — what is proven, and the one hop that is not
+
+Recovery and resend-confirmation go through **Supabase Auth's own mailer** (`auth.resetPasswordForEmail`, `auth.resend`), which is an entirely separate path from this app's Resend integration. The verified `velemenytap.hu` Resend domain does nothing for them unless it is also configured as Supabase Auth's custom SMTP.
+
+Verified end to end against the real isolated project: the form renders, the Server Action calls Auth with the correct `redirectTo`, Auth mints a valid recovery token honouring that target, `/auth/callback` completes it, and `/auth/reset-password` renders the set-new-password form with a real session cookie established. An invalid or already-used link degrades to `/auth/auth-code-error` rather than anywhere authenticated.
+
+**Not verified: the SMTP hop itself.** Two sends against the isolated project returned `over_email_send_rate_limit`, which is the signature of Supabase's built-in mailer (a few messages per hour, deliverable only to project team members) rather than configured custom SMTP. Whether production has custom SMTP is unknown from here and needs the owner. Until it is confirmed, assume password reset and signup confirmation do not reach real customers.

@@ -178,6 +178,30 @@ const EXPECTED: ExpectedGrant[] = [
     authenticated: false,
     service_role: true,
   },
+  // Migration 20260908120000: the durable Stripe customer-creation
+  // identity. Stripe documents that Customer Search is NOT read-after-write
+  // consistent and that idempotency keys are pruned after ~24 hours, so
+  // neither covers the whole timeline alone -- these three record WHEN a
+  // creation was attempted so the caller knows which regime it is in.
+  // service_role-only, same as every other billing RPC.
+  {
+    signature: "public.claim_stripe_customer_creation(bigint)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  {
+    signature: "public.record_stripe_customer(bigint, text, text)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  {
+    signature: "public.rotate_stripe_customer_creation(bigint, text)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
   {
     signature: "public.finalize_negative_alert_send(bigint, boolean)",
     anon: false,
