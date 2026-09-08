@@ -16,8 +16,7 @@ import {
 
 export type SettingsFormValues = {
   name: string;
-  notification_email: string | null;
-  logo_url: string | null;
+  notification_email: string | null;
 };
 
 const initialState: SettingsActionState = {};
@@ -75,20 +74,6 @@ export function SettingsForm({
               megerősítő linket szeretnél.
             </FieldDescription>
           ) : null}
-        </Field>
-        <Field>
-          <FieldLabel htmlFor="logo_url">Logó URL-je</FieldLabel>
-          <Input
-            id="logo_url"
-            name="logo_url"
-            type="url"
-            defaultValue={organization.logo_url ?? ""}
-            placeholder="https://..."
-          />
-          <FieldDescription>
-            Link egy feltöltött képhez. A nyilvános vélemény oldalakon
-            jelenik meg. Nem kötelező.
-          </FieldDescription>
         </Field>
         <Field>
           <div className="flex items-center gap-3">

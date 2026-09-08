@@ -13,7 +13,7 @@ export default async function NfcCardsPage() {
   const supabase = await createClient();
   const orgId = organization?.id ?? 0;
 
-  const [{ data: locations }, { data: cards }] = await Promise.all([
+  const [locationsResult, cardsResult] = await Promise.all([
     supabase
       .from("locations")
       .select("id, name")
@@ -25,6 +25,14 @@ export default async function NfcCardsPage() {
       .eq("organization_id", orgId)
       .order("created_at", { ascending: false }),
   ]);
+
+  // Same reasoning as the locations page: an empty card list on a failed
+  // read looks exactly like "you haven't made any cards yet."
+  if (locationsResult.error || cardsResult.error) {
+    throw new Error("Nem sikerült betölteni a kártyákat és a helyszíneket.");
+  }
+  const { data: locations } = locationsResult;
+  const { data: cards } = cardsResult;
 
   const locationOptions: LocationOption[] = (locations ?? []).map((l) => ({
     value: String(l.id),

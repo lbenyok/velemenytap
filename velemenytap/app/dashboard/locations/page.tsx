@@ -11,11 +11,15 @@ export default async function LocationsPage() {
   const organization = await getCurrentOrganization();
   const supabase = await createClient();
 
-  const { data: locations } = await supabase
+  const { data: locations, error } = await supabase
     .from("locations")
     .select("id, name, address, google_review_url, status")
     .eq("organization_id", organization?.id ?? 0)
     .order("name", { ascending: true });
+
+  // Without this, a read failure renders the "no locations yet" empty state
+  // to an owner who has locations -- and invites them to create duplicates.
+  if (error) throw new Error("Nem sikerült betölteni a helyszíneket.");
 
   const rows: LocationRow[] = locations ?? [];
 

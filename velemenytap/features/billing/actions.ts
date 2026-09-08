@@ -4,35 +4,93 @@ import { redirect } from "next/navigation";
 import type Stripe from "stripe";
 import { createStripeClient } from "@/lib/stripe";
 import { createAdminClient } from "@/lib/supabase/admin";
+import type { Json } from "@/lib/supabase/database.types";
 import { getCurrentOrganization } from "@/features/organizations/current";
 import { getOrganizationBilling } from "@/features/billing/queries";
 import { hasLiveSubscription, canManageBilling } from "@/features/billing/status";
 import { isBillingInterval, stripePriceId, type BillingInterval } from "@/features/billing/plans";
 import { assertStripeConfigurationValid } from "@/features/billing/stripe-config";
 
-// How long a genuinely new checkout attempt's CLAIM lasts before another
-// attempt may reclaim the slot. Must comfortably exceed the WORST-CASE
-// total time this action's own sequential Stripe calls could take -- see
-// lib/stripe.ts's own comment on the SDK's explicit timeout/retry budget.
-// Correctness does not rest on this number alone, though (Finding 9): the
-// attempt is explicitly RENEWED at the checkpoint right before the
-// slowest remaining call (session creation), so a single static duration
-// only needs to cover the FIRST leg (customer resolution), not the whole
-// request.
+// How long one checkout OPERATION owns its attempt before another may take
+// the lease over. Must comfortably exceed the worst-case total time this
+// action's own sequential Stripe calls could take -- see lib/stripe.ts's
+// comment on the SDK's explicit timeout/retry budget. Correctness does not
+// rest on this number alone (Finding 9): the lease is explicitly RENEWED
+// at the checkpoint right before the slowest remaining call (session
+// creation), so a single static duration only needs to cover the first leg.
+//
+// A created Session no longer needs a 24-hour lease of its own either: the
+// ATTEMPT now outlives the operation (migration 20260908100000), so "there
+// is a session in flight for this organization" is recorded by the attempt
+// itself rather than by holding a day-long lock open.
 const CHECKOUT_CLAIM_SECONDS = 150;
-
-// How long a real, already-created Checkout Session's own lease lasts --
-// matches Stripe's own default Checkout Session expiration (24 hours).
-const CHECKOUT_SESSION_LEASE_SECONDS = 24 * 60 * 60;
 
 type ClaimResult = {
   attemptId: string;
+  /** null when another operation currently holds this attempt's lease. */
+  ownerToken: string | null;
   isNewAttempt: boolean;
   existingSessionId: string | null;
   existingInterval: string | null;
   existingPriceId: string | null;
   existingMode: string | null;
+  /** The immutable request this attempt was created with, to replay verbatim. */
+  request: Stripe.Checkout.SessionCreateParams | null;
+  /** Whether this attempt's idempotency key is still inside Stripe's retention window. */
+  retrySafe: boolean;
 };
+
+/**
+ * The exact parameters sent to Stripe for a checkout attempt.
+ *
+ * Built once, then STORED (migration 20260908100000's checkout_request)
+ * and replayed verbatim on every subsequent attempt sharing the same
+ * idempotency key. Stripe rejects -- rather than deduplicates -- a retry
+ * whose parameters differ from the original call under that key, so
+ * re-deriving these values per attempt would make correctness depend on
+ * NEXT_PUBLIC_SITE_URL, the price env vars, and this organization's own
+ * row never changing in between. They are derived once and then frozen.
+ */
+function buildCheckoutRequest(
+  organizationId: number,
+  customerId: string,
+  priceId: string,
+  siteUrl: string,
+): Stripe.Checkout.SessionCreateParams {
+  return {
+    mode: "subscription",
+    customer: customerId,
+    client_reference_id: organizationId.toString(),
+    line_items: [{ price: priceId, quantity: 1 }],
+    // {CHECKOUT_SESSION_ID} is Stripe's own literal placeholder,
+    // substituted with the real session id server-side on redirect.
+    success_url: `${siteUrl}/dashboard/billing?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: `${siteUrl}/dashboard/billing?checkout=canceled`,
+    metadata: { organization_id: organizationId.toString() },
+    subscription_data: { metadata: { organization_id: organizationId.toString() } },
+  };
+}
+
+/**
+ * Refuses to replay a stored request that no longer describes what is
+ * actually being asked for. The database validates the snapshot when it is
+ * written; this is the matching check at the point of USE, so a request
+ * stored against a customer or price that has since changed fails closed
+ * rather than being sent to Stripe under an idempotency key that promises
+ * it is identical to a previous call.
+ */
+function replayableRequest(
+  stored: Stripe.Checkout.SessionCreateParams | null,
+  customerId: string,
+  priceId: string,
+): Stripe.Checkout.SessionCreateParams | null {
+  if (!stored) return null;
+  const firstItem = Array.isArray(stored.line_items) ? stored.line_items[0] : undefined;
+  if (stored.mode !== "subscription" || stored.customer !== customerId || firstItem?.price !== priceId) {
+    return null;
+  }
+  return stored;
+}
 
 /**
  * Fourth independent review, Finding 7: every affected-row/CAS result from
@@ -47,12 +105,13 @@ async function claimAttempt(
   organizationId: number,
   interval: BillingInterval,
   priceId: string,
+  request: Stripe.Checkout.SessionCreateParams,
 ): Promise<ClaimResult> {
   const { data, error } = await admin.rpc("claim_checkout_attempt", {
     p_organization_id: organizationId,
     p_interval: interval,
     p_price_id: priceId,
-    p_mode: "subscription",
+    p_request: request as unknown as Json,
     p_claim_seconds: CHECKOUT_CLAIM_SECONDS,
   });
   if (error) {
@@ -64,11 +123,14 @@ async function claimAttempt(
   }
   return {
     attemptId: row.attempt_id,
+    ownerToken: row.owner_token,
     isNewAttempt: row.is_new_attempt,
     existingSessionId: row.existing_session_id,
     existingInterval: row.existing_interval,
     existingPriceId: row.existing_price_id,
     existingMode: row.existing_mode,
+    request: (row.request as unknown as Stripe.Checkout.SessionCreateParams | null) ?? null,
+    retrySafe: row.retry_safe,
   };
 }
 
@@ -76,10 +138,12 @@ async function renewAttempt(
   admin: ReturnType<typeof createAdminClient>,
   organizationId: number,
   attemptId: string,
+  ownerToken: string,
 ): Promise<boolean> {
   const { data, error } = await admin.rpc("renew_checkout_attempt", {
     p_organization_id: organizationId,
     p_attempt_id: attemptId,
+    p_owner_token: ownerToken,
     p_claim_seconds: CHECKOUT_CLAIM_SECONDS,
   });
   if (error) {
@@ -92,16 +156,40 @@ async function recordSession(
   admin: ReturnType<typeof createAdminClient>,
   organizationId: number,
   attemptId: string,
+  ownerToken: string,
   sessionId: string,
 ): Promise<boolean> {
   const { data, error } = await admin.rpc("record_checkout_session", {
     p_organization_id: organizationId,
     p_attempt_id: attemptId,
+    p_owner_token: ownerToken,
     p_session_id: sessionId,
-    p_lease_seconds: CHECKOUT_SESSION_LEASE_SECONDS,
   });
   if (error) {
     throw new Error(`Failed to persist a created checkout session for organization ${organizationId}: ${error.message}`);
+  }
+  return data === true;
+}
+
+/**
+ * Ends the operation while KEEPING the attempt: the customer has just been
+ * handed a Stripe-hosted URL and may still be on it, so the attempt's
+ * identity, its stored request and its recorded Session must survive --
+ * only the lease is given up, so a later request need not wait it out.
+ */
+async function finishOperation(
+  admin: ReturnType<typeof createAdminClient>,
+  organizationId: number,
+  attemptId: string,
+  ownerToken: string,
+): Promise<boolean> {
+  const { data, error } = await admin.rpc("finish_checkout_operation", {
+    p_organization_id: organizationId,
+    p_attempt_id: attemptId,
+    p_owner_token: ownerToken,
+  });
+  if (error) {
+    throw new Error(`Failed to finish the checkout operation for organization ${organizationId}: ${error.message}`);
   }
   return data === true;
 }
@@ -110,10 +198,12 @@ async function releaseAttempt(
   admin: ReturnType<typeof createAdminClient>,
   organizationId: number,
   attemptId: string,
+  ownerToken: string,
 ): Promise<boolean> {
   const { data, error } = await admin.rpc("release_checkout_attempt", {
     p_organization_id: organizationId,
     p_attempt_id: attemptId,
+    p_owner_token: ownerToken,
   });
   if (error) {
     throw new Error(`Failed to release a checkout attempt for organization ${organizationId}: ${error.message}`);
@@ -259,7 +349,7 @@ async function reconcileExistingSession(
   admin: ReturnType<typeof createAdminClient>,
   organizationId: number,
   claim: ClaimResult,
-  interval: BillingInterval,
+  ownerToken: string,
   priceId: string,
   siteUrl: string,
 ): Promise<ReconcileSessionOutcome> {
@@ -271,22 +361,33 @@ async function reconcileExistingSession(
 
   if (existing.status === "complete") {
     if (existing.payment_status === "paid" || existing.payment_status === "no_payment_required") {
+      // The attempt is done with, but only reconciliation may clear it
+      // (write_reconciliation_result does, on the billing page this URL
+      // leads to). Release just the operation lease so a concurrent
+      // request is not told "already in progress" for the next 150
+      // seconds over an attempt nothing is still working on.
+      await finishOperation(admin, organizationId, claim.attemptId, ownerToken);
       return { done: true, url: `${siteUrl}/dashboard/billing?checkout=success&session_id=${existing.id}` };
     }
     // Finding 8: complete but genuinely unpaid (still processing, or a
     // delayed payment method) -- release rather than trapping every
     // future attempt on this one dead-end Session.
-    await releaseAttempt(admin, organizationId, claim.attemptId);
+    await releaseAttempt(admin, organizationId, claim.attemptId, ownerToken);
     return { done: false };
   }
 
   if (existing.status === "open" && existing.url && planMatches) {
     if (claim.isNewAttempt) {
-      const recorded = await recordSession(admin, organizationId, claim.attemptId, existing.id);
+      // A legacy attempt (one predating migration 20260908100000, with no
+      // stored request) was replaced by a fresh one whose identity this
+      // orphaned Session is not yet bound to. Binding it here is what
+      // keeps the Session findable by the next attempt.
+      const recorded = await recordSession(admin, organizationId, claim.attemptId, ownerToken, existing.id);
       if (!recorded) {
         throw new Error("A newer checkout attempt has since started for this organization -- try again.");
       }
     }
+    await finishOperation(admin, organizationId, claim.attemptId, ownerToken);
     return { done: true, url: existing.url };
   }
 
@@ -308,11 +409,17 @@ async function reconcileExistingSession(
     if (existing.status === "complete" && (existing.payment_status === "paid" || existing.payment_status === "no_payment_required")) {
       // Raced: it completed before/during expiration. Reconcile it as a
       // real success instead of discarding a genuine payment.
+      // The attempt is done with, but only reconciliation may clear it
+      // (write_reconciliation_result does, on the billing page this URL
+      // leads to). Release just the operation lease so a concurrent
+      // request is not told "already in progress" for the next 150
+      // seconds over an attempt nothing is still working on.
+      await finishOperation(admin, organizationId, claim.attemptId, ownerToken);
       return { done: true, url: `${siteUrl}/dashboard/billing?checkout=success&session_id=${existing.id}` };
     }
   }
 
-  await releaseAttempt(admin, organizationId, claim.attemptId);
+  await releaseAttempt(admin, organizationId, claim.attemptId, ownerToken);
   return { done: false };
 }
 
@@ -334,71 +441,107 @@ async function claimAndCreateCheckoutSession(
   const stripe = createStripeClient();
   const priceId = stripePriceId(interval);
 
-  let claim = await claimAttempt(admin, organizationId, interval, priceId);
+  // The immutable request snapshot names the Stripe Customer, and the
+  // database refuses a snapshot whose customer doesn't match this row's
+  // own -- so the customer has to be resolved BEFORE the attempt can be
+  // claimed. Doing it outside the attempt lease is safe: this call is
+  // idempotent and recovers an existing customer from Stripe itself
+  // rather than creating a second one (see its own doc comment).
+  const customerId = await getOrCreateStripeCustomerId(organizationId, organizationName);
+  const request = buildCheckoutRequest(organizationId, customerId, priceId, siteUrl);
+
+  let claim = await claimAttempt(admin, organizationId, interval, priceId, request);
+  if (!claim.ownerToken) {
+    // Another request holds a live operation lease, mid Stripe round trip
+    // -- don't race ahead of it.
+    throw new Error("A checkout attempt for this organization is already in progress -- try again in a moment.");
+  }
 
   if (claim.existingSessionId) {
-    const outcome = await reconcileExistingSession(stripe, admin, organizationId, claim, interval, priceId, siteUrl);
+    const outcome = await reconcileExistingSession(
+      stripe,
+      admin,
+      organizationId,
+      claim,
+      claim.ownerToken,
+      priceId,
+      siteUrl,
+    );
     if (outcome.done) {
       return outcome.url;
     }
-    // The prior session was released -- claim fresh. Reusing the SAME
+    // The prior attempt was released -- claim fresh. Reusing the SAME
     // claim object here would risk operating on a now-stale attempt id.
-    claim = await claimAttempt(admin, organizationId, interval, priceId);
-    if (claim.existingSessionId) {
+    claim = await claimAttempt(admin, organizationId, interval, priceId, request);
+    if (!claim.ownerToken || claim.existingSessionId) {
       // Should not normally happen immediately after a release -- fail
       // closed rather than loop indefinitely.
       throw new Error("Unable to obtain a clean checkout attempt for this organization -- try again.");
     }
-  } else if (!claim.isNewAttempt) {
-    // A live attempt already owns this organization's checkout slot, mid
-    // Stripe API round trip, with no session recorded yet -- don't race
-    // ahead of it.
-    throw new Error("A checkout attempt for this organization is already in progress -- try again in a moment.");
+  } else if (!claim.isNewAttempt && (claim.existingPriceId !== priceId || !claim.retrySafe)) {
+    // Taking over an attempt that recorded no Session, and that is either
+    // for a different plan than the one now requested, or old enough that
+    // Stripe may no longer remember its idempotency key (so replaying it
+    // would no longer be deduplicated). Discarding it costs nothing --
+    // there is no recorded Session to lose, and any unrecorded Session it
+    // could have created has expired on Stripe's side by then anyway.
+    await releaseAttempt(admin, organizationId, claim.attemptId, claim.ownerToken);
+    claim = await claimAttempt(admin, organizationId, interval, priceId, request);
+    if (!claim.ownerToken) {
+      throw new Error("Unable to obtain a clean checkout attempt for this organization -- try again.");
+    }
   }
 
   const attemptId = claim.attemptId;
+  const ownerToken = claim.ownerToken;
 
-  const customerId = await getOrCreateStripeCustomerId(organizationId, organizationName);
+  // Replay the attempt's OWN stored request, not a freshly built one --
+  // that is what makes the idempotency key below meaningful across a
+  // takeover. A stored request that no longer describes this claim is
+  // refused rather than sent (see replayableRequest).
+  const payload = claim.isNewAttempt
+    ? request
+    : replayableRequest(claim.request, customerId, priceId);
+  if (!payload) {
+    throw new Error("The stored checkout request no longer matches this organization's plan -- try again.");
+  }
 
   // Finding 9: renew immediately before the (potentially slow) Checkout
   // Session creation call, proving this request still owns the attempt --
   // correctness no longer depends on the FULL request (customer
   // resolution included) finishing inside one static claim window.
-  const stillOwned = await renewAttempt(admin, organizationId, attemptId);
+  const stillOwned = await renewAttempt(admin, organizationId, attemptId, ownerToken);
   if (!stillOwned) {
     throw new Error("This checkout attempt expired before it could be completed -- try again.");
   }
 
-  const session = await stripe.checkout.sessions.create(
-    {
-      mode: "subscription",
-      customer: customerId,
-      client_reference_id: organizationId.toString(),
-      line_items: [{ price: priceId, quantity: 1 }],
-      // {CHECKOUT_SESSION_ID} is Stripe's own literal placeholder,
-      // substituted with the real session id server-side on redirect.
-      success_url: `${siteUrl}/dashboard/billing?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${siteUrl}/dashboard/billing?checkout=canceled`,
-      metadata: { organization_id: organizationId.toString() },
-      subscription_data: { metadata: { organization_id: organizationId.toString() } },
-    },
-    {
-      // A STABLE key derived from the durable attempt id -- a retry of
-      // the SAME attempt (its claim still valid, just renewed) reaches
-      // Stripe with the identical key and gets back the SAME session
-      // object instead of creating a second one.
-      idempotencyKey: `checkout:attempt-${attemptId}`,
-    },
-  );
+  const session = await stripe.checkout.sessions.create(payload, {
+    // A STABLE key derived from the durable attempt id -- which now
+    // survives lease expiry (migration 20260908100000), so a takeover
+    // reaches Stripe with the identical key and gets back the SAME
+    // session object instead of creating a second one.
+    idempotencyKey: `checkout:attempt-${attemptId}`,
+  });
+
+  // Recorded BEFORE anything about the Session is validated. A Session
+  // that exists at Stripe but was never written down here is invisible to
+  // every later attempt -- which is exactly how a customer ends up with
+  // two. Whatever is wrong with it can be discovered afterwards; its
+  // existence cannot be discovered afterwards.
+  const recorded = await recordSession(admin, organizationId, attemptId, ownerToken, session.id);
+  if (!recorded) {
+    throw new Error("A newer checkout attempt has since started for this organization -- try again.");
+  }
 
   if (!session.url) {
     throw new Error("Stripe did not return a Checkout URL");
   }
 
-  const recorded = await recordSession(admin, organizationId, attemptId, session.id);
-  if (!recorded) {
-    throw new Error("A newer checkout attempt has since started for this organization -- try again.");
-  }
+  // The operation ends here; the ATTEMPT deliberately does not. The
+  // customer is about to be sent to Stripe's hosted page and may take
+  // minutes on it -- the attempt (and its recorded Session) must outlive
+  // this request so the next one reconciles rather than duplicates.
+  await finishOperation(admin, organizationId, attemptId, ownerToken);
 
   return session.url;
 }

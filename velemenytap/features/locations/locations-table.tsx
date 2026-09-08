@@ -15,6 +15,7 @@ import {
   EmptyDescription,
   EmptyContent,
 } from "@/components/ui/empty";
+import { StatusToggleForm } from "@/components/status-toggle-form";
 import { setLocationStatusAction } from "./actions";
 import { LocationDialog } from "./location-dialog";
 import type { LocationFormValues } from "./location-form";
@@ -81,17 +82,11 @@ export function LocationsTable({ locations }: { locations: LocationRow[] }) {
                   </Button>
                 }
               />
-              <form action={setLocationStatusAction}>
-                <input type="hidden" name="id" value={location.id} />
-                <input
-                  type="hidden"
-                  name="status"
-                  value={location.status === "active" ? "inactive" : "active"}
-                />
-                <Button type="submit" variant="ghost" size="sm">
-                  {location.status === "active" ? "Deaktiválás" : "Aktiválás"}
-                </Button>
-              </form>
+              <StatusToggleForm
+                id={location.id}
+                status={location.status}
+                action={setLocationStatusAction}
+              />
             </TableCell>
           </TableRow>
         ))}

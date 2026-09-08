@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentOrganization } from "@/features/organizations/current";
+import { safeGoogleReviewUrl } from "@/lib/google-review-url";
 
 export type LocationActionState =
   | { error: string; success?: undefined }
@@ -25,11 +26,15 @@ const locationSchema = z.object({
     .string()
     .trim()
     .max(2000, "Az URL túl hosszú.")
+    // A bare "starts with http(s)://" check accepted any site at all -- the
+    // one link this product exists to send customers to was the least
+    // validated field in the form. safeGoogleReviewUrl restricts it to real
+    // Google review destinations over HTTPS.
     .refine(
-      (v) => v === "" || /^https?:\/\//i.test(v),
-      "Adj meg egy érvényes URL-t, amely http://-vel vagy https://-vel kezdődik.",
+      (v) => v === "" || safeGoogleReviewUrl(v) !== null,
+      "Másold ide a Google Cégprofilod HTTPS-értékelési linkjét (például https://g.page/r/.../review). Más weboldal linkje nem használható.",
     )
-    .transform((v) => (v === "" ? null : v)),
+    .transform((v) => safeGoogleReviewUrl(v)),
 });
 
 function parseLocationForm(formData: FormData) {
@@ -110,9 +115,11 @@ export async function updateLocationAction(
   return { success: true };
 }
 
-export async function setLocationStatusAction(formData: FormData) {
+export async function setLocationStatusAction(
+  formData: FormData,
+): Promise<{ error?: string }> {
   const organization = await getCurrentOrganization();
-  if (!organization) return;
+  if (!organization) return { error: "Nem található szervezet a fiókodhoz." };
 
   const locationId = Number(formData.get("id"));
   const status = formData.get("status");
@@ -121,15 +128,32 @@ export async function setLocationStatusAction(formData: FormData) {
     locationId <= 0 ||
     (status !== "active" && status !== "inactive")
   ) {
-    return;
+    return { error: "Érvénytelen helyszín vagy állapot." };
   }
 
   const supabase = await createClient();
-  await supabase
+  // Previously this ignored both the error and the affected-row count, so a
+  // failed or zero-row update rendered exactly like a successful one. A
+  // deactivation that silently did nothing leaves a card collecting feedback
+  // the owner believes they switched off.
+  const { data, error } = await supabase
     .from("locations")
     .update({ status })
     .eq("id", locationId)
-    .eq("organization_id", organization.id);
+    .eq("organization_id", organization.id)
+    .select("id")
+    .maybeSingle();
+
+  if (error || !data) {
+    return {
+      error:
+        "Nem sikerült módosítani a helyszín állapotát. Frissítsd az oldalt, majd próbáld újra.",
+    };
+  }
 
   revalidatePath("/dashboard/locations");
+  // A location's status gates its cards' public pages, so the card list's
+  // own rendering of that state has to be refreshed too.
+  revalidatePath("/dashboard/nfc-cards");
+  return {};
 }

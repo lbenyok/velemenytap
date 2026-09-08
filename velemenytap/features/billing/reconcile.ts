@@ -38,6 +38,17 @@ import { approvedPriceIds } from "@/features/billing/stripe-config";
  * functions themselves, in the same statement) whenever that happens, so
  * this organization is never permanently dropped even if every webhook
  * for it is eventually missed: the scheduled sweep finds it later.
+ *
+ * Fifth round, migration 20260908110000 -- generation counters. Mutual
+ * exclusion alone still lost an event that arrived DURING a reconciliation:
+ * the losing racer set the dirty flag, and the winner's own completing
+ * write then cleared it, discarding the only record that a newer event
+ * existed. Every entry point here now calls request_billing_reconciliation
+ * FIRST, committing a monotonic "reconciliation wanted" generation before
+ * any Stripe call; claim_reconciliation_lease reports the generation it
+ * observed, and a completing write may clear the dirty flag only if no
+ * higher generation has been requested since. A write now answers "was
+ * every request I knew about satisfied," not merely "did I finish."
  */
 
 const LIVE_STRIPE_STATUSES: ReadonlySet<Stripe.Subscription.Status> = new Set([
@@ -188,15 +199,30 @@ export async function reconcileOrganizationBilling(
   const admin = createAdminClient();
   const stripe = createStripeClient();
 
-  const { data: owner, error: claimError } = await admin.rpc("claim_reconciliation_lease", {
+  // Record that reconciliation is WANTED before anything else -- durably,
+  // and independently of whether this request goes on to win the lease.
+  // This is the half of the generation pair that makes a losing racer's
+  // event survive: whoever currently holds the lease cannot mark this
+  // organization clean without also having satisfied this request.
+  const { error: requestError } = await admin.rpc("request_billing_reconciliation", {
+    p_organization_id: organizationId,
+  });
+  if (requestError) {
+    return { outcome: "error", message: `Failed to request reconciliation: ${requestError.message}` };
+  }
+
+  const { data: claim, error: claimError } = await admin.rpc("claim_reconciliation_lease", {
     p_organization_id: organizationId,
   });
   if (claimError) {
     return { outcome: "error", message: `Failed to claim reconciliation lease: ${claimError.message}` };
   }
-  if (!owner) {
+  const lease = claim?.[0];
+  if (!lease) {
     return { outcome: "deferred" };
   }
+  const owner = lease.owner_token;
+  const generation = lease.requested_generation;
 
   try {
     let subscriptions: Stripe.Subscription[];
@@ -204,8 +230,13 @@ export async function reconcileOrganizationBilling(
       const list = await stripe.subscriptions.list({ customer: stripeCustomerId, status: "all", limit: 100 });
       subscriptions = list.data;
     } catch (err) {
-      await admin.rpc("release_reconciliation_lease", { p_organization_id: organizationId, p_owner: owner });
-      return { outcome: "error", message: `Failed to list Stripe subscriptions: ${err instanceof Error ? err.message : err}` };
+      const message = `Failed to list Stripe subscriptions: ${err instanceof Error ? err.message : err}`;
+      await admin.rpc("fail_billing_reconciliation", {
+        p_organization_id: organizationId,
+        p_owner: owner,
+        p_error: message,
+      });
+      return { outcome: "error", message };
     }
 
     const { current, unapproved, duplicateActive } = pickCurrentSubscription(subscriptions);
@@ -256,6 +287,7 @@ export async function reconcileOrganizationBilling(
           const { data: applied, error: writeError } = await admin.rpc("write_reconciliation_result", {
             p_organization_id: organizationId,
             p_owner: owner,
+            p_requested_generation: generation,
             p_stripe_customer_id: stripeCustomerId,
             p_stripe_subscription_id: null,
             p_status: "canceled",
@@ -284,7 +316,11 @@ export async function reconcileOrganizationBilling(
       // do. clear_reconciliation_dirty (migration 20260907240000) is the
       // distinct function for this distinct case: releases the lease
       // without re-marking dirty.
-      await admin.rpc("clear_reconciliation_dirty", { p_organization_id: organizationId, p_owner: owner });
+      await admin.rpc("clear_reconciliation_dirty", {
+        p_organization_id: organizationId,
+        p_owner: owner,
+        p_requested_generation: generation,
+      });
       return { outcome: "no_subscriptions" };
     }
 
@@ -293,6 +329,7 @@ export async function reconcileOrganizationBilling(
     const { data: applied, error: writeError } = await admin.rpc("write_reconciliation_result", {
       p_organization_id: organizationId,
       p_owner: owner,
+      p_requested_generation: generation,
       p_stripe_customer_id: stripeCustomerId,
       p_stripe_subscription_id: current.id,
       p_status: status,
@@ -332,15 +369,25 @@ export async function reconcileOrganizationBilling(
 export async function activateOrganizationBilling(organizationId: number): Promise<ReconcileOutcome> {
   const admin = createAdminClient();
 
-  const { data: owner, error: claimError } = await admin.rpc("claim_reconciliation_lease", {
+  const { error: requestError } = await admin.rpc("request_billing_reconciliation", {
+    p_organization_id: organizationId,
+  });
+  if (requestError) {
+    return { outcome: "error", message: `Failed to request reconciliation: ${requestError.message}` };
+  }
+
+  const { data: claim, error: claimError } = await admin.rpc("claim_reconciliation_lease", {
     p_organization_id: organizationId,
   });
   if (claimError) {
     return { outcome: "error", message: `Failed to claim reconciliation lease: ${claimError.message}` };
   }
-  if (!owner) {
+  const lease = claim?.[0];
+  if (!lease) {
     return { outcome: "deferred" };
   }
+  const owner = lease.owner_token;
+  const generation = lease.requested_generation;
 
   // Mirrors reconcileOrganizationBilling's own try/catch: an uncaught
   // exception here (a network-level throw from admin.rpc, not merely an
@@ -354,6 +401,7 @@ export async function activateOrganizationBilling(organizationId: number): Promi
     const { data: applied, error: writeError } = await admin.rpc("write_activation", {
       p_organization_id: organizationId,
       p_owner: owner,
+      p_requested_generation: generation,
     });
     if (writeError) {
       return { outcome: "error", message: `Failed to write activation: ${writeError.message}` };

@@ -23,12 +23,6 @@ const settingsSchema = z.object({
       "Adj meg egy érvényes e-mail címet.",
     )
     .transform((v) => (v === "" ? null : v)),
-  logo_url: z
-    .string()
-    .trim()
-    .max(2000)
-    .refine((v) => v === "" || /^https?:\/\//i.test(v), "Adj meg egy érvényes URL-t, amely http://-vel vagy https://-vel kezdődik.")
-    .transform((v) => (v === "" ? null : v)),
 });
 
 export async function updateOrganizationSettingsAction(
@@ -43,7 +37,6 @@ export async function updateOrganizationSettingsAction(
   const parsed = settingsSchema.safeParse({
     name: formData.get("name"),
     notification_email: formData.get("notification_email") ?? "",
-    logo_url: formData.get("logo_url") ?? "",
   });
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Érvénytelen adat." };
@@ -51,21 +44,33 @@ export async function updateOrganizationSettingsAction(
 
   const supabase = await createClient();
 
-  const { data: current } = await supabase
+  const { data: current, error: readError } = await supabase
     .from("organizations")
     .select("notification_email")
     .eq("id", organization.id)
     .single();
 
-  const { error } = await supabase
+  if (readError || !current) {
+    return {
+      error:
+        "Nem sikerült betölteni a beállításokat. Frissítsd az oldalt, majd próbáld újra.",
+    };
+  }
+
+  // `logo_url` is deliberately no longer written here: the field existed in
+  // the form but nothing in the product ever rendered a logo, so it only
+  // collected a value that did nothing. Existing stored values are left
+  // untouched rather than cleared.
+  const { data: updated, error } = await supabase
     .from("organizations")
     .update({
       name: parsed.data.name,
-      logo_url: parsed.data.logo_url,
     })
-    .eq("id", organization.id);
+    .eq("id", organization.id)
+    .select("id")
+    .maybeSingle();
 
-  if (error) {
+  if (error || !updated) {
     return { error: "Nem sikerült menteni a beállításokat. Kérjük, próbáld újra." };
   }
 

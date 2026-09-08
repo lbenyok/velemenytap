@@ -129,9 +129,11 @@ export async function updateNfcCardAction(
   return { success: true };
 }
 
-export async function setNfcCardStatusAction(formData: FormData) {
+export async function setNfcCardStatusAction(
+  formData: FormData,
+): Promise<{ error?: string }> {
   const organization = await getCurrentOrganization();
-  if (!organization) return;
+  if (!organization) return { error: "Nem található szervezet a fiókodhoz." };
 
   const cardId = Number(formData.get("id"));
   const status = formData.get("status");
@@ -140,15 +142,27 @@ export async function setNfcCardStatusAction(formData: FormData) {
     cardId <= 0 ||
     (status !== "active" && status !== "inactive")
   ) {
-    return;
+    return { error: "Érvénytelen kártya vagy állapot." };
   }
 
   const supabase = await createClient();
-  await supabase
+  // Same reasoning as setLocationStatusAction: an unchecked update reported
+  // success for a card that is still live on a customer's counter.
+  const { data, error } = await supabase
     .from("nfc_cards")
     .update({ status })
     .eq("id", cardId)
-    .eq("organization_id", organization.id);
+    .eq("organization_id", organization.id)
+    .select("id")
+    .maybeSingle();
+
+  if (error || !data) {
+    return {
+      error:
+        "Nem sikerült módosítani a kártya állapotát. Frissítsd az oldalt, majd próbáld újra.",
+    };
+  }
 
   revalidatePath("/dashboard/nfc-cards");
+  return {};
 }

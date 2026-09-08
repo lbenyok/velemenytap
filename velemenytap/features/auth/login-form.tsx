@@ -55,6 +55,12 @@ export function LoginForm() {
           ) : null}
         </Field>
         <Field>
+          <Link
+            href="/auth/forgot-password"
+            className="text-sm underline underline-offset-4"
+          >
+            Elfelejtetted a jelszavad?
+          </Link>
           <Button type="submit" disabled={isPending}>
             {isPending ? "Bejelentkezés..." : "Bejelentkezés"}
           </Button>

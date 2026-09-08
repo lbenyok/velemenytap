@@ -55,24 +55,33 @@ const EXPECTED: ExpectedGrant[] = [
     authenticated: false,
     service_role: true,
   },
-  // Third independent review, Findings 2/4: the durable checkout-attempt
-  // model (migration 20260907200000) -- all three are service_role-only,
+  // The durable checkout-attempt model. Migration 20260908100000 splits
+  // the attempt's own identity from the short operation lease over it and
+  // gives the attempt an immutable request, so all four functions changed
+  // signature (an owner token in, a jsonb request in) and a fifth,
+  // finish_checkout_operation, was added. Still service_role-only, still
   // called exclusively from features/billing/actions.ts via the admin
   // client, never reachable from a browser or any authenticated session.
   {
-    signature: "public.claim_checkout_attempt(bigint, text, text, text, int)",
+    signature: "public.claim_checkout_attempt(bigint, text, text, jsonb, int)",
     anon: false,
     authenticated: false,
     service_role: true,
   },
   {
-    signature: "public.record_checkout_session(bigint, text, text, int)",
+    signature: "public.record_checkout_session(bigint, text, text, text)",
     anon: false,
     authenticated: false,
     service_role: true,
   },
   {
-    signature: "public.release_checkout_attempt(bigint, text)",
+    signature: "public.finish_checkout_operation(bigint, text, text)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  {
+    signature: "public.release_checkout_attempt(bigint, text, text)",
     anon: false,
     authenticated: false,
     service_role: true,
@@ -86,7 +95,7 @@ const EXPECTED: ExpectedGrant[] = [
   // called exclusively from features/billing/reconcile.ts and
   // features/billing/actions.ts via the admin client.
   {
-    signature: "public.renew_checkout_attempt(bigint, text, int)",
+    signature: "public.renew_checkout_attempt(bigint, text, text, int)",
     anon: false,
     authenticated: false,
     service_role: true,
@@ -105,13 +114,13 @@ const EXPECTED: ExpectedGrant[] = [
   },
   {
     signature:
-      "public.write_reconciliation_result(bigint, text, text, text, text, timestamp with time zone, boolean)",
+      "public.write_reconciliation_result(bigint, text, bigint, text, text, text, timestamp with time zone, boolean)",
     anon: false,
     authenticated: false,
     service_role: true,
   },
   {
-    signature: "public.write_activation(bigint, text)",
+    signature: "public.write_activation(bigint, text, bigint)",
     anon: false,
     authenticated: false,
     service_role: true,
@@ -122,13 +131,39 @@ const EXPECTED: ExpectedGrant[] = [
     authenticated: false,
     service_role: true,
   },
-  // Fourth independent review's own three-reviewer adversarial audit:
-  // migration 20260907240000 -- the distinct "confirmed clean, nothing to
-  // reconcile" case release_reconciliation_lease's own always-mark-dirty
-  // behavior made impossible to express (see that migration's own header
-  // comment for the full incident).
+  // The distinct "confirmed clean, nothing to reconcile" case, which
+  // release_reconciliation_lease's own always-mark-dirty behavior made
+  // impossible to express (migration 20260907240000). Migration
+  // 20260908110000 adds the observed generation, so a confirmed-clean
+  // outcome also cannot discard a request that arrived while it held the
+  // lease.
   {
-    signature: "public.clear_reconciliation_dirty(bigint, text)",
+    signature: "public.clear_reconciliation_dirty(bigint, text, bigint)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  // Migration 20260908110000: the generation pair that stops an event
+  // arriving DURING a reconciliation from being discarded by that
+  // reconciliation's own completing write, the durable last-failure
+  // record, and the sweep's own candidate scan (which recovers an
+  // organization by staleness alone, without this app ever having been
+  // told anything changed). All service_role-only, same as the rest of
+  // this family.
+  {
+    signature: "public.request_billing_reconciliation(bigint)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  {
+    signature: "public.fail_billing_reconciliation(bigint, text, text)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  {
+    signature: "public.get_billing_reconciliation_candidates(int, int)",
     anon: false,
     authenticated: false,
     service_role: true,

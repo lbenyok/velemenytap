@@ -53,6 +53,54 @@ export default async function DashboardPage() {
         </p>
       </div>
 
+      {/* An organization with no feedback yet has nothing to read on this
+          page, and previously got only empty tiles with no indication of
+          what to do next. Setup is the hardest part of this product for a
+          new owner, so the first-run path is spelled out here. */}
+      {stats.total === 0 ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Gyűjtsd be az első véleményt</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4 text-sm">
+            <ol className="list-inside list-decimal space-y-3">
+              <li>
+                <Link
+                  href="/dashboard/locations"
+                  className="underline underline-offset-4"
+                >
+                  Adj hozzá egy helyszínt
+                </Link>
+                , és állítsd be a Google-értékelési linkjét.
+              </li>
+              <li>
+                <Link
+                  href="/dashboard/nfc-cards"
+                  className="underline underline-offset-4"
+                >
+                  Hozz létre egy kártyát
+                </Link>
+                , majd a Kipróbálás linkkel nyisd meg a véleményoldalt.
+              </li>
+              <li>
+                Oszd meg a nyilvános linket a vásárlóiddal, vagy írd rá az
+                NFC-kártyádra. A link fizikai kártya nélkül is működik.
+              </li>
+            </ol>
+            <p className="text-muted-foreground">
+              A Kipróbálás az éles véleményoldalt nyitja meg: amit ott
+              beküldesz, megjelenik a kimutatásokban.
+            </p>
+            <Link
+              href="/dashboard/settings"
+              className="inline-block underline underline-offset-4"
+            >
+              Értesítési e-mail beállítása
+            </Link>
+          </CardContent>
+        </Card>
+      ) : null}
+
       <div className="grid gap-4 sm:grid-cols-3 lg:grid-cols-5">
         <StatTile label="Összes vélemény" value={String(stats.total)} icon={Inbox} />
         <StatTile

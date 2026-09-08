@@ -87,6 +87,18 @@ export function LocationForm({
             {state.error ??
               "Ide jutnak a vásárlók, ha Google-értékelést szeretnének írni. Nem kötelező, később is megadható."}
           </FieldDescription>
+          <FieldDescription>
+            A Google Cégprofilodban válaszd az értékelések kérését, és másold ide
+            az ott kapott linket.{" "}
+            <a
+              href="https://support.google.com/business/answer/3474122?hl=hu"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline underline-offset-4"
+            >
+              Segítség a link megkereséséhez
+            </a>
+          </FieldDescription>
         </Field>
         <Field>
           <Button type="submit" disabled={isPending}>

@@ -3,6 +3,7 @@
 import { after } from "next/server";
 import { cookies } from "next/headers";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { safeGoogleReviewUrl } from "@/lib/google-review-url";
 import { feedbackSchema } from "./schema";
 import {
   isNegativeRating,
@@ -101,7 +102,7 @@ export async function submitFeedbackAction(
     organizationName: result.organization_name,
     locationName: result.location_name,
     cardName: result.card_name,
-    googleReviewUrl: result.google_review_url,
+    googleReviewUrl: safeGoogleReviewUrl(result.google_review_url),
   };
 
   cookieStore.set(cookieName, "1", {

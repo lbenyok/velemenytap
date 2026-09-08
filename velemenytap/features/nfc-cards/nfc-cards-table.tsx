@@ -16,6 +16,7 @@ import {
   EmptyDescription,
   EmptyContent,
 } from "@/components/ui/empty";
+import { StatusToggleForm } from "@/components/status-toggle-form";
 import { setNfcCardStatusAction } from "./actions";
 import { NfcCardDialog } from "./nfc-card-dialog";
 import { CopyUrlButton } from "./copy-url-button";
@@ -64,8 +65,8 @@ export function NfcCardsTable({
         <EmptyHeader>
           <EmptyTitle>Még nincs NFC kártya</EmptyTitle>
           <EmptyDescription>
-            Adj hozzá egy kártyát egy helyszínhez, majd nyomtasd ki a linkjét
-            egy NFC címkére.
+            Adj hozzá egy kártyát egy helyszínhez. A létrejövő linket írd az
+            NFC-kártyára egy NFC-író alkalmazással, majd próbáld ki a telefonoddal.
           </EmptyDescription>
         </EmptyHeader>
         <EmptyContent>
@@ -102,6 +103,14 @@ export function NfcCardsTable({
               </TableCell>
               <TableCell>
                 <CopyUrlButton url={publicUrl} />
+                <a
+                  href={publicUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="ml-3 inline-block text-sm underline underline-offset-4"
+                >
+                  Kipróbálás
+                </a>
               </TableCell>
               <TableCell>
                 <Badge variant={card.status === "active" ? "secondary" : "outline"}>
@@ -118,17 +127,11 @@ export function NfcCardsTable({
                     </Button>
                   }
                 />
-                <form action={setNfcCardStatusAction}>
-                  <input type="hidden" name="id" value={card.id} />
-                  <input
-                    type="hidden"
-                    name="status"
-                    value={card.status === "active" ? "inactive" : "active"}
-                  />
-                  <Button type="submit" variant="ghost" size="sm">
-                    {card.status === "active" ? "Deaktiválás" : "Aktiválás"}
-                  </Button>
-                </form>
+                <StatusToggleForm
+                  id={card.id}
+                  status={card.status}
+                  action={setNfcCardStatusAction}
+                />
               </TableCell>
             </TableRow>
           );

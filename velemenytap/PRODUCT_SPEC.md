@@ -24,18 +24,20 @@ VéleményTap ("Opinion Tap") is a SaaS product for physical businesses — caf�
 
 ## Feature areas (MVP, built)
 
-- **Auth & organizations** — email/password signup, one organization per user (org switcher not built), membership-based access.
+- **Auth & organizations** — email/password signup, one organization per user (org switcher not built), membership-based access. Self-service account recovery: a password-reset request from the login page, a resend-confirmation form on the check-your-email screen, and recovery links on the auth-error page, so an owner who never received (or lost) a confirmation email can get back in without support.
 - **Locations** — name, address, Google Review URL, active/inactive status.
 - **NFC cards** — belong to a location, unguessable public UUID identifier, active/inactive status, multiple cards per location (e.g. per table, per counter).
 - **Public feedback page** — unauthenticated, validates the card is active before accepting a submission, cookie-based duplicate-tap protection.
 - **Feedback inbox** — newest-first, filterable by status/rating/location/NFC card/date range, per-item status (new/in_progress/resolved) and internal note.
 - **Negative-feedback email alerts** — ratings ≤ 2 trigger a non-blocking email to the org's notification address (or all owner/admin/manager members if none is configured).
 - **Analytics & Overview** — total feedback, average rating, today/this-week counts, unresolved-negative count, rating distribution, recent feedback, volume-over-time and location/card comparisons on the Analytics page.
-- **Settings** — business name, notification email, logo URL.
+- **Settings** — business name and notification email (the notification address is confirmed by email before it takes effect). The logo field was removed from the UI: nothing in the product ever rendered the logo, so it was an input that promised branding the product did not deliver. Existing stored values were left untouched, not deleted.
 - **Billing** — a single flat subscription, billed monthly (5 990 Ft/hó, ÁFával) or yearly (59 900 Ft/év, ÁFával), Stripe-hosted checkout and billing management. Every organization starts on a 14-day trial requiring no card; an organization that already existed before billing shipped instead gets a non-expiring grace period (see `DECISIONS.md`'s grandfathering entry) rather than a surprise countdown. The dashboard is inaccessible once the trial (or grace period) lapses without an active subscription — the public NFC/feedback pages are never affected by billing status (see "The one rule that overrides everything else" below, and `DECISIONS.md`).
 - **First-time dashboard tour** — an optional, dismissible welcome dialog plus a short step-by-step tour of the dashboard's own areas, shown automatically the first time a brand-new organization's dashboard loads; reopenable anytime from the header. Never a hard requirement for using the product. See `DATABASE_SCHEMA.md` § "Onboarding tour state."
 
 ## Pricing
+
+The public homepage states the price. Its pricing section renders from `PLAN_PRICING` (`features/billing/plans.ts`) — the same constants the in-app billing page reads — so the marketing number and the in-app number cannot drift apart, and the annual saving is computed from them rather than typed. The price of a physical card is deliberately **not** stated on the site: that storefront is separate and this repo holds no authoritative source for it.
 
 One plan, two billing cadences — `5 990 Ft/hó` or `59 900 Ft/év` (both ÁFával, the yearly option roughly 2 months cheaper than paying monthly) — covering unlimited locations and NFC cards per organization either way; no usage-based tiers for MVP (see `DECISIONS.md` for why). 14-day trial, no card required to start. Physical NFC cards themselves are sold separately (a different storefront, not this app) — a subscription and card ownership are independent: an organization can subscribe with zero cards, and a card someone bought keeps working even for an organization whose subscription has lapsed.
 

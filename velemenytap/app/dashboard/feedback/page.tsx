@@ -10,27 +10,14 @@ import {
 } from "@/features/feedback/feedback-filters";
 import { FeedbackTable } from "@/features/feedback/feedback-table";
 import type { FeedbackDetailRow } from "@/features/feedback/feedback-detail-dialog";
+import {
+  parseFeedbackFilters,
+  parseFeedbackCursor,
+} from "@/features/feedback/filter-params";
 
 export const metadata: Metadata = { title: "Vélemények — VéleményTap" };
 
 const PAGE_SIZE = 20;
-const ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(\+\d{2}:\d{2}|Z)$/;
-
-/**
- * Both fields end up interpolated into a raw PostgREST .or() filter string
- * below (needed for the compound seek predicate -- supabase-js's query
- * builder has no first-class "row value < row value" helper). Validating
- * their shape first, rather than passing whatever a manipulated dashboard
- * URL contains straight through, keeps that string free of anything but a
- * timestamp and an integer -- a malformed or hostile cursor is treated as
- * no cursor (first page) rather than passed through.
- */
-function parseCursor(cursor: string | undefined, cursorId: string | undefined) {
-  if (!cursor || !cursorId || !ISO_TIMESTAMP_RE.test(cursor)) return null;
-  const id = Number(cursorId);
-  if (!Number.isInteger(id) || id <= 0) return null;
-  return { createdAt: cursor, id };
-}
 
 type SearchParams = {
   status?: string;
@@ -52,12 +39,7 @@ export default async function FeedbackPage({
   const supabase = await createClient();
   const orgId = organization?.id ?? 0;
 
-  const VALID_STATUSES = ["new", "in_progress", "resolved"] as const;
-  const status = VALID_STATUSES.find((s) => s === sp.status) ?? "all";
-  const rating = sp.rating ?? "all";
-  const locationId = sp.location ?? "all";
-  const cardId = sp.card ?? "all";
-  const days = sp.days ?? "all";
+  const { status, rating, locationId, cardId, days } = parseFeedbackFilters(sp);
 
   let query = supabase
     .from("feedback")
@@ -87,7 +69,7 @@ export default async function FeedbackPage({
     const since = new Date(Date.now() - Number(days) * 24 * 60 * 60 * 1000).toISOString();
     query = query.gte("created_at", since);
   }
-  const cursor = parseCursor(sp.cursor, sp.cursorId);
+  const cursor = parseFeedbackCursor(sp.cursor, sp.cursorId);
   if (cursor) {
     // Seek predicate matching the (created_at, id) order above: strictly
     // before the cursor's created_at, OR tied on created_at and strictly
@@ -98,7 +80,7 @@ export default async function FeedbackPage({
     );
   }
 
-  const [{ data: feedback }, { data: locations }, { data: cards }] = await Promise.all([
+  const [feedbackResult, locationsResult, cardsResult] = await Promise.all([
     query,
     supabase
       .from("locations")
@@ -111,6 +93,16 @@ export default async function FeedbackPage({
       .eq("organization_id", orgId)
       .order("created_at", { ascending: true }),
   ]);
+
+  // A failed query previously fell through as an empty inbox, which reads
+  // exactly like "you have no feedback yet" -- the worst possible way to
+  // report a database outage to an owner checking on real customers.
+  if (feedbackResult.error || locationsResult.error || cardsResult.error) {
+    throw new Error("Nem sikerült betölteni a véleményeket és a szűrőket.");
+  }
+  const { data: feedback } = feedbackResult;
+  const { data: locations } = locationsResult;
+  const { data: cards } = cardsResult;
 
   const rows = feedback ?? [];
   const hasMore = rows.length > PAGE_SIZE;

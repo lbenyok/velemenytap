@@ -1,6 +1,7 @@
 "use client";
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { parseFeedbackFilters } from "./filter-params";
 import {
   Select,
   SelectContent,
@@ -46,8 +47,40 @@ export function FeedbackFilters({
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
+  // Feeding a raw query-string value straight into a Select renders an empty
+  // control whenever it matches no item -- which is what `?rating=abc`, or a
+  // repeated `?rating=1&rating=2`, used to produce. Parse to the same values
+  // the server uses, so an unrecognized filter shows as "all" in both places.
+  function singleParam(key: string) {
+    const values = searchParams.getAll(key);
+    return values.length === 1 ? values[0] : undefined;
+  }
+  const filters = parseFeedbackFilters({
+    status: singleParam("status"),
+    rating: singleParam("rating"),
+    location: singleParam("location"),
+    card: singleParam("card"),
+    days: singleParam("days"),
+  });
+
   const locationItems = [{ value: "all", label: "Minden helyszín" }, ...locations];
   const cardItems = [{ value: "all", label: "Minden NFC kártya" }, ...cards];
+
+  // A well-formed id that no longer belongs to this organization (a deleted
+  // location, or a link shared from another org) would otherwise leave the
+  // Select blank with no way to see what is being filtered on.
+  if (
+    filters.locationId !== "all" &&
+    !locations.some((item) => item.value === filters.locationId)
+  ) {
+    locationItems.push({ value: filters.locationId, label: "Nem elérhető helyszín" });
+  }
+  if (
+    filters.cardId !== "all" &&
+    !cards.some((item) => item.value === filters.cardId)
+  ) {
+    cardItems.push({ value: filters.cardId, label: "Nem elérhető kártya" });
+  }
 
   function setParam(key: string, value: string) {
     const params = new URLSearchParams(searchParams);
@@ -72,7 +105,7 @@ export function FeedbackFilters({
     <div className="flex flex-wrap gap-2">
       <Select
         items={STATUS_ITEMS}
-        value={searchParams.get("status") ?? "all"}
+        value={filters.status}
         onValueChange={(v) => setParam("status", v as string)}
       >
         <SelectTrigger size="sm">
@@ -89,7 +122,7 @@ export function FeedbackFilters({
 
       <Select
         items={RATING_ITEMS}
-        value={searchParams.get("rating") ?? "all"}
+        value={filters.rating}
         onValueChange={(v) => setParam("rating", v as string)}
       >
         <SelectTrigger size="sm">
@@ -106,7 +139,7 @@ export function FeedbackFilters({
 
       <Select
         items={locationItems}
-        value={searchParams.get("location") ?? "all"}
+        value={filters.locationId}
         onValueChange={(v) => setParam("location", v as string)}
       >
         <SelectTrigger size="sm">
@@ -123,7 +156,7 @@ export function FeedbackFilters({
 
       <Select
         items={cardItems}
-        value={searchParams.get("card") ?? "all"}
+        value={filters.cardId}
         onValueChange={(v) => setParam("card", v as string)}
       >
         <SelectTrigger size="sm">
@@ -140,7 +173,7 @@ export function FeedbackFilters({
 
       <Select
         items={DAYS_ITEMS}
-        value={searchParams.get("days") ?? "all"}
+        value={filters.days}
         onValueChange={(v) => setParam("days", v as string)}
       >
         <SelectTrigger size="sm">

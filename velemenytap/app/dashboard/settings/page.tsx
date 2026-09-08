@@ -22,13 +22,17 @@ export default async function SettingsPage({
   const sp = await searchParams;
 
   const supabase = await createClient();
-  const { data: org } = await supabase
+  const { data: org, error } = await supabase
     .from("organizations")
     .select(
-      "name, notification_email, notification_email_pending, notification_email_pending_expires_at, logo_url",
+      "name, notification_email, notification_email_pending, notification_email_pending_expires_at",
     )
     .eq("id", organization.id)
     .single();
+
+  // Rendering a blank settings form on a read failure invites the owner to
+  // save it and overwrite good values with empty ones.
+  if (error || !org) throw new Error("Nem sikerült betölteni a beállításokat.");
 
   const pendingStillValid =
     !!org?.notification_email_pending &&
@@ -71,8 +75,8 @@ export default async function SettingsPage({
         <CardHeader>
           <CardTitle>Vállalkozás profilja</CardTitle>
           <CardDescription>
-            Ezek az adatok az irányítópultodon és a nyilvános vélemény
-            oldalakon is megjelennek.
+            A vállalkozás neve a nyilvános véleményoldalon is látható.
+            Az értesítési e-mail címet a vásárlók nem látják.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -80,7 +84,6 @@ export default async function SettingsPage({
             organization={{
               name: org?.name ?? organization.name,
               notification_email: org?.notification_email ?? null,
-              logo_url: org?.logo_url ?? null,
             }}
             pendingNotificationEmail={pendingStillValid ? org!.notification_email_pending : null}
           />

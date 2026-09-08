@@ -7,18 +7,27 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  * duration), and 10 (customer creation not durably idempotent).
  *
  * Call order for a full, fresh createCheckoutSessionAction attempt:
- *   1. rpc("claim_checkout_attempt", ...)
- *   2. [if existing_session_id] checkout.sessions.retrieve (expand:
+ * Fifth round (migrations 20260908100000/110000) reordered and extended
+ * this: the Stripe customer is resolved FIRST, because the immutable
+ * checkout request names it and the database validates that pairing at
+ * claim time.
+ *
+ * Call order for a full, fresh createCheckoutSessionAction attempt:
+ *   1. getOrCreateStripeCustomerId: billing-table read, [customers.search
+ *      recovery], [customers.create + customers.update], persist
+ *      update / lost-race re-read
+ *   2. rpc("claim_checkout_attempt", ...) with the built request
+ *   3. [if existing_session_id] checkout.sessions.retrieve (expand:
  *      line_items), then either a return (complete+paid), a re-home via
  *      rpc("record_checkout_session", ...), or (mismatch/expired)
  *      checkout.sessions.expire + rpc("release_checkout_attempt", ...) +
  *      rpc("claim_checkout_attempt", ...) again to reclaim
- *   3. getOrCreateStripeCustomerId: billing-table read, [customers.search
- *      recovery], [customers.create + customers.update], persist
- *      update / lost-race re-read
  *   4. rpc("renew_checkout_attempt", ...)
- *   5. checkout.sessions.create(...)
- *   6. rpc("record_checkout_session", ...)
+ *   5. checkout.sessions.create(...) -- replaying the STORED request on a
+ *      takeover, under the attempt id's idempotency key
+ *   6. rpc("record_checkout_session", ...) -- BEFORE validating the Session
+ *   7. rpc("finish_checkout_operation", ...) -- frees the lease, keeps the
+ *      attempt alive for the customer still on Stripe's page
  */
 
 vi.mock("server-only", () => ({}));
@@ -138,25 +147,51 @@ const CUSTOMER_EXISTS = { data: { stripe_customer_id: "cus_existing" }, error: n
 
 function claimResult(overrides: Partial<{
   attempt_id: string;
+  owner_token: string | null;
   is_new_attempt: boolean;
   existing_session_id: string | null;
   existing_interval: string | null;
   existing_price_id: string | null;
   existing_mode: string | null;
+  request: unknown;
+  retry_safe: boolean;
 }> = {}) {
   return {
     data: [
       {
         attempt_id: "attempt_1",
+        owner_token: "owner_1",
         is_new_attempt: true,
         existing_session_id: null,
         existing_interval: null,
         existing_price_id: null,
         existing_mode: null,
+        request: null,
+        retry_safe: true,
         ...overrides,
       },
     ],
     error: null,
+  };
+}
+
+/**
+ * The immutable request an attempt stores and a takeover replays --
+ * mirrors buildCheckoutRequest's own output shape. The marker exists so a
+ * test can prove the STORED object reached Stripe rather than a freshly
+ * rebuilt one.
+ */
+function storedRequest(priceId: string, marker = "stored") {
+  return {
+    mode: "subscription",
+    customer: "cus_existing",
+    client_reference_id: "42",
+    line_items: [{ price: priceId, quantity: 1 }],
+    success_url:
+      "https://velemenytap.example/dashboard/billing?checkout=success&session_id={CHECKOUT_SESSION_ID}&marker=" + marker,
+    cancel_url: "https://velemenytap.example/dashboard/billing?checkout=canceled",
+    metadata: { organization_id: "42" },
+    subscription_data: { metadata: { organization_id: "42" } },
   };
 }
 
@@ -356,6 +391,7 @@ describe("createCheckoutSessionAction", () => {
         "claim_checkout_attempt",
         claimResult({ is_new_attempt: false, existing_session_id: "cs_open", existing_interval: "monthly", existing_price_id: MONTHLY_PRICE }),
       );
+      queue(CUSTOMER_EXISTS);
       checkoutSessionsRetrieve.mockResolvedValue({ id: "cs_open", status: "open", url: "https://checkout.stripe.com/reused", line_items: sessionLineItems(MONTHLY_PRICE) });
       const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData("monthly")));
       expect(target).toBe("https://checkout.stripe.com/reused");
@@ -410,6 +446,7 @@ describe("createCheckoutSessionAction", () => {
         "claim_checkout_attempt",
         claimResult({ is_new_attempt: false, existing_session_id: "cs_raced", existing_interval: "monthly", existing_price_id: MONTHLY_PRICE }),
       );
+      queue(CUSTOMER_EXISTS);
       checkoutSessionsRetrieve.mockResolvedValue({ id: "cs_raced", status: "open", url: "https://checkout.stripe.com/raced", line_items: sessionLineItems(MONTHLY_PRICE) });
       checkoutSessionsExpire.mockRejectedValue(new Error("Session already completed"));
       checkoutSessionsRetrieve.mockResolvedValueOnce({ id: "cs_raced", status: "open", url: "https://checkout.stripe.com/raced", line_items: sessionLineItems(MONTHLY_PRICE) });
@@ -443,13 +480,14 @@ describe("createCheckoutSessionAction", () => {
         "claim_checkout_attempt",
         claimResult({ is_new_attempt: false, existing_session_id: "cs_free", existing_interval: "monthly", existing_price_id: MONTHLY_PRICE }),
       );
+      queue(CUSTOMER_EXISTS);
       checkoutSessionsRetrieve.mockResolvedValue({ id: "cs_free", status: "complete", payment_status: "no_payment_required", line_items: sessionLineItems(MONTHLY_PRICE) });
       const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData("monthly")));
       expect(target).toContain("checkout=success");
     });
 
     it("refuses when a concurrent claim is already in flight (a live attempt with no session id yet)", async () => {
-      queueRpc("claim_checkout_attempt", claimResult({ is_new_attempt: false, existing_session_id: null }));
+      queueRpc("claim_checkout_attempt", claimResult({ owner_token: null, is_new_attempt: false, existing_session_id: null }));
       expect(await redirectedTo(createCheckoutSessionAction(checkoutFormData()))).toBe(
         "/dashboard/billing?error=checkout_failed",
       );
@@ -491,6 +529,143 @@ describe("createCheckoutSessionAction", () => {
       );
     });
 
+    /**
+     * Migration 20260908100000's whole point. A previous operation died
+     * after creating a Session at Stripe but before recording it; the next
+     * request takes over the SAME attempt id, and must replay the SAME
+     * parameters under that attempt's idempotency key -- Stripe rejects a
+     * retry whose parameters differ, and deduplicates one whose parameters
+     * match, so replaying the stored snapshot is what turns a duplicate
+     * subscription into a no-op.
+     */
+    it("a takeover replays the attempt's STORED request, not a freshly rebuilt one, under the same idempotency key", async () => {
+      queueRpc(
+        "claim_checkout_attempt",
+        claimResult({
+          attempt_id: "attempt_taken_over",
+          owner_token: "owner_2",
+          is_new_attempt: false,
+          existing_session_id: null,
+          existing_interval: "monthly",
+          existing_price_id: MONTHLY_PRICE,
+          request: storedRequest(MONTHLY_PRICE, "original"),
+          retry_safe: true,
+        }),
+      );
+      queue(CUSTOMER_EXISTS);
+      queueRpc("renew_checkout_attempt", RENEW_OK);
+      queueRpc("record_checkout_session", RECORD_OK);
+
+      const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData("monthly")));
+
+      expect(target).toBe("https://checkout.stripe.com/session");
+      expect(checkoutSessionsCreate).toHaveBeenCalledTimes(1);
+      const [params, options] = checkoutSessionsCreate.mock.calls[0];
+      expect((params as { success_url: string }).success_url).toContain("marker=original");
+      expect(options).toEqual({ idempotencyKey: "checkout:attempt-attempt_taken_over" });
+      // No release: the attempt identity is exactly what must survive here.
+      expect(rpcCalls.some((c) => c.name === "release_checkout_attempt")).toBe(false);
+    });
+
+    it("a stored request that no longer matches this organization's customer is refused rather than replayed", async () => {
+      queueRpc(
+        "claim_checkout_attempt",
+        claimResult({
+          is_new_attempt: false,
+          existing_session_id: null,
+          existing_interval: "monthly",
+          existing_price_id: MONTHLY_PRICE,
+          request: { ...storedRequest(MONTHLY_PRICE), customer: "cus_someone_else" },
+          retry_safe: true,
+        }),
+      );
+      queue(CUSTOMER_EXISTS);
+      queueRpc("renew_checkout_attempt", RENEW_OK);
+
+      expect(await redirectedTo(createCheckoutSessionAction(checkoutFormData("monthly")))).toBe(
+        "/dashboard/billing?error=checkout_failed",
+      );
+      expect(checkoutSessionsCreate).not.toHaveBeenCalled();
+    });
+
+    /**
+     * Stripe documents roughly 24 hours of idempotency-key retention, not a
+     * permanent guarantee. Past that, replaying the key is no longer
+     * deduplicated -- so an attempt that never recorded a Session and is
+     * outside the window must be discarded rather than replayed.
+     */
+    it("an attempt whose idempotency key is past Stripe's retention window is released and replaced, not replayed", async () => {
+      queueRpc(
+        "claim_checkout_attempt",
+        claimResult({
+          attempt_id: "attempt_expired_key",
+          is_new_attempt: false,
+          existing_session_id: null,
+          existing_interval: "monthly",
+          existing_price_id: MONTHLY_PRICE,
+          request: storedRequest(MONTHLY_PRICE, "ancient"),
+          retry_safe: false,
+        }),
+        claimResult({ attempt_id: "attempt_replacement" }),
+      );
+      queue(CUSTOMER_EXISTS);
+      queueRpc("release_checkout_attempt", RELEASE_OK);
+      queueRpc("renew_checkout_attempt", RENEW_OK);
+      queueRpc("record_checkout_session", RECORD_OK);
+
+      const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData("monthly")));
+
+      expect(target).toBe("https://checkout.stripe.com/session");
+      const release = rpcCalls.find((c) => c.name === "release_checkout_attempt");
+      expect(release?.args).toMatchObject({ p_attempt_id: "attempt_expired_key", p_owner_token: "owner_1" });
+      expect(checkoutSessionsCreate).toHaveBeenCalledWith(
+        expect.anything(),
+        { idempotencyKey: "checkout:attempt-attempt_replacement" },
+      );
+    });
+
+    /**
+     * A Session that exists at Stripe but was never written down here is
+     * invisible to every later attempt -- which is precisely how a customer
+     * ends up with two. Whatever is wrong with the Session can be
+     * discovered afterwards; its existence cannot be.
+     */
+    it("records the created Session BEFORE validating it -- a Session Stripe returns without a URL is still persisted", async () => {
+      queueRpc("claim_checkout_attempt", claimResult({ attempt_id: "attempt_no_url" }));
+      queue(CUSTOMER_EXISTS);
+      queueRpc("renew_checkout_attempt", RENEW_OK);
+      queueRpc("record_checkout_session", RECORD_OK);
+      checkoutSessionsCreate.mockResolvedValue({ id: "cs_without_url", url: null });
+
+      expect(await redirectedTo(createCheckoutSessionAction(checkoutFormData()))).toBe(
+        "/dashboard/billing?error=checkout_failed",
+      );
+
+      const record = rpcCalls.find((c) => c.name === "record_checkout_session");
+      expect(record?.args).toMatchObject({
+        p_attempt_id: "attempt_no_url",
+        p_owner_token: "owner_1",
+        p_session_id: "cs_without_url",
+      });
+    });
+
+    it("ends the OPERATION on success but keeps the attempt, so the customer on Stripe's page is still reconcilable", async () => {
+      queueRpc("claim_checkout_attempt", claimResult({ attempt_id: "attempt_finish" }));
+      queue(CUSTOMER_EXISTS);
+      queueRpc("renew_checkout_attempt", RENEW_OK);
+      queueRpc("record_checkout_session", RECORD_OK);
+      queueRpc("finish_checkout_operation", { data: true, error: null });
+
+      await redirectedTo(createCheckoutSessionAction(checkoutFormData()));
+
+      const finish = rpcCalls.find((c) => c.name === "finish_checkout_operation");
+      expect(finish?.args).toMatchObject({ p_attempt_id: "attempt_finish", p_owner_token: "owner_1" });
+      // finish_checkout_operation, never release_checkout_attempt -- the
+      // latter would discard the identity while the customer is still
+      // mid-checkout.
+      expect(rpcCalls.some((c) => c.name === "release_checkout_attempt")).toBe(false);
+    });
+
     it("barrier-controlled concurrency: two concurrent attempts for the same organization never both create a real Stripe session", async () => {
       let claimCallCount = 0;
       rpc.mockImplementation(async (name: string, args: unknown) => {
@@ -498,9 +673,9 @@ describe("createCheckoutSessionAction", () => {
         if (name === "claim_checkout_attempt") {
           claimCallCount += 1;
           if (claimCallCount === 1) {
-            return { data: [{ attempt_id: "attempt_first", is_new_attempt: true, existing_session_id: null, existing_interval: null, existing_price_id: null, existing_mode: null }], error: null };
+            return { data: [{ attempt_id: "attempt_first", owner_token: "owner_1", is_new_attempt: true, existing_session_id: null, existing_interval: null, existing_price_id: null, existing_mode: null, request: null, retry_safe: true }], error: null };
           }
-          return { data: [{ attempt_id: "attempt_first", is_new_attempt: false, existing_session_id: null, existing_interval: null, existing_price_id: null, existing_mode: null }], error: null };
+          return { data: [{ attempt_id: "attempt_first", owner_token: null, is_new_attempt: false, existing_session_id: null, existing_interval: null, existing_price_id: null, existing_mode: null, request: null, retry_safe: false }], error: null };
         }
         const q = rpcQueues[name];
         if (q && q.length > 0) return q.shift();

@@ -158,7 +158,7 @@ describe("reconcileOrganizationBilling", () => {
   });
 
   it("Finding 3: claims the reconciliation lease BEFORE calling Stripe, and writes conditioned on still owning it", async () => {
-    queueRpc("claim_reconciliation_lease", { data: "owner_1", error: null });
+    queueRpc("claim_reconciliation_lease", { data: [{ owner_token: "owner_1", requested_generation: 3 }], error: null });
     queueRpc("write_reconciliation_result", { data: true, error: null });
     const result = await reconcileOrganizationBilling(42, "cus_1");
     expect(result.outcome).toBe("reconciled");
@@ -171,29 +171,31 @@ describe("reconcileOrganizationBilling", () => {
   });
 
   it("returns 'deferred' (not an error) when the lease cannot be claimed -- another reconciler owns it", async () => {
-    queueRpc("claim_reconciliation_lease", { data: null, error: null });
+    queueRpc("claim_reconciliation_lease", { data: [], error: null });
     const result = await reconcileOrganizationBilling(42, "cus_1");
     expect(result.outcome).toBe("deferred");
     expect(subscriptionsList).not.toHaveBeenCalled();
   });
 
   it("returns 'deferred' when the write loses the lease (write_reconciliation_result returns false) -- never treated as an error", async () => {
-    queueRpc("claim_reconciliation_lease", { data: "owner_1", error: null });
+    queueRpc("claim_reconciliation_lease", { data: [{ owner_token: "owner_1", requested_generation: 3 }], error: null });
     queueRpc("write_reconciliation_result", { data: false, error: null });
     const result = await reconcileOrganizationBilling(42, "cus_1");
     expect(result.outcome).toBe("deferred");
   });
 
-  it("releases the lease and returns an error when Stripe's list() call throws", async () => {
-    queueRpc("claim_reconciliation_lease", { data: "owner_1", error: null });
+  it("records the failure and frees the lease when Stripe's list() call throws", async () => {
+    queueRpc("claim_reconciliation_lease", { data: [{ owner_token: "owner_1", requested_generation: 3 }], error: null });
     subscriptionsList.mockRejectedValue(new Error("Stripe is down"));
     const result = await reconcileOrganizationBilling(42, "cus_1");
     expect(result.outcome).toBe("error");
-    expect(rpcCalls.some((c) => c.name === "release_reconciliation_lease")).toBe(true);
+    const failure = rpcCalls.find((c) => c.name === "fail_billing_reconciliation");
+    expect(failure?.args).toMatchObject({ p_organization_id: 42, p_owner: "owner_1" });
+    expect((failure?.args as { p_error: string }).p_error).toContain("Stripe is down");
   });
 
   it("returns 'no_subscriptions' and clears the dirty flag (not release_reconciliation_lease, which would re-mark it) when Stripe reports none", async () => {
-    queueRpc("claim_reconciliation_lease", { data: "owner_1", error: null });
+    queueRpc("claim_reconciliation_lease", { data: [{ owner_token: "owner_1", requested_generation: 3 }], error: null });
     subscriptionsList.mockResolvedValue({ data: [] });
     const result = await reconcileOrganizationBilling(42, "cus_1");
     expect(result.outcome).toBe("no_subscriptions");
@@ -202,7 +204,7 @@ describe("reconcileOrganizationBilling", () => {
   });
 
   it("found during this round's own independent adversarial audit: revokes a previously-tracked subscription that has since moved to an unapproved price, instead of leaving 'active' frozen forever", async () => {
-    queueRpc("claim_reconciliation_lease", { data: "owner_1", error: null });
+    queueRpc("claim_reconciliation_lease", { data: [{ owner_token: "owner_1", requested_generation: 3 }], error: null });
     queueRpc("write_reconciliation_result", { data: true, error: null });
     // Stripe now reports only an unapproved-price subscription for this
     // customer -- the organization's previously-approved one is gone
@@ -228,7 +230,7 @@ describe("reconcileOrganizationBilling", () => {
   });
 
   it("does NOT touch a pre-signup trial that has never had an approved subscription, even if an unrelated/unapproved subscription exists on the same Stripe Customer", async () => {
-    queueRpc("claim_reconciliation_lease", { data: "owner_1", error: null });
+    queueRpc("claim_reconciliation_lease", { data: [{ owner_token: "owner_1", requested_generation: 3 }], error: null });
     subscriptionsList.mockResolvedValue({ data: [sub({ id: "sub_unapproved", priceId: "price_unrelated" })] });
     // Nothing has ever been tracked for this organization -- still on its
     // own pre-signup trial.
@@ -242,7 +244,7 @@ describe("reconcileOrganizationBilling", () => {
   });
 
   it("passes the picked subscription's canonical fields to write_reconciliation_result", async () => {
-    queueRpc("claim_reconciliation_lease", { data: "owner_1", error: null });
+    queueRpc("claim_reconciliation_lease", { data: [{ owner_token: "owner_1", requested_generation: 3 }], error: null });
     queueRpc("write_reconciliation_result", { data: true, error: null });
     subscriptionsList.mockResolvedValue({ data: [sub({ id: "sub_x", status: "past_due" })] });
     await reconcileOrganizationBilling(42, "cus_1");
@@ -257,6 +259,83 @@ describe("reconcileOrganizationBilling", () => {
   });
 });
 
+/**
+ * Migration 20260908110000. Mutual exclusion alone still lost an event that
+ * arrived DURING a reconciliation: the losing racer set the dirty flag, and
+ * the winner's own completing write cleared it again. The generation pair
+ * is what makes a completing write answer "was every request I knew about
+ * satisfied," rather than merely "did I finish" -- and it only works if
+ * every entry point registers its request BEFORE claiming the lease, and
+ * then writes under the generation the claim observed.
+ */
+describe("reconciliation generations", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    rpc.mockImplementation(defaultRpcImpl);
+    rpcCalls.length = 0;
+    for (const key of Object.keys(rpcQueues)) delete rpcQueues[key];
+    subscriptionsList.mockReset();
+    subscriptionsList.mockResolvedValue({ data: [sub()] });
+    maybeSingleQueue = [];
+  });
+
+  it("registers the request BEFORE claiming the lease, so a racer that loses the claim is still recorded", async () => {
+    queueRpc("claim_reconciliation_lease", { data: [{ owner_token: "owner_1", requested_generation: 7 }], error: null });
+    queueRpc("write_reconciliation_result", { data: true, error: null });
+
+    await reconcileOrganizationBilling(42, "cus_1");
+
+    const requestIndex = rpcCalls.findIndex((c) => c.name === "request_billing_reconciliation");
+    const claimIndex = rpcCalls.findIndex((c) => c.name === "claim_reconciliation_lease");
+    expect(requestIndex).toBeGreaterThanOrEqual(0);
+    expect(claimIndex).toBeGreaterThan(requestIndex);
+  });
+
+  it("writes under the generation the CLAIM observed, never a later one", async () => {
+    queueRpc("claim_reconciliation_lease", { data: [{ owner_token: "owner_1", requested_generation: 7 }], error: null });
+    queueRpc("write_reconciliation_result", { data: true, error: null });
+
+    await reconcileOrganizationBilling(42, "cus_1");
+
+    const write = rpcCalls.find((c) => c.name === "write_reconciliation_result");
+    expect(write?.args).toMatchObject({ p_owner: "owner_1", p_requested_generation: 7 });
+  });
+
+  it("passes the observed generation to clear_reconciliation_dirty on the confirmed-clean path too", async () => {
+    queueRpc("claim_reconciliation_lease", { data: [{ owner_token: "owner_1", requested_generation: 3 }], error: null });
+    subscriptionsList.mockResolvedValue({ data: [] });
+
+    const result = await reconcileOrganizationBilling(42, "cus_1");
+
+    expect(result.outcome).toBe("no_subscriptions");
+    const clear = rpcCalls.find((c) => c.name === "clear_reconciliation_dirty");
+    expect(clear?.args).toMatchObject({ p_owner: "owner_1", p_requested_generation: 3 });
+  });
+
+  it("surfaces an error (and never claims a lease) when the request itself cannot be recorded", async () => {
+    queueRpc("request_billing_reconciliation", { data: null, error: { message: "row missing" } });
+
+    const result = await reconcileOrganizationBilling(42, "cus_1");
+
+    expect(result.outcome).toBe("error");
+    expect(rpcCalls.some((c) => c.name === "claim_reconciliation_lease")).toBe(false);
+    expect(subscriptionsList).not.toHaveBeenCalled();
+  });
+
+  it("activation follows the same request-then-claim-then-write-under-that-generation order", async () => {
+    queueRpc("claim_reconciliation_lease", { data: [{ owner_token: "owner_1", requested_generation: 5 }], error: null });
+    queueRpc("write_activation", { data: true, error: null });
+
+    await activateOrganizationBilling(42);
+
+    const requestIndex = rpcCalls.findIndex((c) => c.name === "request_billing_reconciliation");
+    const claimIndex = rpcCalls.findIndex((c) => c.name === "claim_reconciliation_lease");
+    expect(claimIndex).toBeGreaterThan(requestIndex);
+    const write = rpcCalls.find((c) => c.name === "write_activation");
+    expect(write?.args).toMatchObject({ p_owner: "owner_1", p_requested_generation: 5 });
+  });
+});
+
 describe("activateOrganizationBilling", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -266,7 +345,7 @@ describe("activateOrganizationBilling", () => {
   });
 
   it("claims the lease, then writes activation", async () => {
-    queueRpc("claim_reconciliation_lease", { data: "owner_1", error: null });
+    queueRpc("claim_reconciliation_lease", { data: [{ owner_token: "owner_1", requested_generation: 3 }], error: null });
     queueRpc("write_activation", { data: true, error: null });
     const result = await activateOrganizationBilling(42);
     expect(result.outcome).toBe("reconciled");
@@ -274,20 +353,20 @@ describe("activateOrganizationBilling", () => {
   });
 
   it("defers when the lease can't be claimed", async () => {
-    queueRpc("claim_reconciliation_lease", { data: null, error: null });
+    queueRpc("claim_reconciliation_lease", { data: [], error: null });
     const result = await activateOrganizationBilling(42);
     expect(result.outcome).toBe("deferred");
   });
 
   it("defers when the write loses the lease", async () => {
-    queueRpc("claim_reconciliation_lease", { data: "owner_1", error: null });
+    queueRpc("claim_reconciliation_lease", { data: [{ owner_token: "owner_1", requested_generation: 3 }], error: null });
     queueRpc("write_activation", { data: false, error: null });
     const result = await activateOrganizationBilling(42);
     expect(result.outcome).toBe("deferred");
   });
 
   it("releases the lease and returns an error when write_activation itself throws (not merely an { error } result) -- found during this round's own independent self-review: an earlier version had no try/catch here at all, unlike reconcileOrganizationBilling, silently abandoning the claimed lease with needs_reconciliation never set", async () => {
-    queueRpc("claim_reconciliation_lease", { data: "owner_1", error: null });
+    queueRpc("claim_reconciliation_lease", { data: [{ owner_token: "owner_1", requested_generation: 3 }], error: null });
     rpc.mockImplementation((name: string, args: unknown) => {
       if (name === "write_activation") throw new Error("network failure");
       return defaultRpcImpl(name, args);

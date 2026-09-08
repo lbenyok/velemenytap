@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import { safeGoogleReviewUrl } from "@/lib/google-review-url";
 
 export type PublicCardInfo = {
   cardId: number;
@@ -31,13 +32,21 @@ export async function lookupPublicCard(
   }
 
   const admin = createAdminClient();
-  const { data } = await admin
+  const { data, error } = await admin
     .from("nfc_cards")
     .select(
       "id, organization_id, location_id, status, display_name, organizations(name), locations(name, status, google_review_url)",
     )
     .eq("public_id", publicId)
     .maybeSingle();
+
+  // A database outage must not render as "this card doesn't exist" -- that
+  // sends a real customer standing at the counter away believing the card
+  // is dead. Distinguish it from a genuine miss so the caller can show a
+  // retry instead of the permanent not-found screen.
+  if (error) {
+    throw new Error("A véleményoldal átmenetileg nem tölthető be. Próbáld újra.");
+  }
 
   if (!data || !data.organizations || !data.locations) {
     return null;
@@ -50,7 +59,7 @@ export async function lookupPublicCard(
     organizationName: data.organizations.name,
     locationName: data.locations.name,
     cardName: data.display_name,
-    googleReviewUrl: data.locations.google_review_url,
+    googleReviewUrl: safeGoogleReviewUrl(data.locations.google_review_url),
     isActive: data.status === "active" && data.locations.status === "active",
   };
 }

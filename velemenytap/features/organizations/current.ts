@@ -18,12 +18,20 @@ export type CurrentOrganization = {
  */
 export async function getCurrentOrganization(): Promise<CurrentOrganization | null> {
   const supabase = await createClient();
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("organization_memberships")
     .select("role, organizations(id, name, slug, onboarding_tour_status)")
     .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle();
+
+  // A transient database failure previously returned null here, which every
+  // caller reads as "this user has no organization yet" -- silently
+  // redirecting an existing owner to onboarding. Fail loudly instead so the
+  // dashboard error boundary can offer a retry.
+  if (error) {
+    throw new Error("Nem sikerült betölteni a vállalkozásodat. Próbáld újra.");
+  }
 
   if (!data?.organizations) {
     return null;

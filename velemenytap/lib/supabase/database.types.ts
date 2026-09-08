@@ -93,10 +93,17 @@ export interface Database {
           checkout_attempt_price_id: string | null;
           checkout_attempt_mode: string | null;
           checkout_attempt_expires_at: string | null;
+          checkout_owner_token: string | null;
+          checkout_request: Json | null;
+          checkout_created_at: string | null;
           reconciliation_lease_owner: string | null;
           reconciliation_lease_expires_at: string | null;
           needs_reconciliation: boolean;
           reconciliation_dirty_since: string | null;
+          billing_sync_requested: number;
+          billing_sync_completed: number;
+          billing_sync_last_attempt_at: string | null;
+          billing_sync_last_error: string | null;
           last_synced_at: string | null;
           created_at: string;
           updated_at: string;
@@ -117,10 +124,17 @@ export interface Database {
           checkout_attempt_price_id?: string | null;
           checkout_attempt_mode?: string | null;
           checkout_attempt_expires_at?: string | null;
+          checkout_owner_token?: string | null;
+          checkout_request?: Json | null;
+          checkout_created_at?: string | null;
           reconciliation_lease_owner?: string | null;
           reconciliation_lease_expires_at?: string | null;
           needs_reconciliation?: boolean;
           reconciliation_dirty_since?: string | null;
+          billing_sync_requested?: number;
+          billing_sync_completed?: number;
+          billing_sync_last_attempt_at?: string | null;
+          billing_sync_last_error?: string | null;
           last_synced_at?: string | null;
           created_at?: string;
           updated_at?: string;
@@ -141,10 +155,17 @@ export interface Database {
           checkout_attempt_price_id?: string | null;
           checkout_attempt_mode?: string | null;
           checkout_attempt_expires_at?: string | null;
+          checkout_owner_token?: string | null;
+          checkout_request?: Json | null;
+          checkout_created_at?: string | null;
           reconciliation_lease_owner?: string | null;
           reconciliation_lease_expires_at?: string | null;
           needs_reconciliation?: boolean;
           reconciliation_dirty_since?: string | null;
+          billing_sync_requested?: number;
+          billing_sync_completed?: number;
+          billing_sync_last_attempt_at?: string | null;
+          billing_sync_last_error?: string | null;
           last_synced_at?: string | null;
           created_at?: string;
           updated_at?: string;
@@ -481,24 +502,35 @@ export interface Database {
           p_organization_id: number;
           p_interval: string;
           p_price_id: string;
-          p_mode: string;
+          p_request: Json;
           p_claim_seconds?: number;
         };
         Returns: {
           attempt_id: string;
+          owner_token: string | null;
           is_new_attempt: boolean;
           existing_session_id: string | null;
           existing_interval: string | null;
           existing_price_id: string | null;
           existing_mode: string | null;
+          request: Json | null;
+          retry_safe: boolean;
         }[];
       };
       record_checkout_session: {
         Args: {
           p_organization_id: number;
           p_attempt_id: string;
+          p_owner_token: string;
           p_session_id: string;
-          p_lease_seconds?: number;
+        };
+        Returns: boolean | null;
+      };
+      finish_checkout_operation: {
+        Args: {
+          p_organization_id: number;
+          p_attempt_id: string;
+          p_owner_token: string;
         };
         Returns: boolean | null;
       };
@@ -506,6 +538,7 @@ export interface Database {
         Args: {
           p_organization_id: number;
           p_attempt_id: string;
+          p_owner_token: string;
         };
         Returns: boolean | null;
       };
@@ -513,16 +546,44 @@ export interface Database {
         Args: {
           p_organization_id: number;
           p_attempt_id: string;
+          p_owner_token: string;
           p_claim_seconds?: number;
         };
         Returns: boolean | null;
+      };
+      request_billing_reconciliation: {
+        Args: {
+          p_organization_id: number;
+        };
+        Returns: number;
       };
       claim_reconciliation_lease: {
         Args: {
           p_organization_id: number;
           p_lease_seconds?: number;
         };
-        Returns: string | null;
+        Returns: {
+          owner_token: string;
+          requested_generation: number;
+        }[];
+      };
+      get_billing_reconciliation_candidates: {
+        Args: {
+          p_limit?: number;
+          p_stale_seconds?: number;
+        };
+        Returns: {
+          organization_id: number;
+          stripe_customer_id: string | null;
+        }[];
+      };
+      fail_billing_reconciliation: {
+        Args: {
+          p_organization_id: number;
+          p_owner: string;
+          p_error: string;
+        };
+        Returns: boolean;
       };
       renew_reconciliation_lease: {
         Args: {
@@ -536,6 +597,7 @@ export interface Database {
         Args: {
           p_organization_id: number;
           p_owner: string;
+          p_requested_generation: number;
           p_stripe_customer_id: string | null;
           p_stripe_subscription_id: string | null;
           p_status: string;
@@ -548,6 +610,7 @@ export interface Database {
         Args: {
           p_organization_id: number;
           p_owner: string;
+          p_requested_generation: number;
         };
         Returns: boolean;
       };
@@ -570,6 +633,7 @@ export interface Database {
         Args: {
           p_organization_id: number;
           p_owner: string;
+          p_requested_generation: number;
         };
         Returns: boolean;
       };
