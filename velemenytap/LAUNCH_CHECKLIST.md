@@ -14,26 +14,56 @@ below has been applied to it.
 
 ## 1. Supabase Auth email (do this first — it gates everything else)
 
-Signup confirmation and password reset go through **Supabase Auth's own mailer**, not
-this app's Resend integration. They are different paths; the verified `velemenytap.hu`
-Resend domain does nothing for them until it is configured as Auth's SMTP provider.
+This turned out to be **two independent faults**, and fixing only the first would
+have looked like progress while leaving every link broken.
 
-Measured against the isolated project: `resend` and `resetPasswordForEmail` were
-**accepted with no error while nothing arrived** at a real external mailbox, and
-`signUp` hit the project-wide hourly cap. That is the built-in mailer, which delivers
-only to project team members.
+**Fault A — no SMTP.** Both projects were on Supabase's built-in mailer, capped at
+**2 emails/hour** and documented as delivering only to project team members. Real
+sends to an ordinary external mailbox were *accepted with no error* and simply never
+arrived.
 
-- [ ] **[you]** Authenticate the Supabase CLI so the configuration can be read:
-      `supabase login` (browser), or `supabase login --token <PAT>` with a token from
-      <https://supabase.com/dashboard/account/tokens>.
-- [ ] **[me]** Read the isolated **and** production Auth settings and report what is
-      actually configured, rather than inferring it from behaviour.
-- [ ] **[me]** Configure SMTP on the **isolated** project first and verify it by
-      receiving and clicking real signup, resend and password-reset emails.
-- [ ] **[you]** Apply the same configuration to **production** once the isolated run is
-      green. Sender address must be on a domain you control and have verified.
-- [ ] **[you]** Decide the sender identity customers will see (e.g.
-      `no-reply@velemenytap.hu` vs a monitored address).
+**Fault B — the email templates.** Both projects' confirmation and recovery templates
+use `{{ .ConfirmationURL }}`. That produces a link through `/auth/v1/verify`, which
+after verifying redirects to the app with the session in a **URL fragment**. A
+fragment is never sent to the server, so a server-rendered route cannot read it — and
+every link dead-ended on `/auth/auth-code-error`, *even though the token itself was
+consumed correctly*. This app was built for the other flow: `/auth/confirm` has always
+read `token_hash` + `type` and called `verifyOtp`. The templates simply never matched
+the app written for them.
+
+Both are fixed and **verified end to end on the isolated project**: real emails
+received in a real mailbox and clicked — signup confirmation → `/onboarding`, resend →
+`/onboarding`, password reset → `/auth/reset-password` with a real session cookie.
+
+- [x] **[me]** Isolated project: SMTP configured (Resend bridge) and templates
+      switched to the `token_hash` form. Verified by receiving and clicking all three.
+- [ ] **[you]** Apply **both** fixes to production. SMTP settings:
+
+      host smtp.resend.com · port 465 · user `resend` · pass = your Resend API key
+      sender: an address on the verified `velemenytap.hu` domain
+
+- [ ] **[you]** Replace the production **Confirm signup** template link with:
+
+      {{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=signup&next=/onboarding
+
+- [ ] **[you]** Replace the production **Reset password** template link with:
+
+      {{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=recovery&next=/auth/reset-password
+
+- [ ] **[you]** Raise the hourly email rate limit from 2 (it exists to protect the
+      built-in mailer and is far too low once real SMTP is in place).
+- [ ] **[you]** Confirm production's Auth `site_url` still matches the address that
+      actually serves — it is currently `https://veleminytap.vercel.app`, which is
+      correct today. `{{ .SiteURL }}` in the templates above resolves to exactly this,
+      so if the Vercel project is ever renamed, both move together.
+- [ ] **[you]** Decide the customer-visible sender identity. The isolated project uses
+      `alerts@velemenytap.hu` because it was already proven; an account-email address
+      such as `no-reply@` may read better, and any local part on the verified domain
+      works.
+
+**Verify production the same way it was verified here:** sign up with a real address,
+click the emailed link, and confirm it lands on `/onboarding` rather than
+`/auth/auth-code-error`. An email that *arrives* proves only Fault A is fixed.
 
 ## 2. Stripe live configuration
 
@@ -104,7 +134,7 @@ command and manifest are in `DEPLOYMENT.md` § 7; do not retype the list from me
 
 ## What needs you, condensed
 
-1. `supabase login` — unblocks the whole email investigation.
+1. Apply **both** email fixes to production — SMTP *and* the two templates. Fixing only SMTP produces emails that arrive and links that still dead-end.
 2. Stripe live Product, Prices, webhook endpoint, and the env vars for them.
 3. Three sweep secrets/variables, set together.
 4. Confirming production's migration state, then running the two rollout commands.

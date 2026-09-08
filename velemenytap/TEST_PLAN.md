@@ -164,3 +164,34 @@ Against the **isolated** project, with a real readable mailbox (a disposable `ma
 What that does *not* establish is production's configuration, which is a separate project and cannot be read from here without a Management API token (`supabase projects list` fails with `LegacyPlatformAuthRequiredError`). Nor does an API acceptance response distinguish "queued and delivered" from "queued and dropped" — only a mailbox does, which is why this test uses one.
 
 Everything either side of the SMTP hop is verified: the forms render, the Server Actions call Auth with the correct `redirectTo`, Auth mints valid tokens honouring those targets, `/auth/callback` completes both server-readable link shapes, `/auth/reset-password` renders with a real session, and an invalid or already-used link degrades to `/auth/auth-code-error`.
+
+## Supabase Auth email — verified end to end (2026-09-09)
+
+Superseding the measurement above, which established only that nothing arrived. With
+the CLI authenticated, the actual configuration could be read rather than inferred,
+and it showed two independent faults:
+
+1. **No custom SMTP on either project** — the built-in mailer, capped at 2/hour and
+   documented as team-members-only. Sends to an external mailbox were accepted with no
+   error and never delivered.
+2. **Templates used `{{ .ConfirmationURL }}`** — which redirects with the session in a
+   URL fragment. A fragment never reaches the server, so `/auth/confirm` and
+   `/auth/callback` both fell through to `/auth/auth-code-error` *even though the token
+   was consumed correctly* (the account genuinely became confirmed). The app has always
+   implemented the `token_hash` flow; the templates never matched it.
+
+Fixing only the first would have produced emails that arrive and links that still fail.
+
+Both fixed on the isolated project and verified with a real mailbox, receiving and
+clicking each link:
+
+| Flow | Result |
+|---|---|
+| Signup confirmation | email received from `alerts@velemenytap.hu` → clicked → **`/onboarding`** (200) → `email_confirmed_at` set |
+| Resend confirmation | on a deliberately unconfirmed account: second email received → clicked → **`/onboarding`** → account confirmed |
+| Password reset | email received → clicked → **`/auth/reset-password`** (200) with a real `sb-` session cookie |
+
+Two harness notes: Supabase throttles per address (`max_frequency`, ~60s), so a rapid
+second send returns 429 — that is a throttle, not a delivery failure. And a resend of
+type `signup` for an **already-confirmed** account is accepted but sends nothing, which
+is correct; proving resend requires an account left unconfirmed on purpose.
