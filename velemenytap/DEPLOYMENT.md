@@ -30,7 +30,7 @@ If **Root Directory** is wrong, the build fails immediately with `Couldn't find 
 | `NEXT_PUBLIC_SUPABASE_URL` | production project | **isolated test project** | production project (or isolated, your choice) |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | production project | isolated test project | production project |
 | `SUPABASE_SECRET_KEY` | production project | isolated test project | production project |
-| `NEXT_PUBLIC_SITE_URL` | `https://velemenytap.vercel.app` | the Preview deployment's own URL | `http://localhost:3000` |
+| `NEXT_PUBLIC_SITE_URL` | `https://veleminytap.vercel.app` | the Preview deployment's own URL | `http://localhost:3000` |
 | `RESEND_API_KEY` | real key | **unset** | optional |
 | `RESEND_FROM_EMAIL` | real sender | **unset** | optional |
 | `NEXT_PUBLIC_SENTRY_DSN` | real DSN | **unset** | optional |
@@ -86,7 +86,7 @@ The open questions this raises for the owner and their accountant are collected 
 Three pieces, all owner actions, none configured yet:
 1. **`RECONCILE_SWEEP_SECRET` in Vercel Production** (Project Settings → Environment Variables, scoped `production`) — a long, random secret (e.g. `openssl rand -hex 32`), known only to this value and the GitHub Actions secret in step 2. Not needed in Preview/Development unless the sweep is deliberately exercised against a non-production target.
 2. **A matching `RECONCILE_SWEEP_SECRET` GitHub Actions repository secret** (Repository Settings → Secrets and variables → Actions → Secrets, same tab as § 4's table) — must be the **exact same value** as step 1, since `.github/workflows/reconcile-billing-sweep.yml` (at the **repo root**, sibling to `velemenytap/` — same reasoning as `ci.yml`, see `ARCHITECTURE.md`'s directory-layout note) sends it as the sweep endpoint's bearer token on every scheduled call.
-3. **`PRODUCTION_RECONCILE_SWEEP_URL`** as a repository **Variable** (not a Secret — it's not sensitive, the same tab as § 4's `PRODUCTION_HEALTH_URL`) — the sweep endpoint's own full URL (`https://<production-domain>/api/admin/reconcile-billing-sweep`). The workflow falls back to `https://velemenytap.vercel.app/api/admin/reconcile-billing-sweep` if this variable is unset, matching this document's own documented production domain elsewhere.
+3. **`PRODUCTION_RECONCILE_SWEEP_URL`** as a repository **Variable** (not a Secret — it's not sensitive, the same tab as § 4's `PRODUCTION_HEALTH_URL`) — the sweep endpoint's own full URL (`https://<production-domain>/api/admin/reconcile-billing-sweep`). The workflow falls back to `https://veleminytap.vercel.app/api/admin/reconcile-billing-sweep` if this variable is unset, matching this document's own documented production domain elsewhere.
 
 The workflow runs every 15 minutes (`cron: "*/15 * * * *"`) plus `workflow_dispatch` for a manual trigger, and fails loudly (`::error::`, non-zero exit) if `RECONCILE_SWEEP_SECRET` isn't configured as a repository secret, rather than silently doing nothing — check this workflow's own Actions history if billing entitlement for an organization ever seems to lag behind Stripe's own state for longer than a normal webhook retry window should explain; a permanently red or entirely absent scheduled run there is the first thing to check, since neither of these three pieces being set up yet means the sweep currently never actually runs against production, even though the endpoint and workflow file are both already committed.
 
@@ -121,8 +121,8 @@ Repository Settings → Secrets and variables → Actions → **Variables** tab 
 
 | Variable | Value |
 |---|---|
-| `PRODUCTION_HEALTH_URL` | `https://velemenytap.vercel.app/api/health` (optional — the workflow falls back to this exact value if unset) |
-| `PRODUCTION_RECONCILE_SWEEP_URL` (fourth independent review, Finding 5 — not yet configured) | `https://velemenytap.vercel.app/api/admin/reconcile-billing-sweep` (optional — the sweep workflow falls back to this exact value if unset) |
+| `PRODUCTION_HEALTH_URL` | `https://veleminytap.vercel.app/api/health` (optional — the workflow falls back to this exact value if unset) |
+| `PRODUCTION_RECONCILE_SWEEP_URL` (fourth independent review, Finding 5 — not yet configured) | `https://veleminytap.vercel.app/api/admin/reconcile-billing-sweep` (optional — the sweep workflow falls back to this exact value if unset) |
 
 See § 3's "Scheduled billing reconciliation sweep" for the full three-piece setup (the Vercel env var, this repository secret, and this variable) and what happens while any of them remains unset.
 
@@ -267,7 +267,7 @@ Add `--dry-run` to either command to preview what it would push, with nothing ap
 
 After any production deploy, whether via the automated `verify-production-deployment` CI job or by hand:
 
-1. `curl https://velemenytap.vercel.app/api/health` — expect `"ok":true` and `commitSha` matching the deployed commit.
-2. Load `https://velemenytap.vercel.app/` in a real browser — no console errors, homepage renders.
+1. `curl https://veleminytap.vercel.app/api/health` — expect `"ok":true` and `commitSha` matching the deployed commit.
+2. Load `https://veleminytap.vercel.app/` in a real browser — no console errors, homepage renders.
 3. Load `/login` — renders, no console errors.
 4. **Never** log into the dashboard with real credentials from an automated tool, and never run the e2e suite against the production Supabase project — the isolated test project (§ 3) exists specifically so verification never touches real customer data.

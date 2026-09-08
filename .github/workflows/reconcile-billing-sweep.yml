@@ -30,7 +30,7 @@ jobs:
     steps:
       - name: Call the reconciliation sweep endpoint
         env:
-          SWEEP_URL: ${{ vars.PRODUCTION_RECONCILE_SWEEP_URL || 'https://velemenytap.vercel.app/api/admin/reconcile-billing-sweep' }}
+          SWEEP_URL: ${{ vars.PRODUCTION_RECONCILE_SWEEP_URL || 'https://veleminytap.vercel.app/api/admin/reconcile-billing-sweep' }}
           SWEEP_SECRET: ${{ secrets.RECONCILE_SWEEP_SECRET }}
         run: |
           if [ -z "$SWEEP_SECRET" ]; then

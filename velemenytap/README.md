@@ -64,6 +64,6 @@ stripe listen --forward-to localhost:3000/api/webhooks/stripe
 
 ## Deployment
 
-Hosted on Vercel (`velemenytap` project, Root Directory `velemenytap`), auto-deployed from pushes to `master` via Vercel's GitHub integration — **not** run by hand from a local `vercel` CLI invocation, which would deploy whatever's on disk rather than what CI has actually verified. Production: https://velemenytap.vercel.app.
+Hosted on Vercel (`velemenytap` project, Root Directory `velemenytap`), auto-deployed from pushes to `master` via Vercel's GitHub integration — **not** run by hand from a local `vercel` CLI invocation, which would deploy whatever's on disk rather than what CI has actually verified. Production: https://veleminytap.vercel.app.
 
 See **[DEPLOYMENT.md](./DEPLOYMENT.md)** for the full runbook: required Vercel/GitHub configuration (round-4 finding R4-02 — a real Git-integration failure once left production silently running months-old code, see `STATUS.md`), environment variable scopes, the CI gating model, `/api/health` version verification, and the expand/deploy/enforce rollout procedure (`scripts/rollout.mjs`) for migrations that need it.

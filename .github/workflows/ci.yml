@@ -175,7 +175,7 @@ jobs:
           # Repository variable, not a secret -- this is the app's own
           # public production URL. Falls back to the known default so this
           # keeps working even if the variable is never explicitly set.
-          HEALTH_URL: ${{ vars.PRODUCTION_HEALTH_URL || 'https://velemenytap.vercel.app/api/health' }}
+          HEALTH_URL: ${{ vars.PRODUCTION_HEALTH_URL || 'https://veleminytap.vercel.app/api/health' }}
         run: |
           deadline=$((SECONDS + 300))
           while [ "$SECONDS" -lt "$deadline" ]; do
