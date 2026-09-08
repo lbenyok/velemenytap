@@ -1,6 +1,10 @@
--- Second independent review (2026-09-07), findings 2 and 3/4: the billing
+-- Third independent review (2026-09-07), findings 2 and 3/4: the billing
 -- webhook and Checkout-lease design both had real, reproduced concurrency
 -- gaps that the first review-response round's fixes did not close.
+-- (Self-labeled "Second" in earlier drafts of this file's own header --
+-- corrected to match how DATABASE_SCHEMA.md/DECISIONS.md consistently
+-- number this review round; found during a fourth independent review's
+-- own adversarial audit.)
 --
 -- FINDING 3/4 -- webhook reconciliation must be organization/customer-wide
 -- and fenced against out-of-order writers, not per-subscription and

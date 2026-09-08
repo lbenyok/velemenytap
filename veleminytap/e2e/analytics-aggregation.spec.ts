@@ -8,6 +8,7 @@ import {
   type SeededOrgMember,
   type SeededCard,
 } from "./support/seed";
+import { signInViaUi } from "./support/ui";
 
 /**
  * Round-2 findings R2-02 and R2-03. The round-1 fix for the original
@@ -81,10 +82,7 @@ test("R2-02: the dashboard overview reflects the true total past the old 5000-ro
     expect(snapshot.ratingCounts[String(rating)]).toBe(expectedByRating[rating]);
   }
 
-  await page.goto("/login");
-  await page.getByLabel("E-mail cím").fill(member.email);
-  await page.getByLabel("Jelszó").fill(member.password);
-  await page.getByRole("button", { name: "Bejelentkezés" }).click();
+  await signInViaUi(page, member.email, member.password);
   await page.waitForURL(/\/dashboard$/);
 
   const tile = page.locator('[data-slot="card-content"]', { hasText: "Összes vélemény" });
@@ -107,10 +105,7 @@ test("R2-02: period analytics reflects the true total past the old 5000-row ceil
     expect(error).toBeNull();
   }
 
-  await page.goto("/login");
-  await page.getByLabel("E-mail cím").fill(member.email);
-  await page.getByLabel("Jelszó").fill(member.password);
-  await page.getByRole("button", { name: "Bejelentkezés" }).click();
+  await signInViaUi(page, member.email, member.password);
   await page.waitForURL(/\/dashboard$/);
 
   await page.goto("/dashboard/analytics?days=90");

@@ -6,6 +6,7 @@ import {
   adminClient,
   type SeededOrgMember,
 } from "./support/seed";
+import { signInViaUi } from "./support/ui";
 
 /**
  * The subscription paywall (app/dashboard/layout.tsx) must gate the
@@ -23,10 +24,7 @@ test.afterEach(async () => {
 });
 
 async function login(page: import("@playwright/test").Page, email: string, password: string) {
-  await page.goto("/login");
-  await page.getByLabel("E-mail cím").fill(email);
-  await page.getByLabel("Jelszó").fill(password);
-  await page.getByRole("button", { name: "Bejelentkezés" }).click();
+  await signInViaUi(page, email, password);
 }
 
 test("a freshly signed-up organization (still inside its trial) can reach the dashboard", async ({

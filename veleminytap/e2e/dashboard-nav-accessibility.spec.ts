@@ -4,6 +4,7 @@ import {
   cleanupOrgWithMember,
   type SeededOrgMember,
 } from "./support/seed";
+import { signInViaUi } from "./support/ui";
 
 /**
  * Round-4 findings R4-05 (no accessible names below `lg`) and R4-06
@@ -74,10 +75,7 @@ test.afterEach(async () => {
 });
 
 async function signIn(page: Page) {
-  await page.goto("/login");
-  await page.getByLabel("E-mail cím").fill(member.email);
-  await page.getByLabel("Jelszó").fill(member.password);
-  await page.getByRole("button", { name: "Bejelentkezés" }).click();
+  await signInViaUi(page, member.email, member.password);
   await page.waitForURL(/\/dashboard$/);
 }
 

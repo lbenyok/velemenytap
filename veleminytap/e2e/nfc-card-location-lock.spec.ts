@@ -8,6 +8,7 @@ import {
   type SeededOrgMember,
   type SeededCard,
 } from "./support/seed";
+import { signInViaUi } from "./support/ui";
 
 /**
  * Round-2 finding R2-09. A card's location is immutable at the database
@@ -51,10 +52,7 @@ test.afterEach(async () => {
 });
 
 async function signIn(page: import("@playwright/test").Page) {
-  await page.goto("/login");
-  await page.getByLabel("E-mail cím").fill(member.email);
-  await page.getByLabel("Jelszó").fill(member.password);
-  await page.getByRole("button", { name: "Bejelentkezés" }).click();
+  await signInViaUi(page, member.email, member.password);
   await page.waitForURL("/dashboard");
 }
 

@@ -7,6 +7,7 @@ import {
   type SeededOrgMember,
   type SeededFeedbackFixture,
 } from "./support/seed";
+import { signInViaUi } from "./support/ui";
 
 /**
  * Finding #10: dedicated cross-tenant isolation coverage. Every other test
@@ -161,10 +162,7 @@ test("Org A's onboarding RPC cannot be used to join or read Org B", async () => 
 });
 
 test("Org A's dashboard shows only Org A's data, never Org B's", async ({ page }) => {
-  await page.goto("/login");
-  await page.getByLabel("E-mail cím").fill(orgA.email);
-  await page.getByLabel("Jelszó").fill(orgA.password);
-  await page.getByRole("button", { name: "Bejelentkezés" }).click();
+  await signInViaUi(page, orgA.email, orgA.password);
   await page.waitForURL(/\/dashboard$/);
 
   await page.goto("/dashboard/feedback");

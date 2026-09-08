@@ -9,6 +9,7 @@ import {
   type SeededOrgMember,
 } from "./support/seed";
 import { connectToTestDb } from "./support/db-connection";
+import { signInViaUi } from "./support/ui";
 
 /**
  * Round-3 finding R3-03. An organization's notification_email used to be
@@ -395,10 +396,7 @@ test("R3-03: an authenticated session cannot bypass verification by writing the 
 test("R3-03: the Settings page shows a pending-confirmation notice, and visiting the confirm link updates it", async ({
   page,
 }) => {
-  await page.goto("/login");
-  await page.getByLabel("E-mail cím").fill(member.email);
-  await page.getByLabel("Jelszó").fill(member.password);
-  await page.getByRole("button", { name: "Bejelentkezés" }).click();
+  await signInViaUi(page, member.email, member.password);
   await page.waitForURL(/\/dashboard$/);
 
   // Requested directly through the RPCs, not the Settings form -- the form

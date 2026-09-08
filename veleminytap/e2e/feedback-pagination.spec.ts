@@ -7,6 +7,7 @@ import {
   type SeededOrgMember,
   type SeededCard,
 } from "./support/seed";
+import { signInViaUi } from "./support/ui";
 
 /**
  * Finding #9: the feedback inbox's cursor pagination ordered and seeked on
@@ -51,10 +52,7 @@ test.afterEach(async () => {
 test("every row with a tied created_at appears exactly once across pages, none skipped", async ({
   page,
 }) => {
-  await page.goto("/login");
-  await page.getByLabel("E-mail cím").fill(member.email);
-  await page.getByLabel("Jelszó").fill(member.password);
-  await page.getByRole("button", { name: "Bejelentkezés" }).click();
+  await signInViaUi(page, member.email, member.password);
   await page.waitForURL(/\/dashboard$/);
 
   await page.goto("/dashboard/feedback");

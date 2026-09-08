@@ -88,12 +88,15 @@ export interface Database {
           grandfathered_at: string | null;
           activated_at: string | null;
           pending_checkout_session_id: string | null;
-          billing_sync_seq: number;
           checkout_attempt_id: string | null;
           checkout_attempt_interval: string | null;
           checkout_attempt_price_id: string | null;
           checkout_attempt_mode: string | null;
           checkout_attempt_expires_at: string | null;
+          reconciliation_lease_owner: string | null;
+          reconciliation_lease_expires_at: string | null;
+          needs_reconciliation: boolean;
+          reconciliation_dirty_since: string | null;
           last_synced_at: string | null;
           created_at: string;
           updated_at: string;
@@ -109,12 +112,15 @@ export interface Database {
           grandfathered_at?: string | null;
           activated_at?: string | null;
           pending_checkout_session_id?: string | null;
-          billing_sync_seq?: number;
           checkout_attempt_id?: string | null;
           checkout_attempt_interval?: string | null;
           checkout_attempt_price_id?: string | null;
           checkout_attempt_mode?: string | null;
           checkout_attempt_expires_at?: string | null;
+          reconciliation_lease_owner?: string | null;
+          reconciliation_lease_expires_at?: string | null;
+          needs_reconciliation?: boolean;
+          reconciliation_dirty_since?: string | null;
           last_synced_at?: string | null;
           created_at?: string;
           updated_at?: string;
@@ -130,12 +136,15 @@ export interface Database {
           grandfathered_at?: string | null;
           activated_at?: string | null;
           pending_checkout_session_id?: string | null;
-          billing_sync_seq?: number;
           checkout_attempt_id?: string | null;
           checkout_attempt_interval?: string | null;
           checkout_attempt_price_id?: string | null;
           checkout_attempt_mode?: string | null;
           checkout_attempt_expires_at?: string | null;
+          reconciliation_lease_owner?: string | null;
+          reconciliation_lease_expires_at?: string | null;
+          needs_reconciliation?: boolean;
+          reconciliation_dirty_since?: string | null;
           last_synced_at?: string | null;
           created_at?: string;
           updated_at?: string;
@@ -467,12 +476,6 @@ export interface Database {
         };
         Returns: number | null;
       };
-      claim_billing_sync: {
-        Args: {
-          p_organization_id: number;
-        };
-        Returns: number | null;
-      };
       claim_checkout_attempt: {
         Args: {
           p_organization_id: number;
@@ -505,6 +508,70 @@ export interface Database {
           p_attempt_id: string;
         };
         Returns: boolean | null;
+      };
+      renew_checkout_attempt: {
+        Args: {
+          p_organization_id: number;
+          p_attempt_id: string;
+          p_claim_seconds?: number;
+        };
+        Returns: boolean | null;
+      };
+      claim_reconciliation_lease: {
+        Args: {
+          p_organization_id: number;
+          p_lease_seconds?: number;
+        };
+        Returns: string | null;
+      };
+      renew_reconciliation_lease: {
+        Args: {
+          p_organization_id: number;
+          p_owner: string;
+          p_lease_seconds?: number;
+        };
+        Returns: boolean | null;
+      };
+      write_reconciliation_result: {
+        Args: {
+          p_organization_id: number;
+          p_owner: string;
+          p_stripe_customer_id: string | null;
+          p_stripe_subscription_id: string | null;
+          p_status: string;
+          p_current_period_end: string | null;
+          p_cancel_at_period_end: boolean;
+        };
+        Returns: boolean;
+      };
+      write_activation: {
+        Args: {
+          p_organization_id: number;
+          p_owner: string;
+        };
+        Returns: boolean;
+      };
+      release_reconciliation_lease: {
+        Args: {
+          p_organization_id: number;
+          p_owner: string;
+        };
+        Returns: boolean;
+      };
+      record_billing_anomaly: {
+        Args: {
+          p_organization_id: number;
+          p_kind: string;
+          p_detail?: Json;
+        };
+        Returns: undefined;
+      };
+      clear_reconciliation_dirty: {
+        Args: {
+          p_organization_id: number;
+          p_owner: string;
+        };
+        Returns: boolean;
       };
     };
     Enums: Record<string, never>;

@@ -5,6 +5,7 @@ import {
   generateConfirmToken,
   type SeededOrgMember,
 } from "./support/seed";
+import { submitLoginForm } from "./support/ui";
 
 /**
  * Confirms the fix for the open-redirect finding (review finding #5) against
@@ -34,9 +35,7 @@ test.afterEach(async () => {
 });
 
 async function signIn(page: import("@playwright/test").Page) {
-  await page.getByLabel("E-mail cím").fill(user.email);
-  await page.getByLabel("Jelszó").fill(user.password);
-  await page.getByRole("button", { name: "Bejelentkezés" }).click();
+  await submitLoginForm(page, user.email, user.password);
 }
 
 test("login: a backslash-variant next param does not escape the site", async ({ page }) => {

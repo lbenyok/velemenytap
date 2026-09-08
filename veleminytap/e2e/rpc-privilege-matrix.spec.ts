@@ -55,17 +55,10 @@ const EXPECTED: ExpectedGrant[] = [
     authenticated: false,
     service_role: true,
   },
-  // Third independent review, Findings 2/4: billing reconciliation
-  // fencing and the durable checkout-attempt model (migration
-  // 20260907200000) -- all four are service_role-only, called exclusively
-  // from the webhook route and features/billing/actions.ts via the admin
+  // Third independent review, Findings 2/4: the durable checkout-attempt
+  // model (migration 20260907200000) -- all three are service_role-only,
+  // called exclusively from features/billing/actions.ts via the admin
   // client, never reachable from a browser or any authenticated session.
-  {
-    signature: "public.claim_billing_sync(bigint)",
-    anon: false,
-    authenticated: false,
-    service_role: true,
-  },
   {
     signature: "public.claim_checkout_attempt(bigint, text, text, text, int)",
     anon: false,
@@ -80,6 +73,72 @@ const EXPECTED: ExpectedGrant[] = [
   },
   {
     signature: "public.release_checkout_attempt(bigint, text)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  // Fourth independent review: migration 20260907210000 drops
+  // claim_billing_sync outright (Finding 3 found claim-order fencing
+  // invalid in principle, not merely improvable -- see DECISIONS.md's
+  // "Stripe webhook reconciliation" entry) and replaces it with an
+  // exclusive, expiring reconciliation lease, plus a checkpoint-renewal
+  // function for the checkout-attempt model above. All service_role-only,
+  // called exclusively from features/billing/reconcile.ts and
+  // features/billing/actions.ts via the admin client.
+  {
+    signature: "public.renew_checkout_attempt(bigint, text, int)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  {
+    signature: "public.claim_reconciliation_lease(bigint, int)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  {
+    signature: "public.renew_reconciliation_lease(bigint, text, int)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  {
+    signature:
+      "public.write_reconciliation_result(bigint, text, text, text, text, timestamp with time zone, boolean)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  {
+    signature: "public.write_activation(bigint, text)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  {
+    signature: "public.release_reconciliation_lease(bigint, text)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  // Fourth independent review's own three-reviewer adversarial audit:
+  // migration 20260907240000 -- the distinct "confirmed clean, nothing to
+  // reconcile" case release_reconciliation_lease's own always-mark-dirty
+  // behavior made impossible to express (see that migration's own header
+  // comment for the full incident).
+  {
+    signature: "public.clear_reconciliation_dirty(bigint, text)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  // Fourth independent review, Finding 4: migration 20260907220000 --
+  // private.billing_anomalies isn't exposed to PostgREST at all (the
+  // private schema is absent from config.toml's schemas list), so this is
+  // the only way application code can reach it. service_role-only.
+  {
+    signature: "public.record_billing_anomaly(bigint, text, jsonb)",
     anon: false,
     authenticated: false,
     service_role: true,

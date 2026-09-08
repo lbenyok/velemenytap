@@ -1,6 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
+import type Stripe from "stripe";
 import { createStripeClient } from "@/lib/stripe";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getCurrentOrganization } from "@/features/organizations/current";
@@ -10,48 +11,139 @@ import { isBillingInterval, stripePriceId, type BillingInterval } from "@/featur
 import { assertStripeConfigurationValid } from "@/features/billing/stripe-config";
 
 // How long a genuinely new checkout attempt's CLAIM lasts before another
-// attempt may reclaim the slot -- bounds how long a crashed or hung
-// request can block a legitimate retry. Must comfortably exceed the
-// installed Stripe SDK's own default request timeout (80s) plus margin,
-// or a request that's still genuinely in flight could be reclaimed out
-// from under itself.
+// attempt may reclaim the slot. Must comfortably exceed the WORST-CASE
+// total time this action's own sequential Stripe calls could take -- see
+// lib/stripe.ts's own comment on the SDK's explicit timeout/retry budget.
+// Correctness does not rest on this number alone, though (Finding 9): the
+// attempt is explicitly RENEWED at the checkpoint right before the
+// slowest remaining call (session creation), so a single static duration
+// only needs to cover the FIRST leg (customer resolution), not the whole
+// request.
 const CHECKOUT_CLAIM_SECONDS = 150;
 
 // How long a real, already-created Checkout Session's own lease lasts --
-// matches Stripe's own default Checkout Session expiration (24 hours), so
-// this app's own record of "is there still a session to reconcile/reuse"
-// never outlives the session itself being reachable on Stripe's side.
+// matches Stripe's own default Checkout Session expiration (24 hours).
 const CHECKOUT_SESSION_LEASE_SECONDS = 24 * 60 * 60;
+
+type ClaimResult = {
+  attemptId: string;
+  isNewAttempt: boolean;
+  existingSessionId: string | null;
+  existingInterval: string | null;
+  existingPriceId: string | null;
+  existingMode: string | null;
+};
+
+/**
+ * Fourth independent review, Finding 7: every affected-row/CAS result from
+ * these RPCs is checked explicitly and rigorously below -- a missing row,
+ * a null/false return, or a Postgres error all fail the whole action
+ * closed (an Error is thrown, caught by the caller, never silently
+ * treated as "probably fine"). Nothing here ever proceeds to call Stripe
+ * on the strength of an unverified database write.
+ */
+async function claimAttempt(
+  admin: ReturnType<typeof createAdminClient>,
+  organizationId: number,
+  interval: BillingInterval,
+  priceId: string,
+): Promise<ClaimResult> {
+  const { data, error } = await admin.rpc("claim_checkout_attempt", {
+    p_organization_id: organizationId,
+    p_interval: interval,
+    p_price_id: priceId,
+    p_mode: "subscription",
+    p_claim_seconds: CHECKOUT_CLAIM_SECONDS,
+  });
+  if (error) {
+    throw new Error(`Failed to claim a checkout attempt for organization ${organizationId}: ${error.message}`);
+  }
+  const row = data?.[0];
+  if (!row) {
+    throw new Error(`claim_checkout_attempt returned no row for organization ${organizationId}`);
+  }
+  return {
+    attemptId: row.attempt_id,
+    isNewAttempt: row.is_new_attempt,
+    existingSessionId: row.existing_session_id,
+    existingInterval: row.existing_interval,
+    existingPriceId: row.existing_price_id,
+    existingMode: row.existing_mode,
+  };
+}
+
+async function renewAttempt(
+  admin: ReturnType<typeof createAdminClient>,
+  organizationId: number,
+  attemptId: string,
+): Promise<boolean> {
+  const { data, error } = await admin.rpc("renew_checkout_attempt", {
+    p_organization_id: organizationId,
+    p_attempt_id: attemptId,
+    p_claim_seconds: CHECKOUT_CLAIM_SECONDS,
+  });
+  if (error) {
+    throw new Error(`Failed to renew checkout attempt for organization ${organizationId}: ${error.message}`);
+  }
+  return data === true;
+}
+
+async function recordSession(
+  admin: ReturnType<typeof createAdminClient>,
+  organizationId: number,
+  attemptId: string,
+  sessionId: string,
+): Promise<boolean> {
+  const { data, error } = await admin.rpc("record_checkout_session", {
+    p_organization_id: organizationId,
+    p_attempt_id: attemptId,
+    p_session_id: sessionId,
+    p_lease_seconds: CHECKOUT_SESSION_LEASE_SECONDS,
+  });
+  if (error) {
+    throw new Error(`Failed to persist a created checkout session for organization ${organizationId}: ${error.message}`);
+  }
+  return data === true;
+}
+
+async function releaseAttempt(
+  admin: ReturnType<typeof createAdminClient>,
+  organizationId: number,
+  attemptId: string,
+): Promise<boolean> {
+  const { data, error } = await admin.rpc("release_checkout_attempt", {
+    p_organization_id: organizationId,
+    p_attempt_id: attemptId,
+  });
+  if (error) {
+    throw new Error(`Failed to release a checkout attempt for organization ${organizationId}: ${error.message}`);
+  }
+  return data === true;
+}
 
 /**
  * Finds this organization's Stripe customer, creating one on first use.
- * Uses the admin client -- organization_billing has no UPDATE policy for
- * `authenticated` (see the billing migration), by design: an owner must
- * never be able to grant their own organization an active subscription
- * by writing to this table directly.
  *
- * Found during an independent review: every organization is supposed to
- * have exactly one organization_billing row (created by the provisioning
- * trigger, or -- for an organization that predates billing entirely -- by
- * the grandfathering migration's backfill), but this function used to
- * treat a missing row silently. A missing row is a hard failure here.
+ * Finding 10: Stripe's own documentation does not describe idempotency-key
+ * retention as a permanent guarantee -- keys can be pruned after as little
+ * as 24 hours. A create() call retried long after an earlier, successful
+ * attempt that was never persisted locally (a crash between the two)
+ * could therefore create a genuine SECOND Stripe Customer once the
+ * original key has expired, not be deduplicated by Stripe at all. Fixed
+ * with a durable recovery step: before ever creating, search Stripe
+ * directly for a customer already carrying this organization's id in its
+ * metadata -- this is the actual source of truth "does a customer already
+ * exist for this organization," independent of both the local database
+ * AND the idempotency key's own retention window.
  *
- * A second independent review found the concurrency guard below still had
- * a real gap: `stripe.customers.create()` itself carried no Stripe-level
- * idempotency key, so the LOSING side of a race (two concurrent calls for
- * an organization with no customer yet) had already created a real,
- * orphaned Stripe Customer object by the time it discovered the other
- * side had won and persisted first -- and a genuine connection failure
- * between that create() call succeeding and this function's own UPDATE
- * running would leave `stripe_customer_id` still null with a real
- * customer already sitting in Stripe, unreachable on the next retry
- * (which would just create ANOTHER one). A stable, organization-scoped
- * idempotency key -- never time-bucketed, since an organization should
- * only ever have ONE customer for its whole lifetime, not one per attempt
- * -- fixes both: Stripe itself deduplicates any repeated create() call for
- * the same organization (concurrent, or a later retry after a connection
- * failure) within its own idempotency-key retention window, returning the
- * SAME customer object instead of creating a second one.
+ * Also fixed: the create() call's own parameters must be STABLE across
+ * every retry sharing the same idempotency key, or Stripe rejects the
+ * retry outright (an idempotency-parameter mismatch), not deduplicate it.
+ * `name` is mutable (an organization can rename itself between a first
+ * attempt and a retry) and is therefore never passed inside the
+ * idempotency-guarded create() call at all -- it's set with a separate,
+ * ordinary update() call afterward, which carries no idempotency
+ * constraint and is safe to repeat with whatever the CURRENT name is.
  */
 async function getOrCreateStripeCustomerId(
   organizationId: number,
@@ -79,26 +171,38 @@ async function getOrCreateStripeCustomerId(
   }
 
   const stripe = createStripeClient();
-  const customer = await stripe.customers.create(
-    {
-      name: organizationName,
-      metadata: { organization_id: organizationId.toString() },
-    },
-    { idempotencyKey: `customer-create:org-${organizationId}` },
-  );
+
+  let customerId: string;
+  const recovered = await stripe.customers
+    .search({ query: `metadata['organization_id']:'${organizationId}'`, limit: 1 })
+    .catch((err) => {
+      console.error(
+        `Stripe customer recovery search failed for organization ${organizationId}, proceeding to create: ${err instanceof Error ? err.message : err}`,
+      );
+      return null;
+    });
+
+  if (recovered && recovered.data.length > 0) {
+    customerId = recovered.data[0].id;
+  } else {
+    const customer = await stripe.customers.create(
+      { metadata: { organization_id: organizationId.toString() } },
+      { idempotencyKey: `customer-create:org-${organizationId}` },
+    );
+    customerId = customer.id;
+    try {
+      await stripe.customers.update(customerId, { name: organizationName });
+    } catch (err) {
+      console.error(`Failed to set the display name on Stripe customer ${customerId}: ${err instanceof Error ? err.message : err}`);
+    }
+  }
 
   // Concurrency guard: `.is("stripe_customer_id", null)` means this
   // UPDATE only actually applies if nothing else has already set it since
-  // the read above -- a second, concurrent call (e.g. a double-submitted
-  // form) racing this same function for the same organization will lose
-  // this UPDATE (it matches zero rows) rather than overwriting the
-  // winner's id with its own. With the idempotency key above, both sides
-  // of that race hold the SAME customer.id anyway (Stripe returns the
-  // identical object to both), so this is now a tie-break on which write
-  // wins, not a risk of two different customers ending up referenced.
+  // the read above.
   const { data: updated, error: updateError } = await admin
     .from("organization_billing")
-    .update({ stripe_customer_id: customer.id })
+    .update({ stripe_customer_id: customerId })
     .eq("organization_id", organizationId)
     .is("stripe_customer_id", null)
     .select("stripe_customer_id")
@@ -108,13 +212,9 @@ async function getOrCreateStripeCustomerId(
     throw new Error(`Failed to persist Stripe customer id for organization ${organizationId}: ${updateError.message}`);
   }
   if (updated) {
-    return customer.id;
+    return customerId;
   }
 
-  // Lost the race -- someone else's concurrent call already set
-  // stripe_customer_id first. Use the winner's id instead of the one just
-  // created here, so this function always returns the one id this
-  // organization's row actually has.
   const { data: raced, error: racedError } = await admin
     .from("organization_billing")
     .select("stripe_customer_id")
@@ -129,39 +229,100 @@ async function getOrCreateStripeCustomerId(
   return raced.stripe_customer_id;
 }
 
+type ReconcileSessionOutcome = { done: true; url: string } | { done: false };
+
+/**
+ * Reconciles an existing (possibly superseded, possibly stale) Checkout
+ * Session against Stripe's own live state before ever trusting it.
+ *
+ * Finding 1: `planMatches` is derived from the Session's ACTUAL Stripe-side
+ * line item price -- never from this row's own bookkeeping fields, which
+ * (even after the database-level race fix in migration 20260907210000)
+ * are one level of indirection removed from ground truth.
+ *
+ * Finding 2: a superseded but still-`open` Session is explicitly EXPIRED
+ * via Stripe's own API before this function ever returns a different
+ * Session's URL -- a customer who still has both tabs/links open can no
+ * longer complete two subscriptions. The race where the old Session
+ * completes WHILE the expire() call is in flight is handled explicitly:
+ * Stripe's expire() call itself fails once a Session has already
+ * completed, and that failure is treated as "go check what actually
+ * happened," not swallowed.
+ *
+ * Finding 8: a `complete` Session's `payment_status` is checked
+ * explicitly (`paid`/`no_payment_required` only) -- a complete-but-unpaid
+ * or still-processing Session is never treated as a success, and is
+ * released so it can never permanently trap every future attempt.
+ */
+async function reconcileExistingSession(
+  stripe: Stripe,
+  admin: ReturnType<typeof createAdminClient>,
+  organizationId: number,
+  claim: ClaimResult,
+  interval: BillingInterval,
+  priceId: string,
+  siteUrl: string,
+): Promise<ReconcileSessionOutcome> {
+  const sessionId = claim.existingSessionId!;
+  let existing = await stripe.checkout.sessions.retrieve(sessionId, { expand: ["line_items"] });
+
+  const actualPriceId = existing.line_items?.data[0]?.price?.id ?? null;
+  const planMatches = actualPriceId === priceId;
+
+  if (existing.status === "complete") {
+    if (existing.payment_status === "paid" || existing.payment_status === "no_payment_required") {
+      return { done: true, url: `${siteUrl}/dashboard/billing?checkout=success&session_id=${existing.id}` };
+    }
+    // Finding 8: complete but genuinely unpaid (still processing, or a
+    // delayed payment method) -- release rather than trapping every
+    // future attempt on this one dead-end Session.
+    await releaseAttempt(admin, organizationId, claim.attemptId);
+    return { done: false };
+  }
+
+  if (existing.status === "open" && existing.url && planMatches) {
+    if (claim.isNewAttempt) {
+      const recorded = await recordSession(admin, organizationId, claim.attemptId, existing.id);
+      if (!recorded) {
+        throw new Error("A newer checkout attempt has since started for this organization -- try again.");
+      }
+    }
+    return { done: true, url: existing.url };
+  }
+
+  if (existing.status === "open") {
+    // Either a plan mismatch (a superseded monthly session while yearly
+    // is now requested) or simply an attempt we're about to replace --
+    // either way, expire it on Stripe's own side before proceeding, so a
+    // customer holding the old link can no longer complete it.
+    try {
+      const expired = await stripe.checkout.sessions.expire(sessionId);
+      existing = expired;
+    } catch {
+      // Stripe rejects expire() once a Session has already completed (or
+      // already expired) -- re-retrieve to find out which, rather than
+      // assuming it's simply gone.
+      const recheck = await stripe.checkout.sessions.retrieve(sessionId).catch(() => null);
+      if (recheck) existing = recheck;
+    }
+    if (existing.status === "complete" && (existing.payment_status === "paid" || existing.payment_status === "no_payment_required")) {
+      // Raced: it completed before/during expiration. Reconcile it as a
+      // real success instead of discarding a genuine payment.
+      return { done: true, url: `${siteUrl}/dashboard/billing?checkout=success&session_id=${existing.id}` };
+    }
+  }
+
+  await releaseAttempt(admin, organizationId, claim.attemptId);
+  return { done: false };
+}
+
 /**
  * Claims a durable, database-backed Checkout attempt for this organization
  * before ever calling Stripe, reconciles any session left by a prior
  * attempt against Stripe's own live state, and creates a fresh Checkout
- * Session only once nothing reusable exists.
- *
- * Second independent review, Finding 2: the previous lease design had
- * several real gaps, all closed here:
- *   - it expired after 60s while the installed Stripe SDK can wait 80s --
- *     CHECKOUT_CLAIM_SECONDS (150s) comfortably exceeds that.
- *   - its final Supabase write ignored `{ error }` and affected-row count
- *     -- every RPC call below is checked and fails closed on an error or
- *     an unexpected null/false result.
- *   - claim/release/finalize had no owner/attempt token or compare-and-
- *     swap condition -- claim_checkout_attempt/record_checkout_session/
- *     release_checkout_attempt (supabase/migrations/20260907200000) all
- *     condition their writes on an opaque, immutable attempt id, so a
- *     delayed caller holding a superseded attempt id can never modify a
- *     newer claim.
- *   - lease decisions used the application server's own clock -- every
- *     comparison now happens inside the database functions themselves,
- *     using clock_timestamp().
- *   - a retry used a different time-bucketed Stripe idempotency key -- the
- *     key below is derived from the durable attempt id, stable across any
- *     retry that still holds the same (unexpired) attempt.
- *   - a stored COMPLETED session was never reconciled once the local lease
- *     expired -- claim_checkout_attempt returns a superseded attempt's own
- *     session id specifically so it can still be checked here, even after
- *     its own lease has lapsed.
- *   - an open monthly session could be reused for a yearly request --
- *     interval AND Price ID are stored per attempt and compared before any
- *     reuse; a mismatch releases the stale attempt and claims a genuinely
- *     fresh one instead of reusing across plans.
+ * Session only once nothing reusable exists. See reconcileExistingSession
+ * and the RPC wrapper functions above for the specific findings each part
+ * of this closes.
  */
 async function claimAndCreateCheckoutSession(
   organizationId: number,
@@ -173,94 +334,41 @@ async function claimAndCreateCheckoutSession(
   const stripe = createStripeClient();
   const priceId = stripePriceId(interval);
 
-  const { data: claimRows, error: claimError } = await admin.rpc("claim_checkout_attempt", {
-    p_organization_id: organizationId,
-    p_interval: interval,
-    p_price_id: priceId,
-    p_mode: "subscription",
-    p_claim_seconds: CHECKOUT_CLAIM_SECONDS,
-  });
-  if (claimError) {
-    throw new Error(`Failed to claim a checkout attempt for organization ${organizationId}: ${claimError.message}`);
-  }
-  const claim = claimRows?.[0];
-  if (!claim) {
-    throw new Error(`claim_checkout_attempt returned no row for organization ${organizationId}`);
-  }
-  let attemptId = claim.attempt_id;
+  let claim = await claimAttempt(admin, organizationId, interval, priceId);
 
-  if (claim.existing_session_id) {
-    // Reconcile against Stripe's own live state -- never this row's own
-    // cached status, which could be stale relative to what actually
-    // happened on Stripe's side, and never skipped just because the local
-    // claim lease around this session happened to already expire.
-    const existing = await stripe.checkout.sessions.retrieve(claim.existing_session_id);
-    const planMatches = claim.existing_interval === interval && claim.existing_price_id === priceId;
-
-    if (existing.status === "complete") {
-      // Already succeeded -- creating another session would risk a second
-      // subscription. Send it to the same place success_url would have,
-      // carrying the real session id so the billing page can verify it
-      // server-side (Finding 7) rather than trusting the query param alone.
-      return `${siteUrl}/dashboard/billing?checkout=success&session_id=${existing.id}`;
+  if (claim.existingSessionId) {
+    const outcome = await reconcileExistingSession(stripe, admin, organizationId, claim, interval, priceId, siteUrl);
+    if (outcome.done) {
+      return outcome.url;
     }
-
-    if (existing.status === "open" && existing.url && planMatches) {
-      if (claim.is_new_attempt) {
-        // This reusable session belongs to a DIFFERENT (now-superseded)
-        // attempt than the one just claimed -- re-home it under the
-        // current attempt so the row stays internally consistent.
-        const { data: recorded, error: recordError } = await admin.rpc("record_checkout_session", {
-          p_organization_id: organizationId,
-          p_attempt_id: attemptId,
-          p_session_id: existing.id,
-          p_lease_seconds: CHECKOUT_SESSION_LEASE_SECONDS,
-        });
-        if (recordError) {
-          throw new Error(`Failed to re-home an existing checkout session for organization ${organizationId}: ${recordError.message}`);
-        }
-        if (!recorded) {
-          throw new Error("A newer checkout attempt has since started for this organization -- try again.");
-        }
-      }
-      return existing.url;
+    // The prior session was released -- claim fresh. Reusing the SAME
+    // claim object here would risk operating on a now-stale attempt id.
+    claim = await claimAttempt(admin, organizationId, interval, priceId);
+    if (claim.existingSessionId) {
+      // Should not normally happen immediately after a release -- fail
+      // closed rather than loop indefinitely.
+      throw new Error("Unable to obtain a clean checkout attempt for this organization -- try again.");
     }
-
-    // Either Stripe reports this session 'expired', or it's still 'open'
-    // but for a DIFFERENT plan than what's being requested now -- release
-    // the stale attempt (clearing its session pointer) and claim a
-    // genuinely fresh one, rather than waiting out the rest of its lease
-    // or reusing a session for the wrong plan.
-    const { error: releaseError } = await admin.rpc("release_checkout_attempt", {
-      p_organization_id: organizationId,
-      p_attempt_id: attemptId,
-    });
-    if (releaseError) {
-      throw new Error(`Failed to release a stale checkout attempt for organization ${organizationId}: ${releaseError.message}`);
-    }
-    const { data: reclaimRows, error: reclaimError } = await admin.rpc("claim_checkout_attempt", {
-      p_organization_id: organizationId,
-      p_interval: interval,
-      p_price_id: priceId,
-      p_mode: "subscription",
-      p_claim_seconds: CHECKOUT_CLAIM_SECONDS,
-    });
-    if (reclaimError) {
-      throw new Error(`Failed to re-claim a checkout attempt for organization ${organizationId}: ${reclaimError.message}`);
-    }
-    const reclaim = reclaimRows?.[0];
-    if (!reclaim) {
-      throw new Error(`claim_checkout_attempt returned no row for organization ${organizationId} on reclaim`);
-    }
-    attemptId = reclaim.attempt_id;
-  } else if (!claim.is_new_attempt) {
+  } else if (!claim.isNewAttempt) {
     // A live attempt already owns this organization's checkout slot, mid
     // Stripe API round trip, with no session recorded yet -- don't race
     // ahead of it.
     throw new Error("A checkout attempt for this organization is already in progress -- try again in a moment.");
   }
 
+  const attemptId = claim.attemptId;
+
   const customerId = await getOrCreateStripeCustomerId(organizationId, organizationName);
+
+  // Finding 9: renew immediately before the (potentially slow) Checkout
+  // Session creation call, proving this request still owns the attempt --
+  // correctness no longer depends on the FULL request (customer
+  // resolution included) finishing inside one static claim window.
+  const stillOwned = await renewAttempt(admin, organizationId, attemptId);
+  if (!stillOwned) {
+    throw new Error("This checkout attempt expired before it could be completed -- try again.");
+  }
+
   const session = await stripe.checkout.sessions.create(
     {
       mode: "subscription",
@@ -268,25 +376,17 @@ async function claimAndCreateCheckoutSession(
       client_reference_id: organizationId.toString(),
       line_items: [{ price: priceId, quantity: 1 }],
       // {CHECKOUT_SESSION_ID} is Stripe's own literal placeholder,
-      // substituted with the real session id server-side on redirect --
-      // Finding 7's mechanism for verifying the return trip server-side
-      // instead of trusting the bare ?checkout=success query param.
+      // substituted with the real session id server-side on redirect.
       success_url: `${siteUrl}/dashboard/billing?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${siteUrl}/dashboard/billing?checkout=canceled`,
       metadata: { organization_id: organizationId.toString() },
-      // Carried forward onto the Subscription object itself, not just
-      // this Checkout Session -- the webhook handler reads it from every
-      // subsequent subscription event (including ones from the customer
-      // portal, which never goes through this action again).
       subscription_data: { metadata: { organization_id: organizationId.toString() } },
     },
     {
-      // A STABLE key derived from the durable attempt id, not a
-      // time-bucketed one -- a retry of the SAME attempt (its claim lease
-      // still valid) reaches Stripe with the identical key and gets back
-      // the SAME session object instead of creating a second one, even
-      // after a crash between this call succeeding and its result being
-      // persisted below.
+      // A STABLE key derived from the durable attempt id -- a retry of
+      // the SAME attempt (its claim still valid, just renewed) reaches
+      // Stripe with the identical key and gets back the SAME session
+      // object instead of creating a second one.
       idempotencyKey: `checkout:attempt-${attemptId}`,
     },
   );
@@ -295,23 +395,8 @@ async function claimAndCreateCheckoutSession(
     throw new Error("Stripe did not return a Checkout URL");
   }
 
-  const { data: recorded, error: recordError } = await admin.rpc("record_checkout_session", {
-    p_organization_id: organizationId,
-    p_attempt_id: attemptId,
-    p_session_id: session.id,
-    p_lease_seconds: CHECKOUT_SESSION_LEASE_SECONDS,
-  });
-  if (recordError) {
-    throw new Error(`Failed to persist a created checkout session for organization ${organizationId}: ${recordError.message}`);
-  }
+  const recorded = await recordSession(admin, organizationId, attemptId, session.id);
   if (!recorded) {
-    // Fenced out -- a newer attempt has since been claimed for this
-    // organization. The just-created Stripe session is real but orphaned
-    // from this app's own bookkeeping; harmless on its own (Checkout
-    // Sessions expire unused, and completing one still activates the
-    // organization via the webhook regardless of which local attempt row
-    // tracked it) -- but this response must not be handed back to the
-    // caller as if it were still the current attempt.
     throw new Error("A newer checkout attempt has since started for this organization -- try again.");
   }
 
@@ -328,18 +413,6 @@ async function claimAndCreateCheckoutSession(
  * catch swallows it and reports the wrong error. Every redirect target is
  * decided first (a plain string), and the actual redirect() call happens
  * once, after the try/catch.
- *
- * `interval` comes from which of the billing page's two forms was
- * submitted (`features/billing/plans.ts`'s "monthly"/"yearly") -- validated
- * against that same allowlist here too, not trusted from the client, since
- * a crafted form submission could otherwise send any string through to
- * `stripePriceId()`.
- *
- * Found during an independent review: this used only organization
- * existence to authorize the call, ignoring the membership role
- * `getCurrentOrganization()` already returns -- any signed-in member,
- * including `manager`/`staff`, could start (and, via the Billing Portal,
- * cancel) a real subscription. Restricted to `canManageBilling`'s roles.
  */
 export async function createCheckoutSessionAction(formData: FormData): Promise<void> {
   const organization = await getCurrentOrganization();
@@ -360,21 +433,10 @@ export async function createCheckoutSessionAction(formData: FormData): Promise<v
   let target: string;
 
   try {
-    // Finding 6: fail closed before claiming any state if the live Stripe
-    // configuration doesn't match what this page promises (wrong mode,
-    // wrong currency/amount/interval, inactive price, mismatched product).
     await assertStripeConfigurationValid();
 
     const billing = await getOrganizationBilling(organization.id);
     if (hasLiveSubscription(billing)) {
-      // The billing page itself only ever renders the Checkout forms when
-      // there's no live subscription yet (see app/dashboard/billing/
-      // page.tsx) -- this is the server-side half of that same rule, for
-      // a request that reaches this action anyway (stale page state, a
-      // replayed submission, or a direct POST) not otherwise reflected in
-      // a client render. A canceled or never-completed (incomplete_expired)
-      // subscription is deliberately NOT "live" -- see hasLiveSubscription
-      // -- so a resubscribe attempt is allowed past this check.
       target = "/dashboard/billing?error=already_subscribed";
     } else {
       target = await claimAndCreateCheckoutSession(organization.id, organization.name, interval, siteUrl);
@@ -390,9 +452,7 @@ export async function createCheckoutSessionAction(formData: FormData): Promise<v
 /**
  * Opens the Stripe-hosted Billing Portal, where an org can update its
  * card, view invoices, or cancel -- all without this app ever handling
- * payment details itself. See createCheckoutSessionAction's comment on
- * why redirect() is only ever called once, outside the try/catch, and on
- * why this also enforces canManageBilling.
+ * payment details itself.
  */
 export async function createPortalSessionAction(): Promise<void> {
   const organization = await getCurrentOrganization();

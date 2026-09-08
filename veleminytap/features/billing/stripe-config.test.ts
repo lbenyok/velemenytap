@@ -25,7 +25,7 @@ function price(overrides: Partial<{
   active: boolean;
   currency: string;
   type: string;
-  recurring: { interval: string } | null;
+  recurring: { interval: string; interval_count: number } | null;
   unit_amount: number;
   tax_behavior: string;
   product: string | { id: string };
@@ -39,8 +39,15 @@ function price(overrides: Partial<{
     active: true,
     currency: "huf",
     type: "recurring",
-    recurring: { interval: "month" },
-    unit_amount: 5990,
+    recurring: { interval: "month", interval_count: 1 },
+    // In minor units (fillér) -- Stripe's own docs confirm HUF is a normal
+    // two-decimal charging currency (only special-cased as zero-decimal
+    // for payouts), so a real 5 990 Ft Price reports 599000 here, not
+    // 5990. A prior version of this helper used 5990 directly, matching
+    // (and thereby masking) the exact same off-by-100 bug this file's own
+    // stripe-config.ts once had -- found only by a real Stripe API call
+    // during this round's live verification, never by these mocks.
+    unit_amount: 599000,
     tax_behavior: "inclusive",
     product: "prod_shared",
     ...overrides,
@@ -48,10 +55,10 @@ function price(overrides: Partial<{
 }
 
 function monthlyOk() {
-  return price({ id: MONTHLY_PRICE_ID, recurring: { interval: "month" }, unit_amount: 5990 });
+  return price({ id: MONTHLY_PRICE_ID, recurring: { interval: "month", interval_count: 1 }, unit_amount: 599000 });
 }
 function yearlyOk() {
-  return price({ id: YEARLY_PRICE_ID, recurring: { interval: "year" }, unit_amount: 59900 });
+  return price({ id: YEARLY_PRICE_ID, recurring: { interval: "year", interval_count: 1 }, unit_amount: 5990000 });
 }
 
 async function importFresh() {
@@ -87,7 +94,8 @@ describe("assertStripeConfigurationValid", () => {
     await expect(assertStripeConfigurationValid()).resolves.toBeUndefined();
   });
 
-  it("does not gate on livemode at all when APP_ENV is unset (local development), but still validates everything else", async () => {
+  it("does not gate on livemode at all in genuine local development (NODE_ENV=development), regardless of APP_ENV", async () => {
+    vi.stubEnv("NODE_ENV", "development");
     delete process.env.APP_ENV;
     process.env.STRIPE_SECRET_KEY = "sk_test_abc123";
     const { assertStripeConfigurationValid } = await importFresh();
@@ -100,17 +108,67 @@ describe("assertStripeConfigurationValid", () => {
     await expect(assertStripeConfigurationValid()).rejects.toThrow(/does not look like a recognized Stripe/);
   });
 
-  it("rejects a TEST-mode key when APP_ENV is production", async () => {
+  it("rejects a TEST-mode key when the runtime expects live-mode (production)", async () => {
     process.env.STRIPE_SECRET_KEY = "sk_test_abc123";
     const { assertStripeConfigurationValid } = await importFresh();
-    await expect(assertStripeConfigurationValid()).rejects.toThrow(/test-mode key, but APP_ENV is "production"/);
+    await expect(assertStripeConfigurationValid()).rejects.toThrow(/test-mode key, but the runtime expects live-mode/);
   });
 
-  it("rejects a LIVE-mode key when APP_ENV is preview", async () => {
+  it("rejects a LIVE-mode key when the runtime expects test-mode (preview)", async () => {
     process.env.APP_ENV = "preview";
     process.env.STRIPE_SECRET_KEY = "sk_live_abc123";
     const { assertStripeConfigurationValid } = await importFresh();
-    await expect(assertStripeConfigurationValid()).rejects.toThrow(/live-mode key, but APP_ENV is "preview"/);
+    await expect(assertStripeConfigurationValid()).rejects.toThrow(/live-mode key, but the runtime expects test-mode/);
+  });
+
+  /**
+   * Fourth independent review, Finding 6: the original design only
+   * enforced mode agreement for APP_ENV exactly "production"/"preview",
+   * silently skipping enforcement for anything else -- including a
+   * missing, empty, or misspelled value in a genuinely deployed runtime.
+   * resolveExpectedLivemode now fails closed (throws) for every non-
+   * development runtime unless APP_ENV is exactly one of those two
+   * values.
+   */
+  describe("Finding 6: fails closed on a missing/malformed APP_ENV in a deployed runtime", () => {
+    beforeEach(() => {
+      // None of these tests are genuine local development.
+      vi.stubEnv("NODE_ENV", "production");
+    });
+
+    it("throws when APP_ENV is undefined", async () => {
+      delete process.env.APP_ENV;
+      const { assertStripeConfigurationValid } = await importFresh();
+      await expect(assertStripeConfigurationValid()).rejects.toThrow(/APP_ENV is unset/);
+    });
+
+    it("throws when APP_ENV is an empty string", async () => {
+      process.env.APP_ENV = "";
+      const { assertStripeConfigurationValid } = await importFresh();
+      await expect(assertStripeConfigurationValid()).rejects.toThrow(/expected exactly "production" or "preview"/);
+    });
+
+    it("throws when APP_ENV is misspelled", async () => {
+      process.env.APP_ENV = "produciton";
+      const { assertStripeConfigurationValid } = await importFresh();
+      await expect(assertStripeConfigurationValid()).rejects.toThrow(/"produciton"/);
+    });
+
+    it("accepts APP_ENV exactly 'production'", async () => {
+      process.env.APP_ENV = "production";
+      const { assertStripeConfigurationValid } = await importFresh();
+      await expect(assertStripeConfigurationValid()).resolves.toBeUndefined();
+    });
+
+    it("accepts APP_ENV exactly 'preview' (with a matching test-mode key/prices)", async () => {
+      process.env.APP_ENV = "preview";
+      process.env.STRIPE_SECRET_KEY = "sk_test_abc123";
+      pricesRetrieve.mockImplementation(async (id: string) =>
+        id === MONTHLY_PRICE_ID ? price({ ...monthlyOk(), livemode: false }) : price({ ...yearlyOk(), livemode: false }),
+      );
+      const { assertStripeConfigurationValid } = await importFresh();
+      await expect(assertStripeConfigurationValid()).resolves.toBeUndefined();
+    });
   });
 
   it("rejects a missing Price ID environment variable", async () => {
@@ -124,7 +182,7 @@ describe("assertStripeConfigurationValid", () => {
       id === MONTHLY_PRICE_ID ? price({ ...monthlyOk(), livemode: false }) : yearlyOk(),
     );
     const { assertStripeConfigurationValid } = await importFresh();
-    await expect(assertStripeConfigurationValid()).rejects.toThrow(/is test-mode, but APP_ENV "production" expects live-mode/);
+    await expect(assertStripeConfigurationValid()).rejects.toThrow(/is test-mode, but the runtime expects live-mode/);
   });
 
   it("rejects an inactive price", async () => {
@@ -153,18 +211,43 @@ describe("assertStripeConfigurationValid", () => {
 
   it("rejects the monthly price recurring yearly (and vice versa)", async () => {
     pricesRetrieve.mockImplementation(async (id: string) =>
-      id === MONTHLY_PRICE_ID ? price({ ...monthlyOk(), recurring: { interval: "year" } }) : yearlyOk(),
+      id === MONTHLY_PRICE_ID ? price({ ...monthlyOk(), recurring: { interval: "year", interval_count: 1 } }) : yearlyOk(),
     );
     const { assertStripeConfigurationValid } = await importFresh();
     await expect(assertStripeConfigurationValid()).rejects.toThrow(/recurs "year", expected "month"/);
   });
 
-  it("rejects an amount that doesn't match the billing page's promised price", async () => {
+  it("Finding 13: rejects a Price billed every N>1 periods (e.g. quarterly-billed-as-'month') even when the interval unit matches", async () => {
     pricesRetrieve.mockImplementation(async (id: string) =>
-      id === MONTHLY_PRICE_ID ? price({ ...monthlyOk(), unit_amount: 4990 }) : yearlyOk(),
+      id === MONTHLY_PRICE_ID ? price({ ...monthlyOk(), recurring: { interval: "month", interval_count: 3 } }) : yearlyOk(),
     );
     const { assertStripeConfigurationValid } = await importFresh();
-    await expect(assertStripeConfigurationValid()).rejects.toThrow(/charges 4990 but the billing page promises 5990/);
+    await expect(assertStripeConfigurationValid()).rejects.toThrow(/bills every 3 months, expected every 1 month/);
+  });
+
+  it("rejects an amount that doesn't match the billing page's promised price", async () => {
+    pricesRetrieve.mockImplementation(async (id: string) =>
+      id === MONTHLY_PRICE_ID ? price({ ...monthlyOk(), unit_amount: 498000 }) : yearlyOk(),
+    );
+    const { assertStripeConfigurationValid } = await importFresh();
+    await expect(assertStripeConfigurationValid()).rejects.toThrow(
+      /charges 498000 \(minor units\) but the billing page promises 5990 Ft \(599000 minor units\)/,
+    );
+  });
+
+  it("rejects a HUF amount that matches the promised price in whole Forints but not in Stripe's own minor units -- the exact live bug this round found", async () => {
+    // A Price genuinely misconfigured to charge 5990 *minor units* (59.90
+    // Ft) rather than 5990 Ft (599000 minor units) -- this is the mirror
+    // case of the bug this file's own price() helper used to encode by
+    // accident: unit_amount and amountHuf coincidentally equal, which is
+    // wrong for a real HUF charge, not a passing case.
+    pricesRetrieve.mockImplementation(async (id: string) =>
+      id === MONTHLY_PRICE_ID ? price({ ...monthlyOk(), unit_amount: 5990 }) : yearlyOk(),
+    );
+    const { assertStripeConfigurationValid } = await importFresh();
+    await expect(assertStripeConfigurationValid()).rejects.toThrow(
+      /charges 5990 \(minor units\) but the billing page promises 5990 Ft \(599000 minor units\)/,
+    );
   });
 
   it("rejects a price whose tax_behavior is not explicitly 'inclusive'", async () => {

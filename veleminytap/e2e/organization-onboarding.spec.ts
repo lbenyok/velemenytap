@@ -6,6 +6,7 @@ import {
   adminClient,
   type SeededPlainUser,
 } from "./support/seed";
+import { signInViaUi } from "./support/ui";
 
 /**
  * Finding #8: createOrganizationAction used to do two separate admin-client
@@ -31,10 +32,7 @@ test.afterEach(async () => {
 test("the real onboarding form creates an organization and lands on the dashboard", async ({
   page,
 }) => {
-  await page.goto("/login");
-  await page.getByLabel("E-mail cím").fill(user.email);
-  await page.getByLabel("Jelszó").fill(user.password);
-  await page.getByRole("button", { name: "Bejelentkezés" }).click();
+  await signInViaUi(page, user.email, user.password);
 
   await page.waitForURL(/\/onboarding$/);
   await page.getByLabel("Vállalkozás neve").fill("E2E UI Onboarding Test");

@@ -26,6 +26,12 @@ const PUBLIC_PATHS = [
   // Round-4 R4-01: polled by CI's post-deploy verification job and by the
   // rollout script (scripts/rollout.mjs), neither of which has a session.
   "/api/health",
+  // Fourth independent review, Finding 5: the scheduled billing-
+  // reconciliation sweep is called by a GitHub Actions cron job, which has
+  // no user session either -- its own bearer-token check
+  // (RECONCILE_SWEEP_SECRET) is the real security boundary here, the same
+  // pattern as the Stripe webhook above.
+  "/api/admin/reconcile-billing-sweep",
 ];
 
 function isPublicPath(pathname: string): boolean {

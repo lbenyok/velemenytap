@@ -306,6 +306,25 @@ export async function cleanupOrgWithMember(userId: string, orgId: number): Promi
  * tested directly (not just through the app's own query shapes, which
  * might never happen to exercise a gap the policy leaves open).
  */
+/**
+ * Fourth independent review (mandatory testing item): "Fix the e2e
+ * authentication setup so a normal complete run does not routinely
+ * produce dozens of rate-limit failures." Supabase Auth's own shared
+ * rate limiter -- a fixed budget across this whole isolated project, not
+ * something this app's code controls -- is what a large, fully-parallel
+ * Playwright run genuinely collides with (confirmed across many prior
+ * review rounds: every "failure" it produces is this exact signature,
+ * recovering cleanly on an isolated serial rerun of just the affected
+ * files). Retried here, with backoff, in the ONE place every API-level
+ * e2e sign-in goes through, instead of requiring a manual serial-rerun
+ * step after the fact.
+ */
+function isAuthRateLimitError(error: { status?: number; message?: string } | null): boolean {
+  if (!error) return false;
+  if (error.status === 429) return true;
+  return /rate limit/i.test(error.message ?? "");
+}
+
 export async function userClient(email: string, password: string) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
@@ -315,7 +334,18 @@ export async function userClient(email: string, password: string) {
     );
   }
   const client = createClient<Database>(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
-  const { error } = await client.auth.signInWithPassword({ email, password });
+
+  let error: { status?: number; message?: string } | null = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const result = await client.auth.signInWithPassword({ email, password });
+    error = result.error;
+    if (!error) break;
+    if (!isAuthRateLimitError(error) || attempt === 4) break;
+    // Exponential backoff (500ms, 1s, 2s, 4s) -- gives the rate limiter's
+    // own window a real chance to recover before retrying, rather than
+    // hammering it again immediately.
+    await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt));
+  }
   if (error) throw error;
 
   // A freshly minted JWT's `iat` can transiently fail PostgREST's clock-skew

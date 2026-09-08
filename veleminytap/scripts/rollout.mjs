@@ -701,8 +701,18 @@ export async function pollHealth(healthUrl, expectedSha, expectedEnvironment, ti
       // the overall deadline (never longer than that, and never longer
       // than 30s even early in a long deadline, so a hang is always
       // followed by a real retry rather than consuming the whole budget).
-      const remainingMs = deadline - Date.now();
-      const perRequestTimeoutMs = Math.max(1000, Math.min(30_000, remainingMs));
+      //
+      // Fourth independent review, Finding 14: a THIRD review found the
+      // fix above still had a real bug -- Math.max(1000, ...) imposed a
+      // one-second MINIMUM even when far less than that remained of the
+      // overall deadline, so this function could return (or throw) later
+      // than the timeoutSeconds it was actually given. There is no floor
+      // here now: with under a second left, the request gets whatever's
+      // actually left, however small -- correctly reflecting "no
+      // meaningful time remains to wait for a response" rather than
+      // silently borrowing time the caller was never told about.
+      const remainingMs = Math.max(0, deadline - Date.now());
+      const perRequestTimeoutMs = Math.min(30_000, remainingMs);
       // Round-7 finding R7-04: fetch follows redirects by default -- a
       // configured healthUrl could be redirected (by a compromised or
       // merely misconfigured intermediary) to a different host entirely,
@@ -746,7 +756,12 @@ export async function pollHealth(healthUrl, expectedSha, expectedEnvironment, ti
     } catch (err) {
       console.log(`  health check request failed: ${err instanceof Error ? err.message : err}`);
     }
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+    // Same fix as the request timeout above: the retry sleep must never
+    // push the loop past its own deadline either. Breaking out immediately
+    // once nothing remains avoids one final, pointless sleep-then-fail.
+    const sleepMs = Math.min(5000, Math.max(0, deadline - Date.now()));
+    if (sleepMs <= 0) break;
+    await new Promise((resolve) => setTimeout(resolve, sleepMs));
   }
   throw new Error(
     `Timed out after ${timeoutSeconds}s waiting for ${healthUrl} to report commit ${expectedSha} in ${expectedEnvironment}. ` +

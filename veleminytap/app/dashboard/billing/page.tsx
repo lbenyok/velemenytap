@@ -1,11 +1,14 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
-import { CircleCheck, Clock, TriangleAlert, Gift, Star } from "lucide-react";
+import { CircleCheck, Clock, TriangleAlert, Gift, Star, RefreshCw } from "lucide-react";
+import type Stripe from "stripe";
 import { createStripeClient } from "@/lib/stripe";
 import { getCurrentOrganization } from "@/features/organizations/current";
 import { getOrganizationBilling } from "@/features/billing/queries";
-import { isBillingActive, hasLiveSubscription } from "@/features/billing/status";
+import { isBillingActive, hasLiveSubscription, type OrganizationBilling } from "@/features/billing/status";
 import { createCheckoutSessionAction, createPortalSessionAction } from "@/features/billing/actions";
+import { resyncOrganizationBillingFormAction } from "@/features/billing/admin-actions";
+import { reconcileOrganizationBilling } from "@/features/billing/reconcile";
 import { PLAN_PRICING, type BillingInterval } from "@/features/billing/plans";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
@@ -15,19 +18,11 @@ import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Számlázás — VéleményTap" };
 
-// Éves ár vs. 12x havi ár -- a "kb. 2 hónapot spórolsz" jelvényhez.
 const YEARLY_SAVINGS_HUF = PLAN_PRICING.monthly.amountHuf * 12 - PLAN_PRICING.yearly.amountHuf;
 const YEARLY_SAVINGS_MONTHS = Math.round(YEARLY_SAVINGS_HUF / PLAN_PRICING.monthly.amountHuf);
 
 const PLAN_FEATURES = [
   "Korlátlan helyszín és NFC kártya",
-  // Found during an independent review: "Azonnali e-mail értesítés"
-  // (instant email notification) overstated a system with a per-card
-  // cooldown, an organization-wide hourly send budget, and possible
-  // provider failures -- matching the wording already corrected on the
-  // homepage (app/page.tsx) and in the onboarding tour (features/
-  // onboarding-tour/tour-steps.ts): conditional ("beállíthatsz" -- you
-  // can set up), never a guaranteed-immediate promise.
   "E-mailes értesítést állíthatsz be negatív véleményekhez",
   "Teljes elemzés és trendek",
   "Nincs válogatás — minden vélemény, minden csillag",
@@ -43,35 +38,53 @@ function formatDate(value: string | null): string {
 type CheckoutSuccessState = "none" | "confirmed" | "pending" | "unpaid" | "invalid";
 
 /**
- * Second independent review, Finding 7: `?checkout=success` alone must
- * never be treated as proof of payment -- a bookmarked, shared, or
- * hand-crafted URL could carry it with no real Checkout having happened
- * at all. Stripe's `{CHECKOUT_SESSION_ID}` placeholder (substituted with
- * the real session id server-side on redirect -- see
- * features/billing/actions.ts's success_url) is verified here directly
- * against Stripe, and checked to actually belong to THIS organization,
- * before ever rendering a success message. Distinguishes:
- *   - "confirmed": paid, and this organization's own billing state
- *     already reflects it (the subscription webhook has landed).
- *   - "pending": Checkout completed, but reconciliation hasn't landed yet
- *     -- webhooks are asynchronous; this is a normal, brief window, not
- *     an error.
- *   - "unpaid": the session exists but never actually completed/paid
- *     (expired, canceled mid-flow, etc).
- *   - "invalid": no session_id, the session doesn't exist, or it belongs
- *     to a different organization -- logged loudly (a foreign session id
- *     here is worth investigating) and never shown as any kind of success.
+ * Fourth independent review, Finding 12: "organization ownership must not
+ * pass merely because ONE of two CONFLICTING identifiers matches." The
+ * previous check was an OR -- if client_reference_id and
+ * metadata.organization_id disagreed (one forged or stale, one genuine),
+ * the mismatch was silently ignored as long as either happened to match.
+ * Both, when both are present, must agree; when only one is present, that
+ * one alone must match; when neither is present, ownership can't be
+ * verified at all.
  */
-async function resolveCheckoutSuccessState(
+export function orgIdentifiersAgree(session: Stripe.Checkout.Session, organizationId: number): boolean {
+  const orgIdStr = organizationId.toString();
+  const ref = session.client_reference_id;
+  const meta = session.metadata?.organization_id;
+  const refPresent = ref !== null && ref !== undefined;
+  const metaPresent = meta !== null && meta !== undefined;
+  if (refPresent && metaPresent) return ref === orgIdStr && meta === orgIdStr;
+  if (refPresent) return ref === orgIdStr;
+  if (metaPresent) return meta === orgIdStr;
+  return false;
+}
+
+/**
+ * Fourth independent review, Finding 7 (checkout=success verification)
+ * and Finding 5 (a paying customer must not depend on every webhook
+ * eventually arriving): `?checkout=success` alone proves nothing -- Stripe's
+ * own `{CHECKOUT_SESSION_ID}` placeholder is verified directly against
+ * Stripe and checked to actually belong to THIS organization first.
+ *
+ * "confirmed" now requires the EXACT session's own subscription to be
+ * locally reconciled as active/trialing -- not merely "this organization
+ * has SOME live subscription," which could be a different, older one.
+ * If it isn't reconciled yet, this ACTIVELY calls the shared
+ * reconciliation service right here (rather than only waiting for a
+ * webhook that Finding 5 established is not guaranteed to ever arrive) --
+ * a page reload is now often enough to self-heal a delayed webhook, not
+ * just re-read the same stale row.
+ */
+export async function resolveCheckoutSuccessState(
   organizationId: number,
   sessionId: string | undefined,
-  hasSubscriptionNow: boolean,
+  billing: OrganizationBilling | null,
 ): Promise<CheckoutSuccessState> {
   if (!sessionId) {
     return "invalid";
   }
 
-  let session;
+  let session: Stripe.Checkout.Session;
   try {
     session = await createStripeClient().checkout.sessions.retrieve(sessionId);
   } catch (err) {
@@ -79,21 +92,40 @@ async function resolveCheckoutSuccessState(
     return "invalid";
   }
 
-  const belongsToThisOrg =
-    session.client_reference_id === organizationId.toString() ||
-    session.metadata?.organization_id === organizationId.toString();
-  if (!belongsToThisOrg) {
+  if (!orgIdentifiersAgree(session, organizationId)) {
     console.error(
-      `Billing page: Checkout Session ${sessionId} does not belong to organization ${organizationId} (client_reference_id=${session.client_reference_id}) -- ignoring.`,
+      `Billing page: Checkout Session ${sessionId} identifiers do not agree with organization ${organizationId} ` +
+        `(client_reference_id=${session.client_reference_id}, metadata.organization_id=${session.metadata?.organization_id}) -- ignoring.`,
     );
     return "invalid";
   }
 
-  if (session.status !== "complete" || session.payment_status !== "paid") {
+  if (session.status !== "complete" || (session.payment_status !== "paid" && session.payment_status !== "no_payment_required")) {
     return "unpaid";
   }
 
-  return hasSubscriptionNow ? "confirmed" : "pending";
+  const sessionSubscriptionId = typeof session.subscription === "string" ? session.subscription : session.subscription?.id;
+
+  const isConfirmed = (b: OrganizationBilling | null) =>
+    sessionSubscriptionId != null &&
+    b?.stripe_subscription_id === sessionSubscriptionId &&
+    (b.status === "active" || b.status === "trialing");
+
+  if (isConfirmed(billing)) {
+    return "confirmed";
+  }
+
+  if (sessionSubscriptionId) {
+    const customerId = typeof session.customer === "string" ? session.customer : session.customer?.id;
+    if (customerId) {
+      const result = await reconcileOrganizationBilling(organizationId, customerId);
+      if (result.outcome === "reconciled" && result.subscriptionId === sessionSubscriptionId && (result.status === "active" || result.status === "trialing")) {
+        return "confirmed";
+      }
+    }
+  }
+
+  return "pending";
 }
 
 export default async function BillingPage({
@@ -109,13 +141,12 @@ export default async function BillingPage({
   const sp = await searchParams;
   const billing = await getOrganizationBilling(organization.id);
   const active = isBillingActive(billing);
-  // hasLiveSubscription, not a bare stripe_subscription_id check -- found
-  // during an independent review: a canceled or never-completed
-  // (incomplete_expired) subscription must show the Checkout forms again,
-  // not the "manage subscription" Portal button for a subscription that
-  // no longer meaningfully exists. See features/billing/status.ts.
   const hasSubscription = hasLiveSubscription(billing);
-  const grandfathered = billing?.grandfathered_at != null && !hasSubscription;
+  // Fourth independent review, Finding 12: grandfathered UI requires
+  // activated_at to remain null -- an organization that was grandfathered
+  // but has since genuinely paid (even if it later canceled) must never
+  // be shown "permanently free" messaging again.
+  const grandfathered = billing?.grandfathered_at != null && billing?.activated_at == null && !hasSubscription;
   const trialing = billing?.status === "trialing" && !hasSubscription && !grandfathered;
   const trialDaysLeft =
     trialing && billing?.trial_ends_at
@@ -126,7 +157,7 @@ export default async function BillingPage({
       : null;
 
   const checkoutSuccess: CheckoutSuccessState =
-    sp.checkout === "success" ? await resolveCheckoutSuccessState(organization.id, sp.session_id, hasSubscription) : "none";
+    sp.checkout === "success" ? await resolveCheckoutSuccessState(organization.id, sp.session_id, billing) : "none";
 
   return (
     <div className="space-y-6">
@@ -149,7 +180,10 @@ export default async function BillingPage({
         <Alert>
           <Clock />
           <AlertTitle>A fizetés megtörtént, feldolgozás alatt.</AlertTitle>
-          <AlertDescription>Ez általában néhány másodpercet vesz igénybe. Frissítsd az oldalt egy pillanat múlva.</AlertDescription>
+          <AlertDescription>
+            Ez általában néhány másodpercet vesz igénybe. Frissítsd az oldalt egy pillanat múlva, vagy használd a lenti
+            &bdquo;Frissítés a Stripe alapján&rdquo; gombot.
+          </AlertDescription>
         </Alert>
       ) : checkoutSuccess === "unpaid" ? (
         <Alert variant="destructive">
@@ -238,11 +272,19 @@ export default async function BillingPage({
           </ul>
 
           {hasSubscription ? (
-            <form action={createPortalSessionAction}>
-              <Button type="submit" variant="outline" className="w-full sm:w-auto">
-                Előfizetés kezelése
-              </Button>
-            </form>
+            <div className="flex flex-wrap gap-2">
+              <form action={createPortalSessionAction}>
+                <Button type="submit" variant="outline" className="w-full sm:w-auto">
+                  Előfizetés kezelése
+                </Button>
+              </form>
+              <form action={resyncOrganizationBillingFormAction}>
+                <Button type="submit" variant="ghost" className="w-full sm:w-auto">
+                  <RefreshCw data-icon="inline-start" />
+                  Frissítés a Stripe alapján
+                </Button>
+              </form>
+            </div>
           ) : (
             <div className="grid gap-4 sm:grid-cols-2">
               <PlanOption interval="monthly" />

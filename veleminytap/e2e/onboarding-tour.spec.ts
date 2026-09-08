@@ -6,6 +6,7 @@ import {
   userClient,
   type SeededOrgMember,
 } from "./support/seed";
+import { signInViaUi } from "./support/ui";
 
 /**
  * First-time dashboard onboarding tour. State model:
@@ -31,10 +32,7 @@ test.afterEach(async () => {
 });
 
 async function signIn(page: Page) {
-  await page.goto("/login");
-  await page.getByLabel("E-mail cím").fill(member.email);
-  await page.getByLabel("Jelszó").fill(member.password);
-  await page.getByRole("button", { name: "Bejelentkezés" }).click();
+  await signInViaUi(page, member.email, member.password);
   await page.waitForURL(/\/dashboard$/);
 }
 
@@ -427,10 +425,7 @@ test.describe("resilience", () => {
       await route.continue();
     });
 
-    await page.goto("/login");
-    await page.getByLabel("E-mail cím").fill(member.email);
-    await page.getByLabel("Jelszó").fill(member.password);
-    await page.getByRole("button", { name: "Bejelentkezés" }).click();
+    await signInViaUi(page, member.email, member.password);
     await page.waitForURL(/\/dashboard$/);
 
     // Server-rendered heading, present and visible immediately from SSR --

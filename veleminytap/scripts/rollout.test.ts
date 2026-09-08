@@ -1295,6 +1295,72 @@ describe("pollHealth aborts a hanging request instead of blocking the whole retr
 });
 
 /**
+ * Fourth independent review, Finding 14: a third review's own fix for the
+ * hanging-request problem above (AbortSignal.timeout, capped by whatever's
+ * left of the deadline) still carried a real bug -- `perRequestTimeoutMs`
+ * was computed as `Math.max(1000, remainingMs)`, a one-second FLOOR applied
+ * even when far less than a second genuinely remained. With under a second
+ * left on the overall deadline, a still-hanging server would only be
+ * aborted after the full padded 1000ms, not the smaller amount actually
+ * left -- so pollHealth (and therefore runFinalize, and therefore the
+ * rollout script's own --deploy-timeout-seconds contract) could return
+ * (or throw "Timed out") measurably LATER than the timeoutSeconds it was
+ * given. The test above never caught this: its 2s timeout starts with
+ * remaining ~= the full budget, so a 1s floor is indistinguishable from
+ * "no floor" on the very first request -- the bug only bites once
+ * remaining has shrunk below the floor's own value, which a >=1s deadline
+ * never exercises on its first (and, given the fixed 5s retry sleep,
+ * usually only) iteration.
+ *
+ * This test uses a sub-second deadline (50ms) specifically so the very
+ * first request already starts with well under a second remaining --
+ * exactly the condition the buggy floor mishandled. The fixed
+ * implementation (Math.min(30_000, remainingMs), no floor) must abort and
+ * throw close to 50ms; the old Math.max(1000, remainingMs) code would have
+ * taken close to 1000ms instead -- a 20x difference, not something normal
+ * CI scheduling jitter could produce by accident.
+ */
+describe("Finding 14: pollHealth never waits past its own deadline, even with well under a second remaining", () => {
+  const EXPECTED_SHA = "a".repeat(40);
+  let servers: http.Server[] = [];
+
+  afterEach(async () => {
+    await Promise.all(servers.map((s) => new Promise<void>((resolve) => s.close(() => resolve()))));
+    servers = [];
+  });
+
+  function startServer(handler: (req: http.IncomingMessage, res: http.ServerResponse) => void): Promise<http.Server> {
+    return new Promise((resolve) => {
+      const server = http.createServer(handler);
+      servers.push(server);
+      server.listen(0, "127.0.0.1", () => resolve(server));
+    });
+  }
+
+  function urlFor(server: http.Server) {
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    return `http://127.0.0.1:${port}/api/health`;
+  }
+
+  it("aborts a hanging request within its actual sub-second deadline, not padded up to a fixed 1s floor", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- deliberately never responds, so only the deadline (not the server) determines how long this takes
+    const server = await startServer((_req, _res) => {});
+    const start = Date.now();
+    // A 0.05s (50ms) overall deadline -- the first loop iteration's
+    // `remainingMs` is already well under the old code's 1000ms floor.
+    await expect(pollHealth(urlFor(server), EXPECTED_SHA, "production", 0.05)).rejects.toThrow(/Timed out/);
+    const elapsedMs = Date.now() - start;
+    // The buggy Math.max(1000, remainingMs) version would land close to
+    // 1000ms here. A generous-but-decisive 400ms ceiling (8x the nominal
+    // 50ms deadline, comfortably absorbing CI scheduling jitter) passes
+    // under the fix and fails under the old floor -- the two are an order
+    // of magnitude apart, not a close call.
+    expect(elapsedMs).toBeLessThan(400);
+  });
+});
+
+/**
  * Found during an independent review, after the prepare/finalize split
  * above had already shipped: runFinalize used to return immediately, as a
  * success, the moment validateFinalizePlan reported nothing pending --
