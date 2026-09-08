@@ -191,10 +191,10 @@ Round 2 finding R2-08 flagged three things about the negative-feedback alert's a
 **Why this wasn't built in round 2 despite being clearly the complete fix:** proportionality under the original task's own framing — treating a full confirmation flow (new columns, a new public route, new Resend copy, new pending-state UI, an enforcement trigger with its own deploy-ordering hazard) as disproportionate to fold into a pass whose stated scope was fixing a set of already-identified security findings, versus shipping the cheaper, still-meaningful budget mitigation and flagging the gap explicitly for a follow-up. That judgment call was revisited, not reversed on new information: R3-03 concluded the deferral itself was the wrong call for a public-facing spam-relay vector, not that the original reasoning about relative cost was inaccurate.
 **Revisit when:** nothing further — this is now the intended long-term state, not a stepping stone.
 
-## Documentation suite lives in `veleminytap/`, not the outer repo root
+## Documentation suite lives in `velemenytap/`, not the outer repo root
 
-The git repository root (`.../Biznisz`) also contains unrelated files (design assets, `.claude/` skill config). All product/engineering docs (`README.md`, `PRODUCT_SPEC.md`, etc.) live inside `veleminytap/`, alongside the app they describe and its pre-existing `README.md`/`AGENTS.md`.
-**Why:** a reader exploring the actual product would open the `veleminytap/` directory, not the outer scratch folder; co-locating docs with the code they describe is the more discoverable and more conventional choice.
+The git repository root (`.../Biznisz`) also contains unrelated files (design assets, `.claude/` skill config). All product/engineering docs (`README.md`, `PRODUCT_SPEC.md`, etc.) live inside `velemenytap/`, alongside the app they describe and its pre-existing `README.md`/`AGENTS.md`.
+**Why:** a reader exploring the actual product would open the `velemenytap/` directory, not the outer scratch folder; co-locating docs with the code they describe is the more discoverable and more conventional choice.
 
 ## Billing: one flat plan, a 14-day no-card trial, dashboard-only paywall
 

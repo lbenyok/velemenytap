@@ -177,7 +177,7 @@ beforeEach(() => {
   maybeSingleQueue = [];
   for (const key of Object.keys(rpcQueues)) delete rpcQueues[key];
 
-  process.env.NEXT_PUBLIC_SITE_URL = "https://veleminytap.example";
+  process.env.NEXT_PUBLIC_SITE_URL = "https://velemenytap.example";
   process.env.STRIPE_PRICE_ID_MONTHLY = MONTHLY_PRICE;
   process.env.STRIPE_PRICE_ID_YEARLY = YEARLY_PRICE;
 

@@ -11,14 +11,14 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: veleminytap
+        working-directory: velemenytap
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: veleminytap/package-lock.json
+          cache-dependency-path: velemenytap/package-lock.json
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
@@ -48,7 +48,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: veleminytap
+        working-directory: velemenytap
     outputs:
       configured: ${{ steps.check.outputs.configured }}
     steps:
@@ -74,7 +74,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: veleminytap
+        working-directory: velemenytap
     env:
       NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
       NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
@@ -94,7 +94,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: veleminytap/package-lock.json
+          cache-dependency-path: velemenytap/package-lock.json
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm run build
@@ -103,7 +103,7 @@ jobs:
         if: failure()
         with:
           name: playwright-report
-          path: veleminytap/playwright-report/
+          path: velemenytap/playwright-report/
           retention-days: 14
 
   # Round-6 finding R6-08. `e2e` above SKIPS (its own `if` is false) for a
@@ -175,7 +175,7 @@ jobs:
           # Repository variable, not a secret -- this is the app's own
           # public production URL. Falls back to the known default so this
           # keeps working even if the variable is never explicitly set.
-          HEALTH_URL: ${{ vars.PRODUCTION_HEALTH_URL || 'https://veleminytap.vercel.app/api/health' }}
+          HEALTH_URL: ${{ vars.PRODUCTION_HEALTH_URL || 'https://velemenytap.vercel.app/api/health' }}
         run: |
           deadline=$((SECONDS + 300))
           while [ "$SECONDS" -lt "$deadline" ]; do
