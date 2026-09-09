@@ -211,6 +211,7 @@ function customerClaim(overrides: Partial<{
   creation_id: string | null;
   started_at: string | null;
   retry_safe: boolean;
+  owner_token: string | null;
 }> = {}) {
   return {
     data: [
@@ -219,6 +220,7 @@ function customerClaim(overrides: Partial<{
         creation_id: "creation_1",
         started_at: new Date().toISOString(),
         retry_safe: true,
+        owner_token: "creation_owner_1",
         ...overrides,
       },
     ],
@@ -576,6 +578,64 @@ describe("createCheckoutSessionAction", () => {
       expect(checkoutSessionsCreate).toHaveBeenCalledWith(expect.objectContaining({ customer: "cus_winner" }), expect.anything());
     });
 
+    /**
+     * R9-03 (round-9 review). Two requests can sit on opposite sides of the
+     * 23-hour boundary: one replays the frozen key while the other, seeing a
+     * perfectly accurate empty list, rotates and creates. A fresh list cannot
+     * prove a concurrent create will not land a moment later, so the decision
+     * needs ownership -- not just accuracy.
+     */
+    it("R9-03: a caller refused the creation lease stands down instead of racing an in-flight create", async () => {
+      queueRpc("claim_checkout_attempt", claimResult());
+      queue({ data: { stripe_customer_id: null }, error: null });
+      queueRpc("claim_stripe_customer_creation", customerClaim({ owner_token: null, retry_safe: false }));
+
+      const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData()));
+
+      expect(target).toBe("/dashboard/billing?error=checkout_failed");
+      expect(customersCreate).not.toHaveBeenCalled();
+      expect(rpcCalls.some((c) => c.name === "rotate_stripe_customer_creation")).toBe(false);
+    });
+
+    it("R9-03: rotation is performed under the creation lease the caller holds", async () => {
+      queueRpc("claim_checkout_attempt", claimResult());
+      queue({ data: { stripe_customer_id: null }, error: null });
+      queueRpc("claim_stripe_customer_creation", customerClaim({ creation_id: "creation_old", retry_safe: false, owner_token: "creation_owner_1" }));
+      queueRpc("rotate_stripe_customer_creation", { data: "creation_fresh", error: null });
+      queueRpc("record_stripe_customer", RECORD_CUSTOMER_OK);
+      customersSearch.mockResolvedValue({ data: [] });
+      customersList.mockResolvedValue({ data: [], has_more: false });
+      queueRpc("renew_checkout_attempt", RENEW_OK);
+      queueRpc("record_checkout_session", RECORD_OK);
+
+      await redirectedTo(createCheckoutSessionAction(checkoutFormData()));
+
+      const rotate = rpcCalls.find((c) => c.name === "rotate_stripe_customer_creation");
+      expect(rotate?.args).toMatchObject({ p_creation_id: "creation_old", p_owner_token: "creation_owner_1" });
+    });
+
+    /**
+     * R9-04 (round-9 review). A backfilled legacy row stands for a key the
+     * PREVIOUS billing version already used -- derived from the organization
+     * id, not random. Replaying a random replacement would not be a replay at
+     * all, so Stripe would not deduplicate it.
+     */
+    it("R9-04: a backfilled legacy identity replays the ORIGINAL org-derived key", async () => {
+      queueRpc("claim_checkout_attempt", claimResult());
+      queue({ data: { stripe_customer_id: null }, error: null });
+      queueRpc("claim_stripe_customer_creation", customerClaim({ creation_id: "legacy-org-42", retry_safe: true }));
+      queueRpc("record_stripe_customer", RECORD_CUSTOMER_OK);
+      queueRpc("renew_checkout_attempt", RENEW_OK);
+      queueRpc("record_checkout_session", RECORD_OK);
+
+      await redirectedTo(createCheckoutSessionAction(checkoutFormData()));
+
+      expect(customersCreate).toHaveBeenCalledWith(
+        { metadata: { organization_id: "42" } },
+        { idempotencyKey: "customer-create:org-42" },
+      );
+    });
+
     it("a claim that comes back already resolved returns that customer without creating or searching", async () => {
       queueRpc("claim_checkout_attempt", claimResult());
       queue({ data: { stripe_customer_id: null }, error: null });
@@ -683,6 +743,76 @@ describe("createCheckoutSessionAction", () => {
       expect(checkoutSessionsCreate).not.toHaveBeenCalled();
     });
 
+    /**
+     * R9-01 (independent round-9 review, P1). The comment above the expire
+     * call promises the old Session is closed on Stripe's side "so a
+     * customer holding the old link can no longer complete it" -- but the
+     * code only stopped short of replacing it when it observed a COMPLETE,
+     * PAID Session. If expire() threw and the Session was still open, the
+     * attempt was released and a second payable Session was created, so a
+     * customer holding both links could complete both and be charged twice.
+     *
+     * The rule now: an attempt may only be released once the old Session is
+     * confirmed to have LEFT the open state. Anything else is unknown, and
+     * unknown must not authorize a replacement.
+     */
+    it("R9-01: expire() failing with the session still OPEN must not authorize a replacement session", async () => {
+      queueRpc(
+        "claim_checkout_attempt",
+        claimResult({ is_new_attempt: false, existing_session_id: "cs_open_monthly", existing_interval: "monthly", existing_price_id: MONTHLY_PRICE }),
+      );
+      queue(CUSTOMER_EXISTS);
+      checkoutSessionsRetrieve.mockResolvedValue({
+        id: "cs_open_monthly", status: "open", url: "https://checkout.stripe.com/still-open",
+        line_items: sessionLineItems(MONTHLY_PRICE),
+      });
+      checkoutSessionsExpire.mockRejectedValue(new Error("Stripe is unavailable"));
+
+      const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData("yearly")));
+
+      expect(target).toBe("/dashboard/billing?error=checkout_failed");
+      expect(checkoutSessionsCreate).not.toHaveBeenCalled();
+      expect(rpcCalls.some((c) => c.name === "release_checkout_attempt")).toBe(false);
+    });
+
+    it("R9-01: expire() AND the recheck both failing is also unknown -- no replacement session", async () => {
+      queueRpc(
+        "claim_checkout_attempt",
+        claimResult({ is_new_attempt: false, existing_session_id: "cs_open_monthly", existing_interval: "monthly", existing_price_id: MONTHLY_PRICE }),
+      );
+      queue(CUSTOMER_EXISTS);
+      checkoutSessionsRetrieve
+        .mockResolvedValueOnce({ id: "cs_open_monthly", status: "open", url: "https://checkout.stripe.com/still-open", line_items: sessionLineItems(MONTHLY_PRICE) })
+        .mockRejectedValue(new Error("Stripe is unavailable"));
+      checkoutSessionsExpire.mockRejectedValue(new Error("Stripe is unavailable"));
+
+      const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData("yearly")));
+
+      expect(target).toBe("/dashboard/billing?error=checkout_failed");
+      expect(checkoutSessionsCreate).not.toHaveBeenCalled();
+      expect(rpcCalls.some((c) => c.name === "release_checkout_attempt")).toBe(false);
+    });
+
+    it("R9-01: a CONFIRMED expired session still releases and lets a fresh attempt proceed", async () => {
+      queueRpc(
+        "claim_checkout_attempt",
+        claimResult({ is_new_attempt: false, existing_session_id: "cs_open_monthly", existing_interval: "monthly", existing_price_id: MONTHLY_PRICE }),
+        claimResult({ attempt_id: "attempt_after_expiry" }),
+      );
+      queue(CUSTOMER_EXISTS);
+      checkoutSessionsRetrieve.mockResolvedValue({
+        id: "cs_open_monthly", status: "open", url: "https://checkout.stripe.com/old", line_items: sessionLineItems(MONTHLY_PRICE),
+      });
+      checkoutSessionsExpire.mockResolvedValue({ id: "cs_open_monthly", status: "expired", payment_status: "unpaid" });
+      queueRpc("release_checkout_attempt", RELEASE_OK);
+      queueRpc("renew_checkout_attempt", RENEW_OK);
+      queueRpc("record_checkout_session", RECORD_OK);
+
+      const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData("yearly")));
+
+      expect(target).toBe("https://checkout.stripe.com/session");
+      expect(rpcCalls.some((c) => c.name === "release_checkout_attempt")).toBe(true);
+    });
     it("Finding 8: a complete-but-UNPAID session is never treated as success -- releases and lets a fresh attempt proceed", async () => {
       queueRpc(
         "claim_checkout_attempt",

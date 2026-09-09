@@ -268,6 +268,50 @@ describe("reconcileOrganizationBilling", () => {
  * every entry point registers its request BEFORE claiming the lease, and
  * then writes under the generation the claim observed.
  */
+/**
+ * R9-07 (round-9 review). `limit` is a page size, not a total. Ignoring
+ * `has_more` meant an older but still ACTIVE subscription sitting behind 100
+ * newer terminal ones was never seen, and entitlement was decided -- as
+ * canceled -- from a prefix.
+ */
+describe("subscription history pagination", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    rpc.mockImplementation(defaultRpcImpl);
+    rpcCalls.length = 0;
+    for (const key of Object.keys(rpcQueues)) delete rpcQueues[key];
+    subscriptionsList.mockReset();
+    maybeSingleQueue = [];
+  });
+
+  it("R9-07: follows has_more and finds an active subscription behind a full page of canceled ones", async () => {
+    const canceled = Array.from({ length: 100 }, (_, i) => sub({ id: `sub_dead_${i}`, status: "canceled", created: 2000 + i }));
+    subscriptionsList
+      .mockResolvedValueOnce({ data: canceled, has_more: true })
+      .mockResolvedValueOnce({ data: [sub({ id: "sub_still_active", status: "active", created: 1000 })], has_more: false });
+    queueRpc("claim_reconciliation_lease", { data: [{ owner_token: "owner_1", requested_generation: 1, activation_generation: 0 }], error: null });
+    queueRpc("write_reconciliation_result", { data: true, error: null });
+
+    const result = await reconcileOrganizationBilling(42, "cus_1");
+
+    expect(subscriptionsList).toHaveBeenCalledTimes(2);
+    expect(subscriptionsList.mock.calls[1][0]).toMatchObject({ starting_after: "sub_dead_99" });
+    expect(result).toMatchObject({ outcome: "reconciled", subscriptionId: "sub_still_active", status: "active" });
+  });
+
+  it("R9-07: a history too large to page through fails rather than deciding from a prefix", async () => {
+    const page = Array.from({ length: 100 }, (_, i) => sub({ id: `sub_${i}`, status: "canceled" }));
+    subscriptionsList.mockResolvedValue({ data: page, has_more: true });
+    queueRpc("claim_reconciliation_lease", { data: [{ owner_token: "owner_1", requested_generation: 1, activation_generation: 0 }], error: null });
+
+    const result = await reconcileOrganizationBilling(42, "cus_1");
+
+    expect(result.outcome).toBe("error");
+    expect(rpcCalls.some((c) => c.name === "write_reconciliation_result")).toBe(false);
+    expect(rpcCalls.some((c) => c.name === "fail_billing_reconciliation")).toBe(true);
+  });
+});
+
 describe("reconciliation generations", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -320,6 +364,33 @@ describe("reconciliation generations", () => {
     expect(result.outcome).toBe("error");
     expect(rpcCalls.some((c) => c.name === "claim_reconciliation_lease")).toBe(false);
     expect(subscriptionsList).not.toHaveBeenCalled();
+  });
+
+  /**
+   * R9-02 (round-9 review, P1). One shared generation pair meant either kind
+   * of work could mark the other kind's pending requests complete. Activation
+   * now registers and satisfies its OWN obligation.
+   */
+  it("R9-02: activation registers an ACTIVATION obligation, never a subscription one", async () => {
+    queueRpc("claim_reconciliation_lease", { data: [{ owner_token: "owner_1", requested_generation: 7, activation_generation: 2 }], error: null });
+    queueRpc("write_activation", { data: true, error: null });
+
+    await activateOrganizationBilling(42);
+
+    expect(rpcCalls.some((c) => c.name === "request_billing_activation")).toBe(true);
+    expect(rpcCalls.some((c) => c.name === "request_billing_reconciliation")).toBe(false);
+    const write = rpcCalls.find((c) => c.name === "write_activation");
+    expect(write?.args).toMatchObject({ p_requested_generation: 7, p_activation_generation: 2 });
+  });
+
+  it("R9-02: a subscription refresh carries the activation generation through untouched", async () => {
+    queueRpc("claim_reconciliation_lease", { data: [{ owner_token: "owner_1", requested_generation: 4, activation_generation: 9 }], error: null });
+    queueRpc("write_reconciliation_result", { data: true, error: null });
+
+    await reconcileOrganizationBilling(42, "cus_1");
+
+    const write = rpcCalls.find((c) => c.name === "write_reconciliation_result");
+    expect(write?.args).toMatchObject({ p_requested_generation: 4, p_activation_generation: 9 });
   });
 
   it("activation follows the same request-then-claim-then-write-under-that-generation order", async () => {

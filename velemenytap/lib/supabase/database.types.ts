@@ -98,6 +98,8 @@ export interface Database {
           checkout_created_at: string | null;
           customer_creation_id: string | null;
           customer_creation_started_at: string | null;
+          customer_creation_lease_owner: string | null;
+          customer_creation_lease_expires_at: string | null;
           reconciliation_lease_owner: string | null;
           reconciliation_lease_expires_at: string | null;
           needs_reconciliation: boolean;
@@ -106,6 +108,8 @@ export interface Database {
           billing_sync_completed: number;
           billing_sync_last_attempt_at: string | null;
           billing_sync_last_error: string | null;
+          activation_requested: number;
+          activation_completed: number;
           last_synced_at: string | null;
           created_at: string;
           updated_at: string;
@@ -131,6 +135,8 @@ export interface Database {
           checkout_created_at?: string | null;
           customer_creation_id?: string | null;
           customer_creation_started_at?: string | null;
+          customer_creation_lease_owner?: string | null;
+          customer_creation_lease_expires_at?: string | null;
           reconciliation_lease_owner?: string | null;
           reconciliation_lease_expires_at?: string | null;
           needs_reconciliation?: boolean;
@@ -139,6 +145,8 @@ export interface Database {
           billing_sync_completed?: number;
           billing_sync_last_attempt_at?: string | null;
           billing_sync_last_error?: string | null;
+          activation_requested?: number;
+          activation_completed?: number;
           last_synced_at?: string | null;
           created_at?: string;
           updated_at?: string;
@@ -164,6 +172,8 @@ export interface Database {
           checkout_created_at?: string | null;
           customer_creation_id?: string | null;
           customer_creation_started_at?: string | null;
+          customer_creation_lease_owner?: string | null;
+          customer_creation_lease_expires_at?: string | null;
           reconciliation_lease_owner?: string | null;
           reconciliation_lease_expires_at?: string | null;
           needs_reconciliation?: boolean;
@@ -172,6 +182,8 @@ export interface Database {
           billing_sync_completed?: number;
           billing_sync_last_attempt_at?: string | null;
           billing_sync_last_error?: string | null;
+          activation_requested?: number;
+          activation_completed?: number;
           last_synced_at?: string | null;
           created_at?: string;
           updated_at?: string;
@@ -560,12 +572,14 @@ export interface Database {
       claim_stripe_customer_creation: {
         Args: {
           p_organization_id: number;
+          p_lease_seconds?: number;
         };
         Returns: {
           customer_id: string | null;
           creation_id: string | null;
           started_at: string | null;
           retry_safe: boolean;
+          owner_token: string | null;
         }[];
       };
       record_stripe_customer: {
@@ -580,10 +594,17 @@ export interface Database {
         Args: {
           p_organization_id: number;
           p_creation_id: string;
+          p_owner_token: string;
         };
         Returns: string | null;
       };
       request_billing_reconciliation: {
+        Args: {
+          p_organization_id: number;
+        };
+        Returns: number;
+      };
+      request_billing_activation: {
         Args: {
           p_organization_id: number;
         };
@@ -597,6 +618,7 @@ export interface Database {
         Returns: {
           owner_token: string;
           requested_generation: number;
+          activation_generation: number;
         }[];
       };
       get_billing_reconciliation_candidates: {
@@ -630,6 +652,7 @@ export interface Database {
           p_organization_id: number;
           p_owner: string;
           p_requested_generation: number;
+          p_activation_generation: number;
           p_stripe_customer_id: string | null;
           p_stripe_subscription_id: string | null;
           p_status: string;
@@ -643,6 +666,7 @@ export interface Database {
           p_organization_id: number;
           p_owner: string;
           p_requested_generation: number;
+          p_activation_generation: number;
         };
         Returns: boolean;
       };
@@ -666,6 +690,7 @@ export interface Database {
           p_organization_id: number;
           p_owner: string;
           p_requested_generation: number;
+          p_activation_generation: number;
         };
         Returns: boolean;
       };

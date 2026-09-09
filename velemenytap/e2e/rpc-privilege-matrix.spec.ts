@@ -114,13 +114,13 @@ const EXPECTED: ExpectedGrant[] = [
   },
   {
     signature:
-      "public.write_reconciliation_result(bigint, text, bigint, text, text, text, timestamp with time zone, boolean)",
+      "public.write_reconciliation_result(bigint, text, bigint, bigint, text, text, text, timestamp with time zone, boolean)",
     anon: false,
     authenticated: false,
     service_role: true,
   },
   {
-    signature: "public.write_activation(bigint, text, bigint)",
+    signature: "public.write_activation(bigint, text, bigint, bigint)",
     anon: false,
     authenticated: false,
     service_role: true,
@@ -138,7 +138,7 @@ const EXPECTED: ExpectedGrant[] = [
   // outcome also cannot discard a request that arrived while it held the
   // lease.
   {
-    signature: "public.clear_reconciliation_dirty(bigint, text, bigint)",
+    signature: "public.clear_reconciliation_dirty(bigint, text, bigint, bigint)",
     anon: false,
     authenticated: false,
     service_role: true,
@@ -152,6 +152,12 @@ const EXPECTED: ExpectedGrant[] = [
   // this family.
   {
     signature: "public.request_billing_reconciliation(bigint)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  {
+    signature: "public.request_billing_activation(bigint)",
     anon: false,
     authenticated: false,
     service_role: true,
@@ -185,7 +191,7 @@ const EXPECTED: ExpectedGrant[] = [
   // creation was attempted so the caller knows which regime it is in.
   // service_role-only, same as every other billing RPC.
   {
-    signature: "public.claim_stripe_customer_creation(bigint)",
+    signature: "public.claim_stripe_customer_creation(bigint, integer)",
     anon: false,
     authenticated: false,
     service_role: true,
@@ -197,7 +203,7 @@ const EXPECTED: ExpectedGrant[] = [
     service_role: true,
   },
   {
-    signature: "public.rotate_stripe_customer_creation(bigint, text)",
+    signature: "public.rotate_stripe_customer_creation(bigint, text, text)",
     anon: false,
     authenticated: false,
     service_role: true,

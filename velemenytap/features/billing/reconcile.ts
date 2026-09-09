@@ -43,13 +43,34 @@ import { approvedPriceIds } from "@/features/billing/stripe-config";
  * exclusion alone still lost an event that arrived DURING a reconciliation:
  * the losing racer set the dirty flag, and the winner's own completing
  * write then cleared it, discarding the only record that a newer event
- * existed. Every entry point here now calls request_billing_reconciliation
- * FIRST, committing a monotonic "reconciliation wanted" generation before
- * any Stripe call; claim_reconciliation_lease reports the generation it
- * observed, and a completing write may clear the dirty flag only if no
- * higher generation has been requested since. A write now answers "was
- * every request I knew about satisfied," not merely "did I finish."
+ * existed. Every entry point here registers its obligation FIRST, committing
+ * a monotonic generation before any AUTHORITATIVE Stripe call;
+ * claim_reconciliation_lease reports the generation it observed, and a
+ * completing write may clear the dirty flag only if no higher generation has
+ * been requested since. A write answers "was every request I knew about
+ * satisfied," not merely "did I finish."
+ *
+ * R9 ledger correction: this used to say "before any Stripe call", which was
+ * too broad -- the webhook route retrieves an object to resolve which
+ * organization an event belongs to before it ever reaches this service. That
+ * retrieval decides identity, not entitlement, and the authoritative
+ * subscription list happens after the lease is held, which is the property
+ * that actually matters.
+ *
+ * R9-02: there are TWO obligations, and they are counted separately --
+ * refreshing subscription state, and persisting a paid activation. A writer
+ * may only advance the counter for the work it actually performed, because
+ * one shared counter let either kind mark the other kind's pending requests
+ * complete. A subscription refresh that observes an `active` status does
+ * additionally discharge the activation obligation, since an active
+ * subscription IS the evidence that a payment succeeded -- without that, an
+ * organization whose invoice event was never redelivered would stay dirty
+ * forever with nothing able to satisfy it.
  */
+
+// R9-07: how many 100-item pages of subscription history one reconciliation
+// will walk before refusing to decide entitlement from a prefix.
+const SUBSCRIPTION_PAGE_CAP = 20;
 
 const LIVE_STRIPE_STATUSES: ReadonlySet<Stripe.Subscription.Status> = new Set([
   "active",
@@ -223,12 +244,47 @@ export async function reconcileOrganizationBilling(
   }
   const owner = lease.owner_token;
   const generation = lease.requested_generation;
+  // R9-02: the activation generation is carried through untouched by this
+  // path except when an `active` status discharges it -- a subscription
+  // refresh must never mark an activation obligation done on its own.
+  const activationGeneration = lease.activation_generation;
 
   try {
     let subscriptions: Stripe.Subscription[];
     try {
-      const list = await stripe.subscriptions.list({ customer: stripeCustomerId, status: "all", limit: 100 });
-      subscriptions = list.data;
+      // R9-07 (round-9 review): a single page was treated as the customer's
+      // whole subscription history. `limit` is a page size, not a total, and
+      // `has_more` was ignored -- so an older but still ACTIVE subscription
+      // sitting behind 100 newer terminal ones would never be seen, and
+      // pickCurrentSubscription would write a canceled entitlement for a
+      // customer who is actually paying. Page through until Stripe says
+      // there is no more.
+      //
+      // Bounded so an anomalous history cannot make a reconciliation run
+      // unboundedly: exhausting the cap is NOT treated as "this is the whole
+      // set", it fails the reconciliation, which leaves the organization
+      // dirty for the sweep rather than deciding entitlement on a prefix.
+      subscriptions = [];
+      let startingAfter: string | undefined;
+      let pages = 0;
+      for (;;) {
+        const list: Stripe.ApiList<Stripe.Subscription> = await stripe.subscriptions.list({
+          customer: stripeCustomerId,
+          status: "all",
+          limit: 100,
+          ...(startingAfter ? { starting_after: startingAfter } : {}),
+        });
+        subscriptions.push(...list.data);
+        if (!list.has_more) break;
+        if (++pages >= SUBSCRIPTION_PAGE_CAP) {
+          throw new Error(
+            `more than ${SUBSCRIPTION_PAGE_CAP * 100} subscriptions for customer ${stripeCustomerId} -- refusing to ` +
+              "decide entitlement from a partial history",
+          );
+        }
+        startingAfter = list.data[list.data.length - 1]?.id;
+        if (!startingAfter) break;
+      }
     } catch (err) {
       const message = `Failed to list Stripe subscriptions: ${err instanceof Error ? err.message : err}`;
       await admin.rpc("fail_billing_reconciliation", {
@@ -288,6 +344,7 @@ export async function reconcileOrganizationBilling(
             p_organization_id: organizationId,
             p_owner: owner,
             p_requested_generation: generation,
+            p_activation_generation: activationGeneration,
             p_stripe_customer_id: stripeCustomerId,
             p_stripe_subscription_id: null,
             p_status: "canceled",
@@ -320,6 +377,7 @@ export async function reconcileOrganizationBilling(
         p_organization_id: organizationId,
         p_owner: owner,
         p_requested_generation: generation,
+        p_activation_generation: activationGeneration,
       });
       return { outcome: "no_subscriptions" };
     }
@@ -330,6 +388,7 @@ export async function reconcileOrganizationBilling(
       p_organization_id: organizationId,
       p_owner: owner,
       p_requested_generation: generation,
+      p_activation_generation: activationGeneration,
       p_stripe_customer_id: stripeCustomerId,
       p_stripe_subscription_id: current.id,
       p_status: status,
@@ -369,11 +428,15 @@ export async function reconcileOrganizationBilling(
 export async function activateOrganizationBilling(organizationId: number): Promise<ReconcileOutcome> {
   const admin = createAdminClient();
 
-  const { error: requestError } = await admin.rpc("request_billing_reconciliation", {
+  // R9-02: activation registers its OWN obligation. While one counter was
+  // shared with subscription refresh, either kind of work could mark the
+  // other kind's pending requests complete -- an activation write would
+  // silently discharge a pending refresh it had never looked at.
+  const { error: requestError } = await admin.rpc("request_billing_activation", {
     p_organization_id: organizationId,
   });
   if (requestError) {
-    return { outcome: "error", message: `Failed to request reconciliation: ${requestError.message}` };
+    return { outcome: "error", message: `Failed to request activation: ${requestError.message}` };
   }
 
   const { data: claim, error: claimError } = await admin.rpc("claim_reconciliation_lease", {
@@ -388,6 +451,7 @@ export async function activateOrganizationBilling(organizationId: number): Promi
   }
   const owner = lease.owner_token;
   const generation = lease.requested_generation;
+  const activationGeneration = lease.activation_generation;
 
   // Mirrors reconcileOrganizationBilling's own try/catch: an uncaught
   // exception here (a network-level throw from admin.rpc, not merely an
@@ -402,6 +466,7 @@ export async function activateOrganizationBilling(organizationId: number): Promi
       p_organization_id: organizationId,
       p_owner: owner,
       p_requested_generation: generation,
+      p_activation_generation: activationGeneration,
     });
     if (writeError) {
       return { outcome: "error", message: `Failed to write activation: ${writeError.message}` };

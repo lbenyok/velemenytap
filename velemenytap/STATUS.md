@@ -1,6 +1,68 @@
 # Status
 
-Last updated: 2026-09-08. This round reviewed a parallel implementation, integrated its two better billing mechanisms via forward migrations, then twice corrected this project's own reasoning about Stripe against Stripe's documentation — the second time removing an inference that was authorizing a chargeable action. The full test-mode payment lifecycle (annual, renewal, failure, recovery, cancellation, resubscription) is now verified, and Auth email delivery has been measured against a real mailbox rather than inferred. Branch `feature/billing-subscriptions`, PR #4 (`github.com/lbenyok/velemenytap/pull/4`), still open, still not merged to `master`. Nothing deployed to production.
+Last updated: 2026-09-09, after an independent round-9 review found seven defects — two high-priority billing ones — every one of which was confirmed against this branch and fixed, with each regression verified against the pre-fix behaviour as well as the fix.
+
+## Round 9: an independent review found 7 defects — all 7 confirmed, all 7 fixed (2026-09-09)
+
+An independent reviewer was given `REVIEW_REQUEST_ROUND9.md` and the branch at `53b86e8`, and returned two P1 billing defects plus five P2s, each with a reproduction. **Every one was confirmed against this branch and fixed.** Nothing was rejected — where I had a disagreement it was about scope, not validity, and is recorded per finding below.
+
+Three forward migrations: `20260909100000`, `20260909110000`, `20260909120000`. Production untouched.
+
+### R9-01 (P1) — a failed expiration left two payable Checkout Sessions
+
+On a plan switch the code expires the old Session before returning a replacement. If `expire()` threw and the follow-up `retrieve()` returned a still-open Session — or failed as well — control fell straight through to `releaseAttempt`, and the caller created a second Session. Both URLs remained payable, so a customer holding both links could complete both. The comment above the call promised the guarantee; the code never checked for it.
+
+**Fixed:** an attempt may only be released once the Session is confirmed to have LEFT the open state. `open` is the only payable state, so the test is simply whether we observed it change; anything still open, or unknown because it could not be read, fails closed and keeps the attempt for the next request to re-check.
+
+### R9-02 (P1) — activation and subscription refresh consumed each other's generations
+
+The generation pair introduced last round counts REQUESTS, not KINDS OF WORK, and two different obligations shared it. The reviewer demonstrated both directions against real PostgreSQL: an invoice activation writing only `activated_at` marked a pending subscription refresh complete and left the row clean with a stale `past_due`; and a subscription sweep marked a pending activation complete with `activated_at` still null, so a previously-paying organization could keep a grandfathered grant it should have lost.
+
+**Fixed in two parts.** Activation gets its own counter pair, so a writer may only advance the counter for work it actually performed and the dirty flag is the disjunction. And — so that part one cannot deadlock, since the sweep has no way to satisfy an activation obligation on its own — a subscription refresh that writes an `active` status now sets `activated_at` from that evidence. An `active` subscription means its first invoice was paid, which is exactly migration `20260907180000`'s own definition of the field, so this is the documented semantic rather than a workaround, and it needs no extra Stripe call.
+
+### R9-03 (P2) — customer-key rotation could race an in-flight creation
+
+Two requests can sit on opposite sides of the 23-hour retry-safe boundary. One replays the frozen key; the other, seeing a genuinely accurate empty list, rotates the identity and creates its own. Both succeed, and the database only stops the loser from overwriting the winner *after* both external objects exist. Accuracy was never the problem — a fresh list cannot prove a concurrent create will not land a moment later.
+
+**Fixed:** customer creation now has the same operation lease the checkout attempt already had. A second caller is told to stand down, and rotation — the step that declares the old key dead — is refused unless the caller holds the live lease.
+
+### R9-04 (P2) — the legacy backfill invented a key and called it retry-safe
+
+`20260908120000` gave interrupted legacy rows a RANDOM creation identity dated from `coalesce(checkout_created_at, created_at)`, which for a recent organization reads as retry-safe. But the previous billing version used a DETERMINISTIC key, `customer-create:org-ID` — so "replaying" the random replacement was not a replay at all, and Stripe would not deduplicate it. The backfill also skipped rows with no `checkout_attempt_id`, even though commit `241572f` resolved the customer *before* claiming an attempt, so an interruption there leaves exactly that shape.
+
+**Fixed:** every unresolved row is stamped with the sentinel `legacy-org-<id>`, which the application maps back to the original org-derived key, and dated from the organization's own `created_at` — the earliest moment a Customer could have existed for it. Both branches are then sound: recent rows replay the real legacy key, older ones go through the canonical enumeration over an honestly-bounded window.
+
+### R9-05 (P2) — two notification paths still read the clock before the last lock
+
+`confirm_notification_email_change` compared against `now()` (transaction-start), and the reviewer accepted an expired token by holding the row lock until it expired. `claim_negative_alert_send` captured `clock_timestamp()` after its *advisory* lock but before the card ROW lock the UPDATE takes, and recorded a reservation 1,521 ms before the lock was released — backdating the cooldown.
+
+**Fixed:** both now acquire every lock the decision depends on, then read the clock, then decide. This is the fifth instance of this class in this project, and each previous round's class-wide search missed the next one. The reason is visible here: neither case looks wrong at the statement that is wrong — one uses the correct function against the wrong instant, the other takes the deciding lock implicitly. The rule worth carrying forward is stated in the migration header: **a lock taken implicitly by the deciding statement is still a lock, and it is the easiest one to miss.**
+
+### R9-06 (P2) — the monitored sweep reported success when every reconciliation failed
+
+The route returned 200 unconditionally, and the workflow's `curl -fsS` reads only the status. A run in which Stripe was unreachable and every organization errored left the job green. No work was lost — the dirty flags are durable — but "no work lost" and "the operator has been told" are different guarantees, and only the first held.
+
+**Fixed:** genuine errors return 500. `deferred` deliberately does not: lease contention is normal and self-correcting, so ordinary concurrency cannot turn into a page.
+
+### R9-07 (P2) — reconciliation treated the first 100 subscriptions as the whole history
+
+`subscriptions.list` was called once with `limit: 100` and `has_more` was ignored, so an older but still ACTIVE subscription behind 100 newer terminal ones would never be seen and entitlement would be written as canceled.
+
+**Fixed:** the history is paged through to completion. Exhausting a 20-page cap is NOT treated as "this is the whole set" — it fails the reconciliation, leaving the organization dirty for the sweep rather than deciding entitlement from a prefix.
+
+### On the reviewer's documentation ledger
+
+Several entries are fair and are now corrected in place: the `getOrCreateStripeCustomerId` comment claiming Search is the source of truth (it is not, and has not been since the enumeration landed), the "registered before any Stripe call" wording (the webhook's identity-resolution retrieval precedes the shared reconciler), and the claim that unrecorded Sessions have expired after 23 hours (that conflates attempt age with Session expiry — Stripe's default is 24 hours from Session creation, and this app sets no explicit `expires_at`).
+
+The ledger's broader point stands and is worth keeping: **this repository can verify its own consistency, not the state of external accounts.** Where a claim is about a Vercel, Supabase or Stripe setting, it is reported evidence unless someone re-read it that day.
+
+### Verification
+
+- `npm run test` — **572/572** across 26 files.
+- `scripts/verify-local-database.mjs` — **34 checks** against real PostgreSQL 17, all 39 migrations.
+- `npm run typecheck` / `lint` / `build` — clean.
+- Full isolated browser suite — **187/187 passed, zero failed, zero skipped**. One pre-existing test in that suite had to be inverted: it asserted that an activation write advanced `billing_sync_completed`, i.e. it encoded the very coupling R9-02 identified as the defect. It now asserts the opposite.
+- **Every one of the seven fixes is mutation-tested**: each regression was run against the pre-fix behaviour and fails there, then passes against the fix. A test that has only ever been green proves nothing about the bug it names.
 
 ## Fifth round, part three: a second, stricter pass on the same reasoning, and the rest of the lifecycle (2026-09-08)
 

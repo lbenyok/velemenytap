@@ -34,7 +34,7 @@ async function billingRow(orgId: number) {
   const { data, error } = await admin
     .from("organization_billing")
     .select(
-      "checkout_attempt_id, checkout_attempt_interval, checkout_attempt_price_id, checkout_owner_token, checkout_request, checkout_created_at, pending_checkout_session_id, checkout_attempt_expires_at, reconciliation_lease_owner, reconciliation_lease_expires_at, needs_reconciliation, billing_sync_requested, billing_sync_completed, billing_sync_last_attempt_at, billing_sync_last_error, last_synced_at, stripe_customer_id, stripe_subscription_id, status",
+      "checkout_attempt_id, checkout_attempt_interval, checkout_attempt_price_id, checkout_owner_token, checkout_request, checkout_created_at, pending_checkout_session_id, checkout_attempt_expires_at, reconciliation_lease_owner, reconciliation_lease_expires_at, needs_reconciliation, billing_sync_requested, billing_sync_completed, billing_sync_last_attempt_at, billing_sync_last_error, activation_requested, activation_completed, activated_at, last_synced_at, stripe_customer_id, stripe_subscription_id, status",
     )
     .eq("organization_id", orgId)
     .single();
@@ -413,6 +413,7 @@ test.describe("reconciliation lease -- real exclusive-ownership behavior", () =>
       p_organization_id: member.orgId,
       p_owner: ownerA,
       p_requested_generation: claimA.data![0].requested_generation,
+      p_activation_generation: claimA.data![0].activation_generation,
       p_stripe_customer_id: "cus_1",
       p_stripe_subscription_id: "sub_observed_at_time_1",
       p_status: "past_due",
@@ -432,6 +433,7 @@ test.describe("reconciliation lease -- real exclusive-ownership behavior", () =>
       p_organization_id: member.orgId,
       p_owner: ownerB,
       p_requested_generation: claimB.data![0].requested_generation,
+      p_activation_generation: claimB.data![0].activation_generation,
       p_stripe_customer_id: "cus_1",
       p_stripe_subscription_id: "sub_observed_at_time_2",
       p_status: "active",
@@ -459,6 +461,7 @@ test.describe("reconciliation lease -- real exclusive-ownership behavior", () =>
       p_organization_id: member.orgId,
       p_owner: "not_the_real_owner",
       p_requested_generation: claim.data![0].requested_generation,
+      p_activation_generation: claim.data![0].activation_generation,
       p_stripe_customer_id: "cus_1",
       p_stripe_subscription_id: "sub_should_not_stick",
       p_status: "active",
@@ -551,6 +554,7 @@ test.describe("reconciliation lease -- real exclusive-ownership behavior", () =>
       p_organization_id: member.orgId,
       p_owner: "wrong",
       p_requested_generation: generation,
+      p_activation_generation: claim.data![0].activation_generation,
     });
     expect(wrongClear.data).toBe(false);
     const stillHeld = await billingRow(member.orgId);
@@ -561,6 +565,7 @@ test.describe("reconciliation lease -- real exclusive-ownership behavior", () =>
       p_organization_id: member.orgId,
       p_owner: owner,
       p_requested_generation: generation,
+      p_activation_generation: claim.data![0].activation_generation,
     });
     expect(realClear.data).toBe(true);
     const cleared = await billingRow(member.orgId);
@@ -615,6 +620,7 @@ test.describe("generation counters -- an event arriving DURING a reconciliation 
       p_organization_id: member.orgId,
       p_owner: ownerA,
       p_requested_generation: generationA,
+      p_activation_generation: claimA.data![0].activation_generation,
       p_stripe_customer_id: "cus_generation",
       p_stripe_subscription_id: "sub_stale_observation",
       p_status: "past_due",
@@ -638,6 +644,7 @@ test.describe("generation counters -- an event arriving DURING a reconciliation 
       p_organization_id: member.orgId,
       p_owner: claimC.data![0].owner_token,
       p_requested_generation: claimC.data![0].requested_generation,
+      p_activation_generation: claimC.data![0].activation_generation,
       p_stripe_customer_id: "cus_generation",
       p_stripe_subscription_id: "sub_current_observation",
       p_status: "active",
@@ -652,25 +659,45 @@ test.describe("generation counters -- an event arriving DURING a reconciliation 
     expect(afterC.billing_sync_completed).toBe(2);
   });
 
-  test("write_activation applies the same generation rule -- an in-flight request survives an activation write", async () => {
+  /**
+   * R9-02 (round-9 review, P1), at the hosted level.
+   *
+   * This test previously asserted that an activation write advanced
+   * `billing_sync_completed` -- i.e. it encoded the very coupling that was the
+   * defect. One generation pair counted REQUESTS, not KINDS OF WORK, so an
+   * activation (which never looks at the subscription) could mark a pending
+   * subscription refresh complete and leave the row clean with a stale status.
+   *
+   * The assertion is now the opposite, and is the property that matters: an
+   * activation advances ONLY the activation counter, and a pending refresh
+   * stays pending.
+   */
+  test("R9-02: an activation write discharges only the ACTIVATION obligation, never a pending refresh", async () => {
     member = await seedOrgWithMember("billing-concurrency-generation-activation");
     const admin = adminClient();
 
+    // A subscription refresh is requested and left outstanding...
     await admin.rpc("request_billing_reconciliation", { p_organization_id: member.orgId });
+    // ...and an activation is requested on its own obligation.
+    await admin.rpc("request_billing_activation", { p_organization_id: member.orgId });
     const claim = await admin.rpc("claim_reconciliation_lease", { p_organization_id: member.orgId, p_lease_seconds: 30 });
-    await admin.rpc("request_billing_reconciliation", { p_organization_id: member.orgId });
 
     const applied = await admin.rpc("write_activation", {
       p_organization_id: member.orgId,
       p_owner: claim.data![0].owner_token,
       p_requested_generation: claim.data![0].requested_generation,
+      p_activation_generation: claim.data![0].activation_generation,
     });
     expect(applied.data).toBe(true);
 
     const row = await billingRow(member.orgId);
+    // The activation did its own work...
+    expect(row.activated_at).not.toBeNull();
+    expect(row.activation_completed).toBe(1);
+    // ...and did NOT claim to have refreshed a subscription it never read.
+    expect(row.billing_sync_completed).toBe(0);
+    expect(row.billing_sync_requested).toBe(1);
     expect(row.needs_reconciliation).toBe(true);
-    expect(row.billing_sync_completed).toBe(1);
-    expect(row.billing_sync_requested).toBe(2);
   });
 
   test("fail_billing_reconciliation records the reason, frees the lease, and leaves the work outstanding", async () => {

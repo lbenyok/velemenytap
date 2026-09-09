@@ -117,8 +117,8 @@ async function claimLease(client, id, seconds = 120) {
 
 async function writeResult(client, id, lease, subscription = "sub_current", status = "active") {
   const result = await client.query(
-    "select public.write_reconciliation_result($1,$2,$3,$4,$5,$6,null,false) as ok",
-    [id, lease.owner_token, lease.requested_generation, `cus_${id}`, subscription, status],
+    "select public.write_reconciliation_result($1,$2,$3,$4,$5,$6,$7,null,false) as ok",
+    [id, lease.owner_token, lease.requested_generation, lease.activation_generation, `cus_${id}`, subscription, status],
   );
   return result.rows[0].ok;
 }
@@ -282,14 +282,17 @@ try {
   ]);
   const cA = claimA.rows[0];
   const cB = claimB.rows[0];
-  // Concurrent callers must share ONE creation identity, so the idempotency
-  // key they each send is the same and Stripe deduplicates them against
-  // each other -- without this application serializing the network calls.
+  // They still share ONE creation identity -- but R9-03: exactly one of them
+  // may hold the creation OPERATION lease. Letting both proceed is what let a
+  // caller on the far side of the 23-hour boundary rotate the key out from
+  // under an in-flight create, producing two Customers.
   assert.equal(cA.creation_id, cB.creation_id);
   assert.ok(cA.creation_id);
+  assert.equal([cA, cB].filter((c) => c.owner_token).length, 1, "exactly one creation owner");
   assert.equal(cA.customer_id, null);
-  assert.equal(cA.retry_safe, true);
-  pass("concurrent customer-creation claims share one frozen identity, inside the retry-safe window");
+  const creationOwner = cA.owner_token ? cA : cB;
+  assert.equal(creationOwner.retry_safe, true);
+  pass("concurrent customer-creation claims share one identity and exactly one operation lease");
 
   // A wrong identity may not record, and the right one is idempotent.
   assert.notEqual(
@@ -301,26 +304,31 @@ try {
   // Rotation must be refused while the frozen key is still live -- that key
   // is the only thing preventing a duplicate in this window.
   assert.equal(
-    (await client.query("select public.rotate_stripe_customer_creation($1,$2) as id", [customerOrg, cA.creation_id])).rows[0].id,
+    (await client.query("select public.rotate_stripe_customer_creation($1,$2,$3) as id", [customerOrg, cA.creation_id, creationOwner.owner_token])).rows[0].id,
     null,
   );
   pass("rotation is refused inside the retry-safe window, where the frozen key is still the protection");
 
   // Age the attempt past the key's documented lifetime.
   await client.query(
-    "update public.organization_billing set customer_creation_started_at = clock_timestamp() - interval '30 hours' where organization_id=$1",
+    "update public.organization_billing set customer_creation_started_at = clock_timestamp() - interval '30 hours', customer_creation_lease_owner = null, customer_creation_lease_expires_at = null where organization_id=$1",
     [customerOrg],
   );
   const aged = (await client.query("select * from public.claim_stripe_customer_creation($1)", [customerOrg])).rows[0];
   assert.equal(aged.creation_id, cA.creation_id);
   assert.equal(aged.retry_safe, false);
 
-  // Only the holder of the current identity may retire it.
+  // Only the holder of the current identity AND its live lease may retire it.
   assert.equal(
-    (await client.query("select public.rotate_stripe_customer_creation($1,$2) as id", [customerOrg, "someone_elses_identity"])).rows[0].id,
+    (await client.query("select public.rotate_stripe_customer_creation($1,$2,$3) as id", [customerOrg, "someone_elses_identity", aged.owner_token])).rows[0].id,
     null,
   );
-  const rotated = (await client.query("select public.rotate_stripe_customer_creation($1,$2) as id", [customerOrg, cA.creation_id])).rows[0].id;
+  // R9-03: the right identity but somebody else's lease is refused too.
+  assert.equal(
+    (await client.query("select public.rotate_stripe_customer_creation($1,$2,$3) as id", [customerOrg, cA.creation_id, "not_the_lease_owner"])).rows[0].id,
+    null,
+  );
+  const rotated = (await client.query("select public.rotate_stripe_customer_creation($1,$2,$3) as id", [customerOrg, cA.creation_id, aged.owner_token])).rows[0].id;
   assert.ok(rotated);
   assert.notEqual(rotated, cA.creation_id);
   // And the retired identity is genuinely dead: it can no longer record.
@@ -341,7 +349,7 @@ try {
   assert.equal(resolved.customer_id, "cus_real");
   assert.equal(resolved.creation_id, null);
   assert.equal(
-    (await client.query("select public.rotate_stripe_customer_creation($1,$2) as id", [customerOrg, rotated])).rows[0].id,
+    (await client.query("select public.rotate_stripe_customer_creation($1,$2,$3) as id", [customerOrg, rotated, aged.owner_token])).rows[0].id,
     null,
   );
   // Recording a DIFFERENT customer over a resolved one is refused.
@@ -411,7 +419,7 @@ try {
 
   const confirming = await claimLease(client, syncOrg);
   assert.equal(
-    (await client.query("select public.clear_reconciliation_dirty($1,$2,$3) as ok", [syncOrg, confirming.owner_token, confirming.requested_generation])).rows[0].ok,
+    (await client.query("select public.clear_reconciliation_dirty($1,$2,$3,$4) as ok", [syncOrg, confirming.owner_token, confirming.requested_generation, confirming.activation_generation])).rows[0].ok,
     true,
   );
   state = await billing(client, syncOrg);
@@ -423,9 +431,71 @@ try {
   // still survive -- the same generation rule, on the clean path.
   const clearing = await claimLease(client, syncOrg);
   await second.query("select public.request_billing_reconciliation($1)", [syncOrg]);
-  await client.query("select public.clear_reconciliation_dirty($1,$2,$3)", [syncOrg, clearing.owner_token, clearing.requested_generation]);
+  await client.query("select public.clear_reconciliation_dirty($1,$2,$3,$4)", [syncOrg, clearing.owner_token, clearing.requested_generation, clearing.activation_generation]);
   assert.equal((await billing(client, syncOrg)).needs_reconciliation, true);
   pass("confirmed-clean also refuses to discard a request that arrived while it held the lease");
+
+  // ------------------------- R9-02: obligations are not interchangeable
+  // An independent round-9 review reproduced, against real SQL, that one
+  // shared generation pair let either kind of work mark the other kind's
+  // pending requests complete. Both directions are pinned here.
+  const obligationOrg = await org(client, "obligation-separation");
+  await seedCustomer(client, obligationOrg);
+
+  // Direction 1: an activation must not discharge a pending subscription
+  // refresh. A refresh writes an older observation while a newer request
+  // arrives, correctly leaving work outstanding; an activation then claims
+  // a higher generation and writes only activated_at.
+  await client.query("select public.request_billing_reconciliation($1)", [obligationOrg]);
+  const refreshLease = await claimLease(client, obligationOrg);
+  await second.query("select public.request_billing_reconciliation($1)", [obligationOrg]);
+  assert.equal(await writeResult(client, obligationOrg, refreshLease, "sub_stale", "past_due"), true);
+  let obligationRow = await billing(client, obligationOrg);
+  assert.equal(obligationRow.needs_reconciliation, true);
+
+  await client.query("select public.request_billing_activation($1)", [obligationOrg]);
+  const activationLease = await claimLease(client, obligationOrg);
+  assert.equal(
+    (await client.query("select public.write_activation($1,$2,$3,$4) as ok", [obligationOrg, activationLease.owner_token, activationLease.requested_generation, activationLease.activation_generation])).rows[0].ok,
+    true,
+  );
+  obligationRow = await billing(client, obligationOrg);
+  assert.ok(obligationRow.activated_at, "activation did its own work");
+  assert.equal(obligationRow.status, "past_due", "activation must not have touched subscription state");
+  // The pending refresh is STILL pending -- this is the assertion that
+  // fails against the pre-fix shared counter.
+  assert.ok(
+    Number(obligationRow.billing_sync_requested) > Number(obligationRow.billing_sync_completed),
+    "an activation must not mark a pending subscription refresh complete",
+  );
+  assert.equal(obligationRow.needs_reconciliation, true);
+  pass("an activation cannot discharge a pending subscription refresh it never looked at");
+
+  // Direction 2: a subscription refresh must not silently discharge a
+  // pending activation either -- unless it obtains the evidence itself.
+  const activationOrg = await org(client, "pending-activation");
+  await seedCustomer(client, activationOrg);
+  await client.query("select public.request_billing_activation($1)", [activationOrg]);
+  const sweepLease = await claimLease(client, activationOrg);
+  assert.equal(await writeResult(client, activationOrg, sweepLease, "sub_cancelled", "canceled"), true);
+  let activationRow = await billing(client, activationOrg);
+  assert.equal(activationRow.activated_at, null);
+  assert.equal(
+    activationRow.needs_reconciliation,
+    true,
+    "a non-active refresh leaves the pending activation outstanding",
+  );
+  pass("a subscription refresh cannot discharge a pending activation it never evidenced");
+
+  // ...but an `active` status IS the evidence, so the same write settles it
+  // and the organization does not livelock waiting for an invoice event that
+  // may never be redelivered.
+  const evidenceLease = await claimLease(client, activationOrg);
+  assert.equal(await writeResult(client, activationOrg, evidenceLease, "sub_live", "active"), true);
+  activationRow = await billing(client, activationOrg);
+  assert.ok(activationRow.activated_at, "an active subscription evidences activation");
+  assert.equal(activationRow.needs_reconciliation, false);
+  pass("an `active` subscription discharges the activation obligation from evidence already held");
 
   // -------------------------------------------------- staleness candidates
   const missed = await org(client, "completely-missed-webhook");
@@ -485,6 +555,59 @@ try {
   }
   pass("lease-timed checkout writes reject ownership that expires while waiting for a row lock");
 
+  // ------------------------- R9-05: time read after EVERY lock, not some
+  // A round-9 review reproduced two survivors of the now()/clock_timestamp()
+  // class by holding a row lock across the deciding statement. Both are
+  // pinned here the same way: block the write, let the relevant instant pass
+  // while it waits, then assert the decision reflects reality.
+  const alertOrg = await org(client, "alert-cooldown-lock");
+  const alertLoc = (await client.query("insert into public.locations(organization_id,name) values($1,'L') returning id", [alertOrg])).rows[0].id;
+  const alertCard = (await client.query("insert into public.nfc_cards(organization_id,location_id) values($1,$2) returning id", [alertOrg, alertLoc])).rows[0].id;
+
+  await third.query("begin");
+  await third.query("select 1 from public.nfc_cards where id=$1 for update", [alertCard]);
+  const claimPromise = second.query("select public.claim_negative_alert_send($1,5,30) as id", [alertCard]);
+  await waitForDbLock(client, secondPid);
+  const beforeRelease = (await client.query("select clock_timestamp() as t")).rows[0].t;
+  await client.query("select pg_sleep(1.2)");
+  await third.query("commit");
+  assert.ok((await claimPromise).rows[0].id, "the claim itself still succeeds");
+  const reservedAt = (await client.query("select last_negative_alert_at from public.nfc_cards where id=$1", [alertCard])).rows[0].last_negative_alert_at;
+  // Pre-fix this was stamped with an instant captured before the wait, so it
+  // landed BEFORE the lock was even released -- shortening the real cooldown.
+  assert.ok(
+    reservedAt.getTime() >= beforeRelease.getTime(),
+    `alert reservation was backdated to before the lock wait ended (${reservedAt.toISOString()} < ${beforeRelease.toISOString()})`,
+  );
+  pass("a negative-alert reservation is stamped after its card row lock, not before the wait");
+
+  const confirmOrg = await org(client, "confirm-expiry-lock");
+  // The same guard the real RPCs set -- prevent_direct_notification_email_change
+  // exists precisely so this column set cannot be written without it.
+  await client.query("begin");
+  await client.query("select set_config('app.allow_notification_email_change','true',true)");
+  await client.query(
+    "update public.organizations set notification_email_pending='new@velemenytap.hu', notification_email_pending_token_hash=encode(extensions.digest('tok-r905','sha256'),'hex'), notification_email_pending_expires_at=clock_timestamp()+interval '1.5 seconds' where id=$1",
+    [confirmOrg],
+  );
+  await client.query("commit");
+  await third.query("begin");
+  await third.query("select 1 from public.organizations where id=$1 for update", [confirmOrg]);
+  const confirmPromise = second.query("select public.confirm_notification_email_change($1) as id", ["tok-r905"]);
+  await waitForDbLock(client, secondPid);
+  // Let the token genuinely expire while the call is blocked.
+  await client.query("select pg_sleep(2.5)");
+  await third.query("commit");
+  assert.equal(
+    (await confirmPromise).rows[0].id,
+    null,
+    "a token that expired while the call waited for the row lock must be rejected",
+  );
+  const stillPending = (await client.query("select notification_email, notification_email_pending from public.organizations where id=$1", [confirmOrg])).rows[0];
+  assert.equal(stillPending.notification_email, null, "the expired token must not have promoted the address");
+  assert.ok(stillPending.notification_email_pending, "the pending address is left for a fresh request");
+  pass("a notification-email token that expires during a lock wait is rejected, not accepted");
+
   // --------------------------------------------- the product's own invariant
   const feedbackOrg = await org(client, "public-feedback-proof");
   const location = (
@@ -539,6 +662,7 @@ try {
     "finish_checkout_operation",
     "release_checkout_attempt",
     "request_billing_reconciliation",
+    "request_billing_activation",
     "claim_reconciliation_lease",
     "renew_reconciliation_lease",
     "write_reconciliation_result",

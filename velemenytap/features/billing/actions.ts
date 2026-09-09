@@ -220,11 +220,22 @@ async function releaseAttempt(
  * attempt that was never persisted locally (a crash between the two)
  * could therefore create a genuine SECOND Stripe Customer once the
  * original key has expired, not be deduplicated by Stripe at all. Fixed
- * with a durable recovery step: before ever creating, search Stripe
- * directly for a customer already carrying this organization's id in its
- * metadata -- this is the actual source of truth "does a customer already
- * exist for this organization," independent of both the local database
- * AND the idempotency key's own retention window.
+ * with a durable recovery step.
+ *
+ * R9 ledger correction: an earlier version of this comment said Search is
+ * "the actual source of truth" consulted "before ever creating". Neither is
+ * true of the code any more, and saying so invited exactly the mistake the
+ * round-9 review had to catch twice. What actually happens:
+ *
+ *   * Inside the retry-safe window the frozen key IS the protection, and
+ *     Search is not consulted at all -- consulting it there would be the
+ *     read-after-write use Stripe explicitly rules out.
+ *   * Outside it, Search is a positive-only probe (its documented weakness
+ *     is staleness, so it can only produce false negatives), and creation is
+ *     authorized solely by a COMPLETED `customers.list` enumeration over the
+ *     bounded window the attempt could have created in.
+ *   * Neither establishes that a CONCURRENT request will not create one a
+ *     moment later -- that is what the creation lease is for (R9-03).
  *
  * Also fixed: the create() call's own parameters must be STABLE across
  * every retry sharing the same idempotency key, or Stripe rejects the
@@ -276,7 +287,17 @@ async function getOrCreateStripeCustomerId(
   if (claim.customer_id) {
     return claim.customer_id;
   }
+  // R9-03: another request is mid-creation for this organization. Standing
+  // down is the point -- a fresh list cannot prove that an in-flight create
+  // will not land a moment later, so racing it is exactly how two Customers
+  // get made.
+  if (!claim.owner_token) {
+    throw new Error(
+      `A Stripe customer is already being created for organization ${organizationId} -- try again in a moment.`,
+    );
+  }
 
+  const creationOwner = claim.owner_token;
   let creationId = claim.creation_id!;
   let customerId: string;
 
@@ -317,6 +338,7 @@ async function getOrCreateStripeCustomerId(
       const { data: rotated, error: rotateError } = await admin.rpc("rotate_stripe_customer_creation", {
         p_organization_id: organizationId,
         p_creation_id: creationId,
+        p_owner_token: creationOwner,
       });
       if (rotateError) {
         throw new Error(`Failed to rotate the Stripe customer creation key for organization ${organizationId}: ${rotateError.message}`);
@@ -479,6 +501,21 @@ async function findExistingCustomer(
  * by a separate, ordinary update() afterwards, which carries no idempotency
  * constraint and is safe to repeat with whatever the current name is.
  */
+/**
+ * R9-04: a creation identity backfilled by migration 20260909120000 stands for
+ * a key the PREVIOUS billing version already used -- `customer-create:org-ID`,
+ * which was derived from the organization id rather than randomly. Replaying
+ * the random replacement the first backfill invented would not have been a
+ * replay at all, so Stripe would not have deduplicated it and an unrecorded
+ * legacy Customer would have been duplicated. Mapping the sentinel back to the
+ * original key makes the replay genuine.
+ */
+function idempotencyKeyFor(organizationId: number, creationId: string): string {
+  return creationId === `legacy-org-${organizationId}`
+    ? `customer-create:org-${organizationId}`
+    : `customer-create:${creationId}`;
+}
+
 async function createStripeCustomer(
   stripe: Stripe,
   organizationId: number,
@@ -487,7 +524,7 @@ async function createStripeCustomer(
 ): Promise<string> {
   const customer = await stripe.customers.create(
     { metadata: { organization_id: organizationId.toString() } },
-    { idempotencyKey: `customer-create:${creationId}` },
+    { idempotencyKey: idempotencyKeyFor(organizationId, creationId) },
   );
   try {
     await stripe.customers.update(customer.id, { name: organizationName });
@@ -615,6 +652,32 @@ async function reconcileExistingSession(
     }
   }
 
+  // R9-01 (independent round-9 review, P1). Releasing the attempt is what
+  // permits the caller to create a REPLACEMENT Session, so it may only
+  // happen once this one is confirmed to have left the payable state.
+  //
+  // The block above tries to expire an open Session, but expire() can throw
+  // (a Stripe incident, a timeout) and the follow-up retrieve() can fail
+  // too. Both of those used to fall through to the release below, which
+  // handed the customer a second payable URL while the first was still
+  // open -- exactly the duplicate-subscription outcome the expire call
+  // exists to prevent. The comment claimed the guarantee; the code did not
+  // check for it.
+  //
+  // `open` is the only payable state, so the test is simply whether we
+  // OBSERVED it leaving. `expired` and `complete` are both terminal for
+  // payment purposes -- a complete-but-unpaid Session cannot be paid again
+  // either, and the subscription it may have created is picked up by
+  // reconciliation, not by this path. Anything still open, or unknown
+  // because we could not read it, fails closed: the attempt and its
+  // recorded Session are kept, and the next request re-checks them.
+  if (existing.status === "open") {
+    throw new Error(
+      `Could not confirm that the previous Checkout Session for organization ${organizationId} is no longer ` +
+        "payable, so a replacement was not created -- try again in a moment.",
+    );
+  }
+
   await releaseAttempt(admin, organizationId, claim.attemptId, ownerToken);
   return { done: false };
 }
@@ -678,9 +741,16 @@ async function claimAndCreateCheckoutSession(
     // Taking over an attempt that recorded no Session, and that is either
     // for a different plan than the one now requested, or old enough that
     // Stripe may no longer remember its idempotency key (so replaying it
-    // would no longer be deduplicated). Discarding it costs nothing --
-    // there is no recorded Session to lose, and any unrecorded Session it
-    // could have created has expired on Stripe's side by then anyway.
+    // would no longer be deduplicated).
+    //
+    // R9 ledger correction: this used to add "and any unrecorded Session it
+    // could have created has expired on Stripe's side by then anyway."
+    // That conflated the ATTEMPT's age with the SESSION's expiry. They are
+    // different clocks -- this app sets no explicit `expires_at`, so Stripe's
+    // default is 24 hours from SESSION creation, not from when the attempt
+    // was minted. The claim was not established and is withdrawn. What is
+    // actually true is narrower: there is no RECORDED Session to lose here,
+    // so discarding the attempt costs nothing that this app can see.
     await releaseAttempt(admin, organizationId, claim.attemptId, claim.ownerToken);
     claim = await claimAttempt(admin, organizationId, interval, priceId, request);
     if (!claim.ownerToken) {

@@ -100,5 +100,23 @@ export async function POST(request: NextRequest) {
     results.push({ organizationId: row.organization_id, outcome: result.outcome });
   }
 
-  return NextResponse.json({ swept: results.length, results });
+  // R9-06 (round-9 review): this used to return 200 unconditionally, so a run
+  // in which Stripe was unreachable and EVERY reconciliation returned `error`
+  // still left the scheduled workflow green. `curl -fsS` checks the HTTP
+  // status, not the body, so the one signal the monitor actually reads said
+  // nothing was wrong. The durable dirty flags meant no work was lost -- but
+  // "no work lost" and "the operator has been told" are different guarantees,
+  // and only the first was true.
+  //
+  // `deferred` is deliberately NOT a failure: it means another writer holds
+  // the lease, which is normal contention and self-correcting. Only genuine
+  // errors are escalated, so this cannot turn ordinary concurrency into a
+  // page.
+  const errors = results.filter((r) => r.outcome === "error").length;
+  if (errors > 0) {
+    console.error(`Reconciliation sweep: ${errors} of ${results.length} organizations failed to reconcile.`);
+    return NextResponse.json({ swept: results.length, errors, results }, { status: 500 });
+  }
+
+  return NextResponse.json({ swept: results.length, errors: 0, results });
 }
