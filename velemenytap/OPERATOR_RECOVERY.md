@@ -58,10 +58,26 @@ complete. Retrying reproduces the same incomplete answer forever.
    recorded — that is the case that needs a real search.
 
 2. **Quiesce first.** Do not repair while a worker may still be running.
-   Confirm `customer_creation_lease_expires_at` is in the past, then wait
-   another few minutes. **Lease expiry does not prove an earlier request cannot
-   still reach Stripe** — a paused process can resume at any time — so the
-   final write in step 4 is conditional, and you re-check before committing.
+   Confirm `customer_creation_lease_expires_at` is in the past.
+
+   **Waiting is not proof.** An earlier draft of this step said to wait "another
+   few minutes", which reads as though elapsed time establishes quiescence. It
+   does not, and the round-11 review was right to reject it: lease expiry proves
+   only that the database will refuse that worker's *writes*. It says nothing
+   about a request already in flight at Stripe, and a suspended process can
+   resume at any time. Expected-state database writes do not cancel external
+   requests.
+
+   What actually establishes quiescence is looking at the workers: confirm no
+   deployment instance is still running that request (check the deployment's
+   own logs or metrics for that organization), or that every instance which
+   could have been has since restarted. Where you cannot establish it, say so
+   and prefer the non-destructive branch — adopting an existing Customer
+   (step 4) is safe under uncertainty; retiring a key and creating a new one
+   (step 5) is not.
+
+   Every write below is conditional and re-checks the row, so a repair racing a
+   worker fails closed rather than overwriting it.
 
 3. **Enumerate to completion**, past the application's 20-page cap, using the
    canonical list endpoint rather than Search (Search lags with no documented
@@ -96,19 +112,56 @@ complete. Retrying reproduces the same incomplete answer forever.
    stop; do not force it. Then run one reconciliation (the sweep endpoint, or
    the billing page) and confirm `status` and dashboard access match Stripe.
 
-5. **If no Customer exists**, the key may still be retired and creation
-   retried. Verify step 2's quiesce again, then let the application do it:
+5. **If no Customer exists**, the key may be retired and creation retried.
+   Verify step 2's quiesce again, then prefer letting the application do it:
    clear the stale lease and let the next checkout run its normal recovery.
-   Only if that still cannot finish, rotate manually:
+
+   If it still cannot finish, rotate manually — **and note that rotation needs
+   a live claim, which the previous version of this step did not obtain.**
+   `rotate_stripe_customer_creation` requires the caller to hold the creation
+   lease, by design (R9-03): a key may only be declared dead by whoever
+   currently owns the right to declare it. Calling it with an expired lease
+   returns `null`, and so does calling it after merely clearing the lease. Both
+   were verified against the real RPC during the round-11 review; the step as
+   written could not execute.
+
+   Take a fresh claim and use **its** token:
 
    ```sql
+   -- Returns customer_id, creation_id, started_at, retry_safe,
+   -- needs_recovery, owner_token. Use the owner_token it hands back.
+   select * from public.claim_stripe_customer_creation($1, 600);
+   ```
+
+   ```sql
+   -- creation_id and owner_token BOTH from the claim above.
    select public.rotate_stripe_customer_creation($1, $2, $3);
    ```
 
-6. **Orphaned Customers** (from an `orphaned_customer` anomaly or step 3):
-   leave them in place unless finance asks otherwise. They carry no
-   subscription and cost nothing. Do not delete a Stripe Customer that has any
-   payment history.
+   **Check every result.** A `null` from rotate means it was refused, not that
+   it worked — the usual causes are a token from a different claim, a
+   `creation_id` that has since changed, or a key still inside its retry-safe
+   window (which is a protection, not a fault: a key Stripe would still
+   deduplicate must not be retired). Re-read the row and re-establish the
+   preconditions rather than retrying blindly.
+
+   The claim's lease is what keeps your repair valid while you work. Take it
+   with a duration that covers the whole repair, and if the work outlives it,
+   take a fresh claim and re-verify the row before writing — an expired lease
+   means someone else may have acted.
+
+6. **Orphaned Customers** (from an `orphaned_customer` anomaly, an
+   `unresolved_customer_creation` anomaly, or step 3): leave them in place
+   unless finance asks otherwise. They carry no subscription and cost nothing.
+   Do not delete a Stripe Customer that has any payment history.
+
+   `unresolved_customer_creation` is the weaker of the two records and means
+   what it says: this process created a Customer and could not establish which
+   Customer the organization ended up on. It is **not** a confirmed orphan.
+   Resolve it by reading the organization's current `stripe_customer_id` — if
+   it differs from `createdCustomerId`, the created one is an orphan and the
+   accompanying `orphaned_customer` row will usually say so; if the row is
+   still unresolved, finish § 1 from step 3 first.
 
 7. **Record what you did** — the evidence you gathered, the Customer you chose
    and why — on the anomaly row or your incident log.
@@ -193,6 +246,117 @@ ordinary lease contention.
 
 ---
 
+## 4. A checkout stuck on a Session with no subscription
+
+**How it surfaces.** One organization cannot start checkout. The owner sees the
+generic `checkout_failed`; the server log says the previous Session "may still
+take payment … it completed with an unresolved payment and no subscription this
+app can inspect", and a `completed_session_without_subscription` anomaly is
+written.
+
+**Why it cannot self-heal.** A completed subscription-mode Session normally
+carries the subscription it created. Without one there is nothing to inspect,
+so the code cannot establish that the payment is dead and fails closed (§ I3).
+Retrying reproduces the same answer forever — for that organization this is a
+permanent block, not an "try again in a moment", and it needs a person.
+
+**Procedure.**
+
+1. Read the Session directly and establish what it actually is:
+
+   ```bash
+   stripe checkout sessions retrieve cs_… --expand line_items
+   ```
+
+   Check `mode` (this app only creates `subscription`), `status`,
+   `payment_status`, `subscription`, `payment_intent` and `invoice`.
+
+2. **If a subscription does exist** and the app simply could not see it (an
+   expansion or API-version difference), no repair is needed beyond confirming
+   it: run a reconciliation and let the normal path take over.
+
+3. **If there genuinely is no subscription**, determine the payment's
+   disposition from the Session's `payment_intent` / `invoice`: succeeded,
+   failed, or still processing. Still processing is not terminal — wait.
+
+4. **Only once the payment is confirmed dead or refunded**, retire that exact
+   attempt, checking the result:
+
+   ```sql
+   -- attempt_id and owner_token from a fresh claim, as in § 1 step 5.
+   select public.release_checkout_attempt($1, $2, $3);
+   ```
+
+   `release_checkout_attempt` is the only function that destroys a checkout
+   identity deliberately, and it refuses unless the attempt id and owner token
+   both match. A `false` result means the row moved: re-read and stop.
+
+5. **If the payment succeeded but produced no subscription**, that is a real
+   billing incident — the customer has been charged for nothing. Resolve it in
+   Stripe (refund, or create the subscription deliberately) before touching the
+   attempt, and record what was done.
+
+## 5. Who looks at anomalies, and how
+
+**`private.billing_anomalies` is a record, not a notification.** Nothing pushes
+it anywhere. The reconciliation backlog query (§ 3) scans
+`organization_billing` and **does not** scan this table, so an anomaly on its
+own will not page anyone.
+
+Until a real alerting path exists, this is the operational answer, and it is
+deliberately explicit because "it is recorded" was previously offered as though
+it meant "someone will know":
+
+- **Owner (the person running the business) reviews it weekly**, and
+  immediately whenever a customer reports that checkout or the dashboard is
+  wrong for them. There is one operator; pretending otherwise would be fiction.
+
+  ```sql
+  select created_at, organization_id, kind, detail
+  from private.billing_anomalies
+  order by created_at desc
+  limit 50;
+  ```
+
+- The kinds and where each is handled:
+
+  | Kind | Section |
+  |---|---|
+  | `unresolved_customer_creation` | § 1 step 6 |
+  | `orphaned_customer` | § 1 step 6 |
+  | `completed_session_without_subscription` | § 4 |
+  | `activation_request_without_evidence` | § 6 |
+  | `customer_mismatch`, `unapproved_subscription`, `duplicate_active_subscriptions` | investigate in Stripe; these predate this document |
+
+- **The owner-facing error is always generic `checkout_failed`.** A customer
+  hitting a permanent block has no way to distinguish it from a transient one,
+  so the support contact in `BUSINESS_DECISIONS.md` is the only route back —
+  which is one more reason that decision is a launch blocker rather than
+  cosmetic.
+
+## 6. An activation closed without evidence
+
+Migration `20260910100000` closed any activation left pending by the old
+two-phase design, recording an `activation_request_without_evidence` anomaly
+for each. That was the right call — such a request is unfalsifiable, and
+leaving it pending is the R10-03 livelock — but **it is a closure, not a
+recovery.**
+
+The organization may genuinely have paid. Its access is currently decided as if
+it had not. If one of these rows exists, check the Stripe Dashboard's invoice
+history for that customer, and if a paid invoice exists, activate deliberately
+through `request_billing_activation` with that invoice's real details.
+
+Related, and important when reading any pre-round-10 row: **a null
+`activation_evidence` does not prove no payment happened.** Rows latched before
+migration 40 — including ones latched by the round-9 `active`-means-paid bug —
+carry no evidence at all. Null means "not recorded", not "not paid". Do not
+clear a legitimate paid organization's latch on that basis; audit it against
+Stripe's own history first. (Production is on migration 17 and has never run
+any of this, so it has no such rows.)
+
+---
+
 ## What none of this covers
 
 An event Stripe never delivered *and* never retried, for an organization that
@@ -201,4 +365,4 @@ Stripe Dashboard's event log, or an invoice export). The repository can
 reconcile against Stripe's *current* state; it cannot reconstruct a past one it
 never saw. Where that matters — an activation whose invoice is genuinely gone
 — the evidence in `activation_evidence` is the audit record of what was
-actually verified, and its absence means no payment was ever confirmed.
+actually verified, subject to the null-evidence caveat in § 6.

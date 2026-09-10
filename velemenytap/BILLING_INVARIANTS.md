@@ -80,10 +80,28 @@ documents `complete` while a payment is still processing, and a
 
 So for a completed Session whose payment is unresolved, the decision is made
 on the **subscription it created**: only a subscription in a terminal state
-(`canceled`, `incomplete_expired`, or none ever created) releases the attempt.
-Any live or recoverable status — `incomplete`, `past_due`, `unpaid`, `active`,
+(`canceled` or `incomplete_expired`) releases the attempt. Any live or
+recoverable status — `incomplete`, `past_due`, `unpaid`, `active`,
 `trialing`, `paused` — keeps the obligation pending, and so does any failure
 to read it.
+
+**A completed Session carrying NO subscription reference also keeps the
+obligation pending.** An earlier draft of this file listed "none ever created"
+as a release condition, which the code has never done and should not: the code
+cannot establish that no subscription exists, only that it cannot see one, and
+that is uncertainty rather than proof (§ I5). It records a
+`completed_session_without_subscription` anomaly and routes to
+`OPERATOR_RECOVERY.md` § 4.
+
+**One qualification, from the round-11 review.** `incomplete_expired` has the
+strongest documented basis — Stripe voids its open invoice and generates no
+more. `canceled` is weaker than the phrase "no further money can ever be
+collected" suggests: Stripe documents surviving invoice items, final invoices
+and open invoices that can still be collected **manually**. Cancellation stops
+automatic collection; it does not universally void every financial object. This
+implementation inspects the subscription's status and no invoice or payment
+object, so treat `canceled` as "this subscription will not charge on its own",
+not as a universal proof about an already-processing payment.
 
 *Enforced:* `reconcileExistingSession` in `features/billing/actions.ts`, using
 `hasLiveSubscription`'s status set — the same set that already defines "a
@@ -128,9 +146,22 @@ know and stops, rather than picking the convenient interpretation:
   narrows the window; it does not close it. Where a stale worker can still
   create an orphaned Customer, that outcome is **detected and recorded as an
   anomaly** for the operator rather than silently discarded.
+- **What this request knows about an external object it created is written
+  down before anything that can fail.** The record of a created Customer is
+  never sequenced after a step that can throw -- R11-03 was exactly that: the
+  winner was resolved first, resolution threw in a legitimate intermediate
+  state, and the id of a real Stripe object was lost from the anomaly meant to
+  capture it. It is recorded as **unresolved** first and classified as a
+  confirmed orphan only once a different winner is actually established;
+  inventing the confirmed classification early would be R10-01 in miniature.
+- The pre-call fence requires enough lease to cover the Stripe call, using a
+  **nominal 60-second budget**. That is a working bound, not an exact worst
+  case: it does not model retry backoff or connection overhead on top of three
+  20-second HTTP attempts. Do not describe it as a proven maximum lifetime.
 
 *Enforced:* `findExistingCustomer`; the pre-call lease re-check in
-`createStripeCustomer`; the `orphaned_customer` anomaly on a rejected record.
+`createStripeCustomer`; the `unresolved_customer_creation` and
+`orphaned_customer` anomalies on a rejected record.
 *Answers:* R10-05. See `OPERATOR_RECOVERY.md` for what an operator does with
 each uncertain state.
 
@@ -143,11 +174,24 @@ check on an `INSERT`.
 
 `now()` is transaction-start time and is never correct for such a decision;
 `clock_timestamp()` read too early is equally wrong. This class has now been
-found in five separate rounds, always at a statement that does not look like a
-lock.
+found in **six** separate rounds, always at a statement that does not look like
+a lock.
 
-Lock order, to keep this deadlock-free: **`nfc_cards` -> `locations` ->
+Lock order, for the application's own paths: **`nfc_cards` -> `locations` ->
 `organizations`**, matching `submit_feedback_atomic`'s existing join order.
+
+**Two limits on that claim, both established by the round-11 review rather than
+asserted here.** First, it covers the application's own functions; an
+administrative `DELETE` on `organizations` takes parent-to-child cascade locks
+in the opposite direction and was demonstrated to deadlock against a concurrent
+feedback submission (SQLSTATE 40P01). There is no ordinary application path
+that deletes an organization, and the *implicit* foreign-key check this
+replaced could produce the same cycle — but "deadlock-free" is false as a
+universal statement, and administrative deletion needs quiescence or retry
+handling. Second, the class is not provably absent: what is true is that every
+writer whose decision is a cooldown, budget, rate limit, lease or expiry has
+been audited and fixed. A future addition can reintroduce it, and five previous
+rounds each declared this closed before the next instance was found.
 
 *Enforced:* `submit_feedback_atomic`, `claim_negative_alert_send`,
 `reserve_notification_email_change`, and the billing lease writers.
@@ -174,6 +218,19 @@ that work is *stuck*. Those are different guarantees and both are required.
 An organization that has been dirty for longer than the backlog threshold is
 reported by the sweep as an operator-visible failure, separately from ordinary
 per-run errors. Ordinary `deferred` contention stays non-fatal.
+
+**What that threshold does and does not mean.** It is an **elapsed-age signal**,
+not evidence that any number of sweeps ran and failed: scheduled executions can
+be delayed, can be absent, or can never have been configured at all — and an
+unconfigured scheduler is precisely a case where nothing would ever be reported.
+Do not read "dirty for an hour" as "four sweeps failed".
+
+**An anomaly row is not a notification either.** The backlog query scans
+`organization_billing`; it does not scan `private.billing_anomalies`. Orphaned
+customers, unresolved creations, missing subscription references and
+legacy-activation records are written where an operator can find them, not
+pushed anywhere. `OPERATOR_RECOVERY.md` § 5 names who is expected to look and
+how often.
 
 *Enforced:* `get_billing_reconciliation_backlog`, surfaced by
 `/api/admin/reconcile-billing-sweep`.

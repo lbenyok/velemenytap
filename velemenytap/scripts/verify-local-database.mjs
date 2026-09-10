@@ -621,6 +621,116 @@ try {
   assert.equal(relatched.activation_evidence.paid_at, paidAt, "nor overwrite the evidence that set it");
   pass("activation is idempotent: a redelivered invoice cannot re-date the ever-paid latch");
 
+  // ------------------------- R11-02: activation registers a REAL obligation
+  //
+  // The interleaving round 10's own tests missed: a reconciler that has
+  // ALREADY read Stripe, and whose write lands after the payment. Round 10
+  // registered the payment-triggered refresh with needs_reconciliation alone,
+  // never advancing the generation -- so the stale writer's older generation
+  // still matched, its dirty predicate came out false, and it cleared the flag
+  // for an organization that had just paid.
+  const raceOrg = await org(client, "activation-during-reconciliation");
+  await seedCustomer(client, raceOrg);
+
+  // The reconciler claims the lease and reads Stripe -- observing past_due.
+  const staleLease = await claimLease(client, raceOrg);
+
+  // The payment lands while it is still holding that observation.
+  await activate(client, raceOrg);
+  const midRace = await billing(client, raceOrg);
+  assert.ok(midRace.activated_at, "the payment itself is recorded regardless");
+  assert.ok(
+    Number(midRace.billing_sync_requested) > Number(midRace.billing_sync_completed),
+    "activation must register the refresh as a GENERATION, not just a flag",
+  );
+
+  // Now the stale writer commits its pre-payment observation.
+  assert.equal(await writeResult(client, raceOrg, staleLease, `sub_stale_${raceOrg}`, "past_due"), true);
+  const afterStale = await billing(client, raceOrg);
+  assert.equal(afterStale.status, "past_due", "the stale observation is written, which is expected");
+  assert.equal(
+    afterStale.needs_reconciliation,
+    true,
+    "but it must NOT discharge the refresh the payment asked for -- a paid organization would sit past_due",
+  );
+  assert.ok(afterStale.activated_at, "and the payment latch survives either way");
+  pass("a payment arriving mid-reconciliation is not silently discharged by the stale writer");
+
+  // ---------------------- R11-01: reconciliation may not forget a Checkout
+  //
+  // The P1. write_reconciliation_result cleared checkout_attempt_id, the
+  // stored request and pending_checkout_session_id on EVERY successful
+  // refresh, without inspecting that Session or relating it to the
+  // subscription being written. A refresh of an organization's OLD canceled
+  // subscription therefore erased a live, open Checkout -- and the next
+  // attempt, finding no recorded Session, created a second payable one.
+  //
+  // 20260908100000's own comment calls losing that pointer "the one outcome
+  // this whole design exists to prevent", and release_checkout_attempt claims
+  // to be "the ONLY function that destroys the idempotency-key identity".
+  // Both were false.
+  const keepOrg = await org(client, "refresh-must-not-forget-checkout");
+  await seedCustomer(client, keepOrg);
+  const liveAttempt = await checkout(client, keepOrg);
+  assert.equal(
+    (
+      await client.query("select public.record_checkout_session($1,$2,$3,$4) as ok", [
+        keepOrg,
+        liveAttempt.attempt_id,
+        liveAttempt.owner_token,
+        "cs_still_open",
+      ])
+    ).rows[0].ok,
+    true,
+  );
+  // The customer leaves the Stripe page open; the operation ends but the
+  // attempt and its Session deliberately outlive it.
+  await client.query("select public.finish_checkout_operation($1,$2,$3)", [keepOrg, liveAttempt.attempt_id, liveAttempt.owner_token]);
+
+  // An unrelated refresh of the organization's older, canceled subscription.
+  assert.equal(await writeResult(client, keepOrg, await claimLease(client, keepOrg), `sub_old_canceled_${keepOrg}`, "canceled"), true);
+  const keptRow = await billing(client, keepOrg);
+  assert.equal(keptRow.status, "canceled", "the subscription state is still written");
+  assert.equal(keptRow.pending_checkout_session_id, "cs_still_open", "the open Session pointer must survive");
+  assert.equal(keptRow.checkout_attempt_id, liveAttempt.attempt_id, "and so must the attempt identity it belongs to");
+  assert.ok(keptRow.checkout_request, "and the immutable request needed to replay it");
+
+  // The next attempt therefore finds the Session and reconciles it against
+  // Stripe instead of minting a second payable one.
+  const nextAttempt = await checkout(client, keepOrg);
+  assert.equal(nextAttempt.attempt_id, liveAttempt.attempt_id, "the same attempt is resumed, not replaced");
+  assert.equal(nextAttempt.existing_session_id, "cs_still_open", "and the coordinator is handed the Session to check");
+  pass("a refresh of unrelated subscription history cannot forget an open Checkout Session");
+
+  // The other half of the requirement: a genuinely abandoned claim -- one that
+  // never produced a Session and whose operation lease has expired -- is still
+  // retired, so this does not leak dead attempts forever.
+  const abandonedOrg = await org(client, "abandoned-claim-is-retired");
+  await seedCustomer(client, abandonedOrg);
+  await checkout(client, abandonedOrg);
+  await client.query(
+    "update public.organization_billing set checkout_attempt_expires_at = clock_timestamp() - interval '1 hour' where organization_id=$1",
+    [abandonedOrg],
+  );
+  assert.equal(await writeResult(client, abandonedOrg, await claimLease(client, abandonedOrg), `sub_abandoned_${abandonedOrg}`, "active"), true);
+  const abandonedRow = await billing(client, abandonedOrg);
+  assert.equal(abandonedRow.checkout_attempt_id, null, "an abandoned claim with no Session is still cleaned up");
+  pass("an abandoned checkout claim that never recorded a Session is still retired");
+
+  // And a claim that is mid-flight -- lease still live, Session not recorded
+  // yet -- is left alone, because its Stripe call may already have created a
+  // Session that simply is not written down yet.
+  const inFlightOrg = await org(client, "in-flight-claim-is-left-alone");
+  await seedCustomer(client, inFlightOrg);
+  const inFlight = await checkout(client, inFlightOrg);
+  assert.equal(await writeResult(client, inFlightOrg, await claimLease(client, inFlightOrg), `sub_inflight_${inFlightOrg}`, "active"), true);
+  assert.equal(
+    (await billing(client, inFlightOrg)).checkout_attempt_id,
+    inFlight.attempt_id,
+    "an attempt claimed after the lease was taken must not be retired mid-flight",
+  );
+  pass("a checkout still holding its operation lease is never retired by a concurrent refresh");
+
   // -------------------------------------------------- staleness candidates
   const missed = await org(client, "completely-missed-webhook");
   await seedCustomer(client, missed);

@@ -726,10 +726,48 @@ describe("createCheckoutSessionAction", () => {
 
       await redirectedTo(createCheckoutSessionAction(checkoutFormData()));
 
-      const anomaly = rpcCalls.find((c) => c.name === "record_billing_anomaly");
+      const anomaly = rpcCalls.find((c) => c.name === "record_billing_anomaly" && (c.args as { p_kind: string }).p_kind === "orphaned_customer");
       expect(anomaly?.args).toMatchObject({
         p_kind: "orphaned_customer",
         p_detail: { orphanedCustomerId: "cus_new", persistedCustomerId: "cus_winner" },
+      });
+    });
+
+    /**
+     * R11-03 (round-11 review, P2). The test above supplies a persisted winner
+     * before the anomaly is checked, so it only ever exercised the ordering in
+     * which resolution succeeds. The ordering that matters is the other one.
+     *
+     * A successor that has rotated the creation identity but not yet persisted
+     * its own Customer is a legitimate intermediate state: the persisted id is
+     * null, so resolvePersistedCustomerId THROWS. The previous code resolved
+     * first and recorded the orphan second, which meant the id of a real
+     * Stripe object this process had just created was lost from the very
+     * anomaly record offered as the answer to R10-05 -- reproduced by the
+     * review as two Customers, zero anomaly rows, zero orphan logs.
+     *
+     * The requirement: whatever this request knows about an external object it
+     * created must be written down before anything that can fail.
+     */
+    it("R11-03: a created Customer is recorded before resolution, so a throwing resolution cannot lose it", async () => {
+      queueRpc("claim_checkout_attempt", claimResult());
+      queue({ data: { stripe_customer_id: null }, error: null });
+      queueRpc("claim_stripe_customer_creation", customerClaim({ needs_recovery: false }));
+      queueRpc("record_stripe_customer", { data: false, error: null });
+      // Both reads return null: the successor has rotated but not yet
+      // persisted, so there is no winner to resolve to and resolution throws.
+      queue({ data: { stripe_customer_id: null }, error: null }, { data: { stripe_customer_id: null }, error: null });
+
+      const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData()));
+      expect(target).toContain("error=checkout_failed");
+
+      const anomaly = rpcCalls.find((c) => c.name === "record_billing_anomaly");
+      expect(anomaly?.args).toMatchObject({
+        // Deliberately NOT "orphaned_customer": at this point nothing has
+        // established a different winner, so a confirmed classification would
+        // be invented. The outcome is genuinely unknown and is recorded as such.
+        p_kind: "unresolved_customer_creation",
+        p_detail: { createdCustomerId: "cus_new", creationId: "creation_1" },
       });
     });
 

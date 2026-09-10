@@ -1,6 +1,69 @@
 # Status
 
-Last updated: 2026-09-10, after an independent round-10 review found eight defects — including that **two of round 9's own fixes were wrong**. All eight are confirmed and fixed, with each regression mutation-tested against the pre-fix behaviour.
+Last updated: 2026-09-10, after an independent round-11 review found four more defects — one P1 — and **accepted round 10's main redesigns**. All four are confirmed and fixed. The P1 was a pre-existing write that round 10 preserved faithfully and my own audit could not see.
+
+## Round 11: the redesigns hold; a pre-existing write defeated them (2026-09-10)
+
+An independent reviewer was given `REVIEW_REQUEST_ROUND11.md` and the branch at `4d5a479`, and returned **four defects — one P1 and three P2 — every one confirmed and fixed.**
+
+The important result is what it did *not* find. Round 9's fixes contained two wrong invariants; round 10's contained none. The atomic activation latch, the three lock corrections and the pagination renewals were all **accepted after independent reproduction**, including real PostgreSQL row-lock interleavings I had asked to be checked and a 48-second slow-pagination run. Two forward migrations: `20260910150000`, `20260910160000`.
+
+### R11-01 (P1) — a subscription refresh forgot an unrelated open Checkout
+
+The one that blocks launch, and the sharpest lesson of the round.
+
+`write_reconciliation_result` cleared `checkout_attempt_id`, the stored request, the ownership fields **and** `pending_checkout_session_id` on *every* successful subscription refresh — unconditionally, without inspecting that Session, proving it terminal, or relating it to the subscription being written.
+
+The reproduced flow needs no failure and no race:
+
+1. An organization with an older canceled subscription starts resubscribing; Checkout creates Session A and returns its payable URL.
+2. While A is open, a staleness sweep, delayed webhook or admin refresh reconciles the **old canceled** subscription.
+3. That write persists `canceled` and erases the unrelated open attempt.
+4. The owner clicks subscribe again. `hasLiveSubscription` allows it (status is canceled) and the claim finds no recorded Session, so **Session B is created without A ever being retrieved or expired.**
+
+Two payable Sessions, from ordinary product behaviour.
+
+**Why my own audit missed it.** After migration 40 I checked the re-created functions by extracting every `UPDATE ... SET` column from the old and new bodies and reported "no unintended loss". That was *true* — and useless here, because this cleanup was faithfully **preserved**. A column-level diff answers "did this write change" and cannot answer "is this write entitled to touch these rows at all". I handed that check to the round-11 review with its limitations stated and asked for it to be redone properly, which is the only reason it was caught.
+
+It also falsified two comments the design rests on. Migration `20260908100000` says losing a Session pointer is "the one outcome this whole design exists to prevent", and `release_checkout_attempt` claims to be "the ONLY function that destroys the idempotency-key identity". Neither was true.
+
+**Fixed:** retirement is now conditional on there being demonstrably nothing to lose — no recorded Session pointer **and** no live operation lease. The second condition covers an attempt claimed *after* the reconciliation took its lease, whose Session is not written down yet. A genuinely abandoned claim is still retired, so dead attempts do not accumulate.
+
+### R11-02 (P2) — activation asked for a refresh without registering it
+
+Round 10 had activation raise `needs_reconciliation` but never advance `billing_sync_requested`. The flag alone does not survive a concurrent writer; the generation is what does. A reconciler holding a pre-payment `past_due` observation could commit it afterwards, find its own generation still current, and clear the flag — leaving a **newly paid organization sitting `past_due`** and invisible to both the candidate query and the backlog until the hourly staleness window elapsed.
+
+Not permanent, but a silently discarded payment-triggered refresh. **Fixed:** the refresh is registered the way every other caller registers work — by advancing the generation in the same atomic statement that records the payment.
+
+### R11-03 (P2) — the acknowledged stale-worker outcome was not always recorded
+
+R10-05's honest admission was that a database lease cannot revoke an in-flight Stripe request, and that the residual orphan is therefore *detected* rather than prevented. The detection had a hole: the code resolved the winning Customer **first** and recorded the orphan **second**. A successor that has rotated the identity but not yet persisted its own Customer is a legitimate intermediate state — the persisted id is null, resolution throws, and the id of a real Stripe object is lost from the very anomaly meant to capture it. Reproduced: two Customers, zero anomaly rows, zero logs.
+
+**Fixed:** what this request knows about an object it created is written down *before* anything that can fail, as `unresolved_customer_creation`. It is classified as a confirmed orphan only once a different winner is actually established — claiming the confirmed classification early would be R10-01 in miniature.
+
+### R11-04 (P2) — the operator procedure could not be executed
+
+`OPERATOR_RECOVERY.md` § 1 step 5 told an operator to call `rotate_stripe_customer_creation`, which requires the live lease owner's token — and never obtained one. Verified against the real RPC: rotation returns `null` with an expired lease **and** `null` after merely clearing it; only a fresh claim's token works. The document also had no procedure for `completed_session_without_subscription`, the stuck state R10-02 deliberately creates.
+
+**Fixed:** step 5 now takes a fresh claim and uses its token, checks every result, and says what a `null` means. Added § 4 (stuck Session), § 5 (who reads anomalies, and the fact that an anomaly row is **not** a notification — the backlog query scans billing rows, not the anomalies table), and § 6 (activations closed without evidence, and why null evidence does not prove no payment). The claim that waiting a few minutes establishes quiescence is removed — lease expiry bounds database writes, not in-flight Stripe requests.
+
+### Also corrected
+
+- `issue_notification_email_change_token` still derived its expiry from `now()` before its later organization `UPDATE` wait — a 24-hour token shortened by 372 ms. Tiny, and fixed anyway: § I6 is stated without an impact threshold, and "small enough to leave" is exactly how five rounds each left the next instance in place. **Sixth** round for this class.
+- The universal "deadlock-free" claim is narrowed. An administrative `DELETE` on `organizations` takes cascade locks in the opposite direction and was demonstrated to deadlock (40P01) against a concurrent feedback submission. No ordinary application path deletes an organization, and the implicit foreign-key check this replaced could produce the same cycle — but the universal claim was false.
+- § I3 no longer lists "none ever created" as a release condition (the code refuses a missing subscription reference, correctly), and now records that `canceled` is weaker than "no further money can ever be collected": Stripe documents surviving invoice items and open invoices that can still be collected manually.
+- The pre-call fence's 60-second budget is described as a working bound, not a proven worst case — it does not model retry backoff.
+
+### Verification
+
+- `npm run test` — **579/579** across 25 files.
+- `scripts/verify-local-database.mjs` — **45 checks** against real PostgreSQL 17, all **46 migrations**, including the migration-17 upgrade path.
+- Isolated Playwright suite — **190/190**, zero failed, zero skipped.
+- Stripe **test-mode lifecycle — 16/16 phases** against real test mode, re-run after these changes. The generation counts are visibly higher than last round (3 rather than 2 after the first purchase) — that is R11-02's extra registered refresh appearing in real traffic — and the run still converges to `requested == completed`, `dirty=false`.
+- `npm run typecheck` / `lint` / `build` — clean.
+- **5/5 mutation tests caught** — four SQL mutations (unconditional cleanup; retiring a live-leased attempt; never retiring anything; the flag-only refresh request) and one TypeScript mutation (restoring the resolve-then-record ordering). Each re-introduces the exact defect and makes its own check fail.
+
+One existing browser assertion was **loosened deliberately and narrowed in meaning**: it pinned `billing_sync_requested` to a literal `1`, which would have asserted the *absence* of R11-02's fix. It now asserts `completed === 0` and `requested > completed` — the actual requirement, that a pending refresh stays pending.
 
 ## Round 10: two of round 9's fixes were wrong (2026-09-10)
 

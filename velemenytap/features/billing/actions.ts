@@ -399,16 +399,45 @@ async function getOrCreateStripeCustomerId(
     return customerId;
   }
 
+  // R11-03: the record was rejected, so this request's Customer -- if it made
+  // one -- is now unaccounted for. Write that down BEFORE anything that can
+  // fail, because the very next step can.
+  //
+  // The previous version resolved the winner first and only then recorded the
+  // orphan. But a successor that has rotated the identity and not yet
+  // persisted its own Customer is a legitimate intermediate state: the
+  // persisted id is null, resolvePersistedCustomerId throws, and the id of a
+  // real Stripe object this process created is lost from the very anomaly
+  // record that was offered as the answer to R10-05. Reproduced: two
+  // Customers, zero anomaly rows, zero orphan-specific logs.
+  //
+  // Note the kind. At this point the outcome is genuinely UNKNOWN -- there may
+  // be no winner yet, and this Customer may or may not end up orphaned.
+  // Claiming a confirmed orphan here would be inventing a classification, the
+  // same mistake in miniature that R10-01 was. The confirmed classification is
+  // recorded below, once resolution has actually established a different
+  // winner.
+  if (createdHere) {
+    console.error(
+      `Organization ${organizationId}: created Stripe customer ${customerId} under creation identity ${creationId}, ` +
+        "but the database refused to record it. The customer exists at Stripe and is not yet accounted for.",
+    );
+    await recordAnomaly(admin, organizationId, "unresolved_customer_creation", {
+      createdCustomerId: customerId,
+      creationId,
+    });
+  }
+
   // The creation identity was superseded, or another caller recorded first.
+  // This can throw when a successor has rotated but not yet persisted; the
+  // record above has already preserved what this request knows.
   const persisted = await resolvePersistedCustomerId(admin, organizationId);
 
   // R10-05: if THIS request created the Customer and the row now points
   // somewhere else, a real Stripe object exists that nothing will ever use.
-  // The previous version discarded that fact silently, which is what made the
-  // stale-claimant race invisible rather than merely rare. A database lease
-  // cannot revoke a request already in flight at Stripe, so the honest
-  // treatment is to detect the orphan and record it for an operator -- see
-  // OPERATOR_RECOVERY.md § 1.
+  // A database lease cannot revoke a request already in flight at Stripe, so
+  // the honest treatment is to detect the orphan and record it for an operator
+  // -- see OPERATOR_RECOVERY.md § 1.
   if (createdHere && persisted !== customerId) {
     console.error(
       `Organization ${organizationId}: created Stripe customer ${customerId} under creation identity ${creationId}, ` +
@@ -677,10 +706,14 @@ type ReconcileSessionOutcome = { done: true; url: string } | { done: false };
  * completed, and that failure is treated as "go check what actually
  * happened," not swallowed.
  *
- * Finding 8: a `complete` Session's `payment_status` is checked
- * explicitly (`paid`/`no_payment_required` only) -- a complete-but-unpaid
- * or still-processing Session is never treated as a success, and is
- * released so it can never permanently trap every future attempt.
+ * Finding 8, as corrected by R10-02: a `complete` Session's
+ * `payment_status` is checked explicitly (`paid`/`no_payment_required`
+ * only), so a complete-but-unpaid or still-processing Session is never
+ * treated as a success. Finding 8 then RELEASED it, "so it can never
+ * permanently trap every future attempt" -- that half is reversed. An
+ * unresolved payment can still succeed, so the attempt is now kept and the
+ * decision deferred to the subscription that Session created. See
+ * assertPreviousSessionCannotCollect and BILLING_INVARIANTS.md § I3.
  */
 /**
  * Stripe subscription statuses from which no further money can ever be

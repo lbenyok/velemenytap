@@ -119,7 +119,7 @@ renewals involve no customer visit.
 All of `20260907150000` … `20260908120000` go in the **`--expand`** phase. The exact
 command and manifest are in `DEPLOYMENT.md` § 7; do not retype the list from memory.
 
-- [ ] **[you]** Confirm production is still on migration 17 (`supabase migration list`) — there are now **44** migrations, so 18→44 all go in the expand phase
+- [ ] **[you]** Confirm production is still on migration 17 (`supabase migration list`) — there are now **46** migrations, so 18→46 are the pending set
       before starting. **The safety argument depends on it.** Several of these
       migrations change function signatures, which is normally exactly what needs an
       expand/enforce split — it is safe here *only* because none of them has ever been

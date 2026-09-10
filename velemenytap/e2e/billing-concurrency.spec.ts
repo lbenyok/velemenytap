@@ -687,8 +687,13 @@ test.describe("generation counters -- an event arriving DURING a reconciliation 
     expect(row.activation_completed).toBe(1);
     expect(row.activation_requested).toBe(1);
     // ...and did NOT claim to have refreshed a subscription it never read.
+    // The requirement is that the pending refresh stays PENDING -- expressed as
+    // completed-vs-requested rather than as a literal count, because R11-02
+    // additionally makes activation register a refresh of its own (a payment
+    // usually changes the subscription's status too). Pinning the exact number
+    // would have made this test assert the absence of that fix.
     expect(row.billing_sync_completed).toBe(0);
-    expect(row.billing_sync_requested).toBe(1);
+    expect(row.billing_sync_requested).toBeGreaterThan(row.billing_sync_completed);
     expect(row.needs_reconciliation).toBe(true);
   });
 
