@@ -280,13 +280,35 @@ async function activateOnPayment(
     return true;
   }
 
-  const result = await activateOrganizationBilling(organizationId);
+  // R10-01: the evidence travels WITH the activation instead of being left
+  // implicit. Every check above is what makes this invoice count as a payment
+  // under this product's policy -- invoice status `paid`, the invoice's
+  // Customer matching the organization's persisted Customer, and an approved
+  // VéleményTap Price on the subscription -- and recording it is what stops a
+  // later reader from re-deriving "has this organization ever paid?" from a
+  // live Stripe status, which is exactly how R10-01 happened.
+  //
+  // A zero-total paid invoice still activates. A 100%-off coupon settles the
+  // invoice and Stripe reports it `paid`; the pre-round-9 path already
+  // accepted that, and narrowing it here would revoke access from
+  // organizations that legitimately have it. See BILLING_INVARIANTS.md § I1.
+  // Stripe's own settlement instant where it gives one, the invoice's creation
+  // time otherwise, and -- if neither is present -- the instant this handler
+  // verified the payment. The database rejects an unparseable or future
+  // paid_at, so this must produce a real timestamp rather than let an odd
+  // payload turn a genuine payment into a crash.
+  const paidAtSeconds = invoice.status_transitions?.paid_at ?? invoice.created;
+  const paidAt = Number.isFinite(paidAtSeconds)
+    ? new Date((paidAtSeconds as number) * 1000).toISOString()
+    : new Date().toISOString();
+  const result = await activateOrganizationBilling(organizationId, {
+    invoiceId: invoice.id ?? `unknown-invoice-for-subscription-${subscriptionId}`,
+    subscriptionId,
+    priceId,
+    paidAt,
+  });
   if (result.outcome === "error") {
     console.error(`Activation failed for organization ${organizationId}: ${result.message}`);
-    return false;
-  }
-  if (result.outcome === "deferred") {
-    console.log(`Organization ${organizationId}: activation deferred (lease contention) -- will retry.`);
     return false;
   }
   return true;

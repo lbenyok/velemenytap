@@ -103,6 +103,8 @@ function invoiceEvent(overrides: Record<string, unknown> = {}) {
         id: "in_1",
         customer: "cus_1",
         status: "paid",
+        created: 1789000000,
+        status_transitions: { paid_at: 1789000123 },
         parent: { type: "subscription_details", subscription_details: { subscription: "sub_1", metadata: { organization_id: "42" } } },
         ...overrides,
       },
@@ -303,7 +305,16 @@ describe("POST /api/webhooks/stripe", () => {
       const { POST } = await import("./route");
       const res = await POST(webhookRequest("{}"));
       expect(res.status).toBe(200);
-      expect(activateOrganizationBilling).toHaveBeenCalledWith(42);
+      // R10-01: the verified payment travels WITH the activation. Everything
+      // this handler checked -- invoice paid, customer matched, approved price
+      // -- is what makes it evidence, and recording it is what stops a later
+      // reader re-deriving "has this org ever paid?" from a live Stripe status.
+      expect(activateOrganizationBilling).toHaveBeenCalledWith(42, {
+        invoiceId: "in_1",
+        subscriptionId: "sub_1",
+        priceId: "price_monthly",
+        paidAt: new Date(1789000123 * 1000).toISOString(),
+      });
     });
 
     it("refuses to activate when the invoice customer does not match the organization's persisted customer", async () => {
@@ -356,15 +367,23 @@ describe("POST /api/webhooks/stripe", () => {
       const { POST } = await import("./route");
       const res = await POST(webhookRequest("{}"));
       expect(res.status).toBe(200);
-      expect(activateOrganizationBilling).toHaveBeenCalledWith(9);
+      expect(activateOrganizationBilling).toHaveBeenCalledWith(9, expect.objectContaining({ invoiceId: "in_1" }));
     });
 
-    it("asks Stripe to retry when the activation service defers", async () => {
+    /**
+     * R10-03: activation used to be able to return `deferred` (it competed for
+     * the reconciliation lease), and a deferred activation whose invoice was
+     * never redelivered could never be completed. It is now a single atomic
+     * write with no lease, so the only non-success is a genuine failure -- and
+     * that must still ask Stripe to redeliver, because the payment fact would
+     * otherwise be lost.
+     */
+    it("asks Stripe to retry when the activation write fails", async () => {
       maybeSingleQueue.length = 0;
       queue({ data: { stripe_customer_id: "cus_1" }, error: null });
       constructEvent.mockReturnValue(invoiceEvent());
       subscriptionsRetrieve.mockResolvedValue(canonicalSubscription());
-      activateOrganizationBilling.mockResolvedValue({ outcome: "deferred" });
+      activateOrganizationBilling.mockResolvedValue({ outcome: "error", message: "database unavailable" });
       const { POST } = await import("./route");
       const res = await POST(webhookRequest("{}"));
       expect(res.status).toBe(500);

@@ -8,6 +8,7 @@ import type { Json } from "@/lib/supabase/database.types";
 import { getCurrentOrganization } from "@/features/organizations/current";
 import { getOrganizationBilling } from "@/features/billing/queries";
 import { hasLiveSubscription, canManageBilling } from "@/features/billing/status";
+import { recordAnomaly } from "@/features/billing/reconcile";
 import { isBillingInterval, stripePriceId, type BillingInterval } from "@/features/billing/plans";
 import { assertStripeConfigurationValid } from "@/features/billing/stripe-config";
 
@@ -227,15 +228,23 @@ async function releaseAttempt(
  * true of the code any more, and saying so invited exactly the mistake the
  * round-9 review had to catch twice. What actually happens:
  *
- *   * Inside the retry-safe window the frozen key IS the protection, and
- *     Search is not consulted at all -- consulting it there would be the
- *     read-after-write use Stripe explicitly rules out.
- *   * Outside it, Search is a positive-only probe (its documented weakness
- *     is staleness, so it can only produce false negatives), and creation is
+ *   * If the identity has never been SENT to Stripe, nothing can exist under
+ *     it and nothing is consulted -- create directly.
+ *   * If it was sent and is still inside the retention window, the frozen key
+ *     IS the protection, and Search is not consulted at all -- consulting it
+ *     there would be the read-after-write use Stripe explicitly rules out.
+ *   * Otherwise Search is a positive-only probe (its documented weakness is
+ *     staleness, so it can only produce false negatives), and creation is
  *     authorized solely by a COMPLETED `customers.list` enumeration over the
  *     bounded window the attempt could have created in.
  *   * Neither establishes that a CONCURRENT request will not create one a
  *     moment later -- that is what the creation lease is for (R9-03).
+ *
+ * R10 correction: which of those three applies is decided by
+ * `customer_creation_key_state`, a recorded fact, NOT by how young the
+ * identity is. Round 9's version inferred retry-safety from age alone, so a
+ * key a migration had invented was replayed as though Stripe would
+ * deduplicate it. See BILLING_INVARIANTS.md § I4.
  *
  * Also fixed: the create() call's own parameters must be STABLE across
  * every retry sharing the same idempotency key, or Stripe rejects the
@@ -300,14 +309,38 @@ async function getOrCreateStripeCustomerId(
   const creationOwner = claim.owner_token;
   let creationId = claim.creation_id!;
   let customerId: string;
+  // Only a Customer THIS request creates can be orphaned by a lost race; one
+  // it merely found belongs to someone else's successful attempt.
+  let createdHere = false;
 
-  if (claim.retry_safe) {
+  if (!claim.needs_recovery) {
+    // R10-04: the creation identity is one this app minted and has never sent
+    // to Stripe (`customer_creation_key_state = 'unused'`), which is the only
+    // state in which nothing can possibly exist to recover -- no request was
+    // ever made under it, and the organization has no earlier identity that
+    // could have produced one either. Creating directly is sound here, and it
+    // keeps a first-ever checkout to a single Stripe call.
+    //
+    // Note what this deliberately does NOT do: infer the same thing from the
+    // identity being YOUNG. That inference is what produced both R9-04 and
+    // R10-04 -- a migration-stamped or never-sent key looks young and
+    // deduplicates nothing.
+    createdHere = true;
+    customerId = await createStripeCustomer(stripe, admin, organizationId, creationId, creationOwner, organizationName);
+  } else if (claim.retry_safe) {
     // Inside the frozen key's lifetime. Replaying create() under it either
     // returns the Customer a previous attempt already made, or makes the
     // first one -- Stripe decides, authoritatively, and no search is
     // involved at all. This is the case Stripe's own guidance rules out
     // solving with search ("don't use search in read-after-write flows").
-    customerId = await createStripeCustomer(stripe, organizationId, creationId, organizationName);
+    //
+    // R10-04: reaching this branch now REQUIRES the key to have actually been
+    // sent (`customer_creation_key_state = 'sent'`), not merely to be young.
+    // A key a migration invented, or one minted and never used, deduplicates
+    // nothing -- replaying it creates a second Customer, which is what R9-04
+    // and R10-04 each were.
+    createdHere = true;
+    customerId = await createStripeCustomer(stripe, admin, organizationId, creationId, creationOwner, organizationName);
   } else {
     // The key may have been pruned ("we generate a new request if a key is
     // reused after the original is pruned"), so replaying it could create a
@@ -349,7 +382,8 @@ async function getOrCreateStripeCustomerId(
         return resolvePersistedCustomerId(admin, organizationId);
       }
       creationId = rotated;
-      customerId = await createStripeCustomer(stripe, organizationId, creationId, organizationName);
+      createdHere = true;
+      customerId = await createStripeCustomer(stripe, admin, organizationId, creationId, creationOwner, organizationName);
     }
   }
 
@@ -366,7 +400,28 @@ async function getOrCreateStripeCustomerId(
   }
 
   // The creation identity was superseded, or another caller recorded first.
-  return resolvePersistedCustomerId(admin, organizationId);
+  const persisted = await resolvePersistedCustomerId(admin, organizationId);
+
+  // R10-05: if THIS request created the Customer and the row now points
+  // somewhere else, a real Stripe object exists that nothing will ever use.
+  // The previous version discarded that fact silently, which is what made the
+  // stale-claimant race invisible rather than merely rare. A database lease
+  // cannot revoke a request already in flight at Stripe, so the honest
+  // treatment is to detect the orphan and record it for an operator -- see
+  // OPERATOR_RECOVERY.md § 1.
+  if (createdHere && persisted !== customerId) {
+    console.error(
+      `Organization ${organizationId}: created Stripe customer ${customerId} under creation identity ${creationId}, ` +
+        `but the organization resolved to ${persisted}. ${customerId} is orphaned and needs manual review.`,
+    );
+    await recordAnomaly(admin, organizationId, "orphaned_customer", {
+      orphanedCustomerId: customerId,
+      persistedCustomerId: persisted,
+      creationId,
+    });
+  }
+
+  return persisted;
 }
 
 // How far before the recorded attempt time the canonical enumeration starts,
@@ -516,12 +571,62 @@ function idempotencyKeyFor(organizationId: number, creationId: string): string {
     : `customer-create:${creationId}`;
 }
 
+// The Stripe SDK's own bounded lifetime for one call (lib/stripe.ts: a 20s
+// timeout with 2 retries). A creation lease with less than this left cannot
+// cover the create() it is about to authorize.
+const CUSTOMER_CREATE_BUDGET_SECONDS = 60;
+
+/**
+ * Creates the Stripe Customer, fenced immediately before the call.
+ *
+ * R10-05 (round-10 review). The creation lease keeps LIVE contenders out, but
+ * it cannot fence a worker that resumes after its lease expired -- a claimant
+ * that pauses between claiming and calling Stripe can wake after a successor
+ * has enumerated, rotated and created, and then create a second Customer under
+ * the retired key. The review reproduced exactly that.
+ *
+ * mark_stripe_customer_key_sent is the fence, and it does two things:
+ *
+ *   1. records that this key is about to be sent, so a crash mid-call cannot
+ *      leave the row claiming it was never used -- which is what makes the
+ *      `sent` state trustworthy, and therefore what makes a later replay a
+ *      real replay (R10-04); and
+ *   2. re-checks the lease at the last possible moment, requiring enough of it
+ *      to remain to cover this call's own bounded lifetime.
+ *
+ * HONEST LIMIT: this narrows the window to the gap between that check and
+ * Stripe receiving the request. It does not close it, and no database lease
+ * can -- Stripe cannot be told to disregard a request already in flight. The
+ * residual case is handled by DETECTING the orphan afterwards (see
+ * getOrCreateStripeCustomerId's `orphaned_customer` anomaly) rather than by
+ * claiming it cannot happen. See BILLING_INVARIANTS.md § I5.
+ */
 async function createStripeCustomer(
   stripe: Stripe,
+  admin: ReturnType<typeof createAdminClient>,
   organizationId: number,
   creationId: string,
+  ownerToken: string,
   organizationName: string,
 ): Promise<string> {
+  const { data: fenced, error: fenceError } = await admin.rpc("mark_stripe_customer_key_sent", {
+    p_organization_id: organizationId,
+    p_creation_id: creationId,
+    p_owner_token: ownerToken,
+    p_required_seconds: CUSTOMER_CREATE_BUDGET_SECONDS,
+  });
+  if (fenceError) {
+    throw new Error(
+      `Failed to record the Stripe customer creation key for organization ${organizationId}: ${fenceError.message}`,
+    );
+  }
+  if (fenced !== true) {
+    throw new Error(
+      `The Stripe customer creation lease for organization ${organizationId} is no longer held (or has too little ` +
+        "time left to cover the call) -- not creating a customer under it. Try again in a moment.",
+    );
+  }
+
   const customer = await stripe.customers.create(
     { metadata: { organization_id: organizationId.toString() } },
     { idempotencyKey: idempotencyKeyFor(organizationId, creationId) },
@@ -577,6 +682,94 @@ type ReconcileSessionOutcome = { done: true; url: string } | { done: false };
  * or still-processing Session is never treated as a success, and is
  * released so it can never permanently trap every future attempt.
  */
+/**
+ * Stripe subscription statuses from which no further money can ever be
+ * collected. Everything else -- `incomplete` above all, which is precisely
+ * "the first payment has not resolved yet" -- can still turn into a charge.
+ *
+ * Deliberately expressed as the TERMINAL set rather than the live one: a
+ * status this app does not recognize (a new one Stripe adds later) must fall
+ * on the "could still collect" side and keep the obligation pending, not be
+ * silently treated as dead.
+ */
+const TERMINAL_STRIPE_SUBSCRIPTION_STATUSES: ReadonlySet<string> = new Set([
+  "canceled",
+  "incomplete_expired",
+]);
+
+/**
+ * R10-02 (round-10 review, P1). Decides whether a Checkout Session that has
+ * left the `open` state can still take the customer's money -- because
+ * releasing the attempt is what authorizes creating a SECOND, separately
+ * payable Session, and doing that while the first can still collect is the
+ * duplicate-charge outcome the whole attempt mechanism exists to prevent.
+ *
+ * Round 9 answered this with "not `open` means not payable". That is wrong.
+ * Stripe documents `complete` as reachable while payment is still processing,
+ * and `payment_status: 'unpaid'` on a completed Session means exactly that the
+ * payment is unresolved -- it may still succeed. The review reproduced both
+ * paths releasing the attempt and handing back a replacement URL.
+ *
+ * `expired` really is terminal, and stays a valid replacement case. For a
+ * COMPLETED Session with unresolved payment the question is answered by the
+ * subscription it created, which is the object that would actually collect:
+ * only a subscription in a terminal state releases the attempt.
+ *
+ * Throws -- keeping the attempt and its recorded Session -- for every
+ * uncertain case: an unreadable subscription, a completed Session with no
+ * subscription reference at all, or a live one. An uncertain answer must never
+ * be spent as a licence to create a second payable object.
+ *
+ * See BILLING_INVARIANTS.md § I3.
+ */
+async function assertPreviousSessionCannotCollect(
+  stripe: Stripe,
+  admin: ReturnType<typeof createAdminClient>,
+  organizationId: number,
+  session: Stripe.Checkout.Session,
+): Promise<void> {
+  if (session.status === "expired") {
+    return;
+  }
+
+  const pending = (reason: string): Error =>
+    new Error(
+      `The previous Checkout Session (${session.id}) for organization ${organizationId} may still take payment ` +
+        `(${reason}), so a replacement was not created. If it succeeds the subscription will appear shortly; ` +
+        "if it fails you can start a new checkout once Stripe has finalized it.",
+    );
+
+  if (session.status !== "complete") {
+    throw pending(`its status is "${session.status}"`);
+  }
+
+  const subscriptionRef = session.subscription;
+  const subscriptionId = typeof subscriptionRef === "string" ? subscriptionRef : subscriptionRef?.id;
+  if (!subscriptionId) {
+    // A completed subscription-mode Session normally carries the subscription
+    // it created. Without one there is nothing to inspect and therefore no
+    // evidence that the payment is dead -- so this fails closed and is
+    // recorded, because a permanently stuck attempt must be visible to an
+    // operator rather than presented to the owner as an endless "try again".
+    await recordAnomaly(admin, organizationId, "completed_session_without_subscription", {
+      sessionId: session.id,
+      paymentStatus: session.payment_status,
+    });
+    throw pending("it completed with an unresolved payment and no subscription this app can inspect");
+  }
+
+  let subscription: Stripe.Subscription;
+  try {
+    subscription = await stripe.subscriptions.retrieve(subscriptionId);
+  } catch (err) {
+    throw pending(`its subscription ${subscriptionId} could not be read: ${err instanceof Error ? err.message : err}`);
+  }
+
+  if (!TERMINAL_STRIPE_SUBSCRIPTION_STATUSES.has(subscription.status)) {
+    throw pending(`its subscription ${subscriptionId} is "${subscription.status}", which can still be collected on`);
+  }
+}
+
 async function reconcileExistingSession(
   stripe: Stripe,
   admin: ReturnType<typeof createAdminClient>,
@@ -602,9 +795,13 @@ async function reconcileExistingSession(
       await finishOperation(admin, organizationId, claim.attemptId, ownerToken);
       return { done: true, url: `${siteUrl}/dashboard/billing?checkout=success&session_id=${existing.id}` };
     }
-    // Finding 8: complete but genuinely unpaid (still processing, or a
-    // delayed payment method) -- release rather than trapping every
-    // future attempt on this one dead-end Session.
+    // Finding 8 released this unconditionally, to avoid trapping every
+    // future attempt on one dead-end Session. R10-02: "unpaid" is not
+    // "dead-end" -- the payment may still be processing, and releasing here
+    // authorized a second subscription that could also charge. The attempt is
+    // released only once the subscription this Session created is confirmed
+    // unable to collect; otherwise this throws and the attempt stays pending.
+    await assertPreviousSessionCannotCollect(stripe, admin, organizationId, existing);
     await releaseAttempt(admin, organizationId, claim.attemptId, ownerToken);
     return { done: false };
   }
@@ -664,13 +861,19 @@ async function reconcileExistingSession(
   // exists to prevent. The comment claimed the guarantee; the code did not
   // check for it.
   //
-  // `open` is the only payable state, so the test is simply whether we
-  // OBSERVED it leaving. `expired` and `complete` are both terminal for
+  // R10-02 corrected the test this guard applies. Round 9 checked only for
+  // `open`, reasoning that "`expired` and `complete` are both terminal for
   // payment purposes -- a complete-but-unpaid Session cannot be paid again
-  // either, and the subscription it may have created is picked up by
-  // reconciliation, not by this path. Anything still open, or unknown
-  // because we could not read it, fails closed: the attempt and its
-  // recorded Session are kept, and the next request re-checks them.
+  // either". The second half is false: Stripe reaches `complete` while a
+  // payment is still processing, so a Session that completed during the
+  // expire() attempt above passed this guard and a replacement was created
+  // alongside a payment that could still succeed.
+  //
+  // The test is now whether the previous Session can still collect at all,
+  // which for a completed one is decided by its subscription. Anything still
+  // open, still collectible, or unknown because it could not be read fails
+  // closed: the attempt and its recorded Session are kept, and the next
+  // request re-checks them.
   if (existing.status === "open") {
     throw new Error(
       `Could not confirm that the previous Checkout Session for organization ${organizationId} is no longer ` +
@@ -678,6 +881,7 @@ async function reconcileExistingSession(
     );
   }
 
+  await assertPreviousSessionCannotCollect(stripe, admin, organizationId, existing);
   await releaseAttempt(admin, organizationId, claim.attemptId, ownerToken);
   return { done: false };
 }

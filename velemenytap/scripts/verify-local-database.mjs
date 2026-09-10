@@ -117,10 +117,28 @@ async function claimLease(client, id, seconds = 120) {
 
 async function writeResult(client, id, lease, subscription = "sub_current", status = "active") {
   const result = await client.query(
-    "select public.write_reconciliation_result($1,$2,$3,$4,$5,$6,$7,null,false) as ok",
-    [id, lease.owner_token, lease.requested_generation, lease.activation_generation, `cus_${id}`, subscription, status],
+    "select public.write_reconciliation_result($1,$2,$3,$4,$5,$6,null,false) as ok",
+    [id, lease.owner_token, lease.requested_generation, `cus_${id}`, subscription, status],
   );
   return result.rows[0].ok;
+}
+
+/**
+ * The verified payment an activation must now carry. Mirrors what
+ * app/api/webhooks/stripe/route.ts assembles after checking invoice status,
+ * customer match and approved price.
+ */
+const evidenceFor = (id, paidAt = new Date(Date.now() - 60_000).toISOString()) => ({
+  invoice_id: `in_${id}`,
+  subscription_id: `sub_${id}`,
+  price_id: "price_month",
+  paid_at: paidAt,
+});
+
+async function activate(client, id, evidence = evidenceFor(id)) {
+  return (
+    await client.query("select public.request_billing_activation($1,$2) as activated_at", [id, JSON.stringify(evidence)])
+  ).rows[0].activated_at;
 }
 
 async function waitForDbLock(observer, pid) {
@@ -291,7 +309,14 @@ try {
   assert.equal([cA, cB].filter((c) => c.owner_token).length, 1, "exactly one creation owner");
   assert.equal(cA.customer_id, null);
   const creationOwner = cA.owner_token ? cA : cB;
-  assert.equal(creationOwner.retry_safe, true);
+
+  // R10-04. A freshly minted identity has never been sent to Stripe, so it is
+  // not a replay of anything -- and nothing can exist under it either, so
+  // there is nothing to recover. Round 9 inferred retry-safety from the
+  // identity being YOUNG, which is what let a migration-invented key be
+  // replayed as though Stripe would deduplicate it.
+  assert.equal(creationOwner.retry_safe, false, "a never-sent key is not a replay, however young");
+  assert.equal(creationOwner.needs_recovery, false, "and nothing can exist under it to recover");
   pass("concurrent customer-creation claims share one identity and exactly one operation lease");
 
   // A wrong identity may not record, and the right one is idempotent.
@@ -301,17 +326,65 @@ try {
   );
   assert.equal((await billing(client, customerOrg)).stripe_customer_id, null);
 
-  // Rotation must be refused while the frozen key is still live -- that key
-  // is the only thing preventing a duplicate in this window.
+  // R10-05: the fence taken immediately before the external call. It records
+  // that the key is about to be sent AND re-checks the lease, refusing a
+  // claimant that no longer holds enough of it to cover the call.
+  assert.notEqual(
+    (await client.query("select public.mark_stripe_customer_key_sent($1,$2,$3,60) as ok", [customerOrg, cA.creation_id, "not_the_lease_owner"])).rows[0].ok,
+    true,
+    "a caller without the lease may not send under this key",
+  );
+  assert.notEqual(
+    (await client.query("select public.mark_stripe_customer_key_sent($1,$2,$3,100000) as ok", [customerOrg, cA.creation_id, creationOwner.owner_token])).rows[0].ok,
+    true,
+    "a lease with less time left than the call needs is refused",
+  );
   assert.equal(
-    (await client.query("select public.rotate_stripe_customer_creation($1,$2,$3) as id", [customerOrg, cA.creation_id, creationOwner.owner_token])).rows[0].id,
+    (await client.query("select public.mark_stripe_customer_key_sent($1,$2,$3,60) as ok", [customerOrg, cA.creation_id, creationOwner.owner_token])).rows[0].ok,
+    true,
+  );
+  pass("a customer-creation key can only be sent by a lease holder with time left to cover the call");
+
+  // Now that it HAS been sent, and only now, replaying it is a genuine replay.
+  // (Releasing the lease first: a live one correctly makes the next caller
+  // stand down rather than reporting retry-safety, which is R9-03's own rule.)
+  const contended = (await client.query("select * from public.claim_stripe_customer_creation($1)", [customerOrg])).rows[0];
+  assert.equal(contended.owner_token, null, "a live creation lease makes a second caller stand down");
+  await client.query(
+    "update public.organization_billing set customer_creation_lease_owner=null, customer_creation_lease_expires_at=null where organization_id=$1",
+    [customerOrg],
+  );
+  const sentClaim = (await client.query("select * from public.claim_stripe_customer_creation($1)", [customerOrg])).rows[0];
+  assert.equal(sentClaim.creation_id, cA.creation_id);
+  assert.equal(sentClaim.retry_safe, true, "a key that was actually sent, inside retention, IS a replay");
+  assert.equal(sentClaim.needs_recovery, true, "and it may already have produced a Customer");
+
+  // Rotation must be refused while that frozen key is still live -- it is the
+  // only thing preventing a duplicate in this window.
+  assert.equal(
+    (await client.query("select public.rotate_stripe_customer_creation($1,$2,$3) as id", [customerOrg, cA.creation_id, sentClaim.owner_token])).rows[0].id,
     null,
   );
   pass("rotation is refused inside the retry-safe window, where the frozen key is still the protection");
 
-  // Age the attempt past the key's documented lifetime.
+  // R10-04, the case the review reproduced: an identity a MIGRATION supplied.
+  // "The row is unresolved" says nothing about which key, if any, was sent, so
+  // such an identity is never a replay however young it looks -- and it must
+  // still go through recovery, because an earlier billing version may have
+  // created a Customer under some other key entirely.
   await client.query(
-    "update public.organization_billing set customer_creation_started_at = clock_timestamp() - interval '30 hours', customer_creation_lease_owner = null, customer_creation_lease_expires_at = null where organization_id=$1",
+    "update public.organization_billing set customer_creation_key_state='unverified_legacy', customer_creation_started_at=clock_timestamp(), customer_creation_lease_owner=null, customer_creation_lease_expires_at=null where organization_id=$1",
+    [customerOrg],
+  );
+  const legacyClaim = (await client.query("select * from public.claim_stripe_customer_creation($1)", [customerOrg])).rows[0];
+  assert.equal(legacyClaim.retry_safe, false, "a migration-supplied identity is never treated as a replay");
+  assert.equal(legacyClaim.needs_recovery, true, "and always goes through the canonical enumeration");
+  pass("a migration-supplied creation identity is never replayed on the strength of its age");
+
+  // Age the attempt past the key's documented lifetime, sent this time, so the
+  // rotation checks below exercise the real retire-a-dead-key path.
+  await client.query(
+    "update public.organization_billing set customer_creation_key_state='sent', customer_creation_started_at = clock_timestamp() - interval '30 hours', customer_creation_lease_owner = null, customer_creation_lease_expires_at = null where organization_id=$1",
     [customerOrg],
   );
   const aged = (await client.query("select * from public.claim_stripe_customer_creation($1)", [customerOrg])).rows[0];
@@ -419,7 +492,7 @@ try {
 
   const confirming = await claimLease(client, syncOrg);
   assert.equal(
-    (await client.query("select public.clear_reconciliation_dirty($1,$2,$3,$4) as ok", [syncOrg, confirming.owner_token, confirming.requested_generation, confirming.activation_generation])).rows[0].ok,
+    (await client.query("select public.clear_reconciliation_dirty($1,$2,$3) as ok", [syncOrg, confirming.owner_token, confirming.requested_generation])).rows[0].ok,
     true,
   );
   state = await billing(client, syncOrg);
@@ -431,7 +504,7 @@ try {
   // still survive -- the same generation rule, on the clean path.
   const clearing = await claimLease(client, syncOrg);
   await second.query("select public.request_billing_reconciliation($1)", [syncOrg]);
-  await client.query("select public.clear_reconciliation_dirty($1,$2,$3,$4)", [syncOrg, clearing.owner_token, clearing.requested_generation, clearing.activation_generation]);
+  await client.query("select public.clear_reconciliation_dirty($1,$2,$3)", [syncOrg, clearing.owner_token, clearing.requested_generation]);
   assert.equal((await billing(client, syncOrg)).needs_reconciliation, true);
   pass("confirmed-clean also refuses to discard a request that arrived while it held the lease");
 
@@ -453,12 +526,7 @@ try {
   let obligationRow = await billing(client, obligationOrg);
   assert.equal(obligationRow.needs_reconciliation, true);
 
-  await client.query("select public.request_billing_activation($1)", [obligationOrg]);
-  const activationLease = await claimLease(client, obligationOrg);
-  assert.equal(
-    (await client.query("select public.write_activation($1,$2,$3,$4) as ok", [obligationOrg, activationLease.owner_token, activationLease.requested_generation, activationLease.activation_generation])).rows[0].ok,
-    true,
-  );
+  await activate(client, obligationOrg);
   obligationRow = await billing(client, obligationOrg);
   assert.ok(obligationRow.activated_at, "activation did its own work");
   assert.equal(obligationRow.status, "past_due", "activation must not have touched subscription state");
@@ -471,31 +539,87 @@ try {
   assert.equal(obligationRow.needs_reconciliation, true);
   pass("an activation cannot discharge a pending subscription refresh it never looked at");
 
-  // Direction 2: a subscription refresh must not silently discharge a
-  // pending activation either -- unless it obtains the evidence itself.
-  const activationOrg = await org(client, "pending-activation");
-  await seedCustomer(client, activationOrg);
-  await client.query("select public.request_billing_activation($1)", [activationOrg]);
-  const sweepLease = await claimLease(client, activationOrg);
-  assert.equal(await writeResult(client, activationOrg, sweepLease, "sub_cancelled", "canceled"), true);
-  let activationRow = await billing(client, activationOrg);
-  assert.equal(activationRow.activated_at, null);
-  assert.equal(
-    activationRow.needs_reconciliation,
-    true,
-    "a non-active refresh leaves the pending activation outstanding",
+  // ------------------------------------------- R10-01: status is not payment
+  //
+  // Round 9 made write_reconciliation_result set activated_at whenever it
+  // wrote `active`, calling that "evidence it already holds". It is not:
+  // Stripe documents a send_invoice subscription as starting active with its
+  // first invoice unpaid. The previous version of THIS harness asserted the
+  // wrong rule and passed -- a check agreeing with a bug.
+  //
+  // The counterexample, end to end: a grandfathered organization, an
+  // approved-price subscription that never gets paid, then cancellation.
+  const unpaidActive = await org(client, "unpaid-active-then-canceled");
+  await seedCustomer(client, unpaidActive);
+  await client.query(
+    "update public.organization_billing set grandfathered_at=clock_timestamp()-interval '60 days' where organization_id=$1",
+    [unpaidActive],
   );
-  pass("a subscription refresh cannot discharge a pending activation it never evidenced");
+  assert.equal(await writeResult(client, unpaidActive, await claimLease(client, unpaidActive), "sub_invoiced", "active"), true);
+  let unpaidRow = await billing(client, unpaidActive);
+  assert.equal(unpaidRow.status, "active");
+  assert.equal(unpaidRow.activated_at, null, "an `active` status must not set the ever-paid latch");
+  assert.equal(unpaidRow.activation_evidence, null, "no payment happened, so no evidence exists");
 
-  // ...but an `active` status IS the evidence, so the same write settles it
-  // and the organization does not livelock waiting for an invoice event that
-  // may never be redelivered.
-  const evidenceLease = await claimLease(client, activationOrg);
-  assert.equal(await writeResult(client, activationOrg, evidenceLease, "sub_live", "active"), true);
-  activationRow = await billing(client, activationOrg);
-  assert.ok(activationRow.activated_at, "an active subscription evidences activation");
-  assert.equal(activationRow.needs_reconciliation, false);
-  pass("an `active` subscription discharges the activation obligation from evidence already held");
+  assert.equal(await writeResult(client, unpaidActive, await claimLease(client, unpaidActive), "sub_invoiced", "canceled"), true);
+  unpaidRow = await billing(client, unpaidActive);
+  assert.equal(unpaidRow.activated_at, null);
+  assert.ok(unpaidRow.grandfathered_at, "prepayment grace survives a subscription that never charged");
+  assert.equal(unpaidRow.needs_reconciliation, false, "and the row still converges");
+  pass("an unpaid `active` subscription never consumes prepayment grace, through to cancellation");
+
+  // Activation requires evidence, and refuses everything else -- there is no
+  // path to the latch that does not carry the payment justifying it.
+  for (const [label, bad] of [
+    ["null", null],
+    ["missing paid_at", { invoice_id: "in_x", subscription_id: "sub_x", price_id: "price_month" }],
+    ["unparseable paid_at", { invoice_id: "in_x", subscription_id: "sub_x", price_id: "price_month", paid_at: "whenever" }],
+    ["future paid_at", { invoice_id: "in_x", subscription_id: "sub_x", price_id: "price_month", paid_at: new Date(Date.now() + 86_400_000).toISOString() }],
+  ]) {
+    await assert.rejects(
+      () => client.query("select public.request_billing_activation($1,$2)", [unpaidActive, bad === null ? null : JSON.stringify(bad)]),
+      (err) => err.code === "VT303",
+      `activation must refuse ${label} evidence`,
+    );
+  }
+  pass("activation refuses to set the ever-paid latch without verified payment evidence");
+
+  // ------------------------------- R10-03: a paid activation always finishes
+  //
+  // The livelock: a handler verified a paid invoice, registered the
+  // obligation, then died before the second write. The invoice is never
+  // redelivered and the subscription is canceled by the time anything looks
+  // again, so no sweep can ever discharge it. Activation is now ONE statement,
+  // so the interruptible gap does not exist.
+  const activationOrg = await org(client, "paid-then-canceled");
+  await seedCustomer(client, activationOrg);
+  const paidAt = new Date(Date.now() - 3_600_000).toISOString();
+  const latched = await activate(client, activationOrg, evidenceFor(activationOrg, paidAt));
+  assert.equal(new Date(latched).toISOString(), paidAt, "the latch is dated from the payment, not from observation");
+
+  // Three successful canceled-state refreshes, no invoice redelivery, no new
+  // subscription -- the exact sequence the review reproduced as a livelock.
+  for (let pass_ = 0; pass_ < 3; pass_++) {
+    assert.equal(await writeResult(client, activationOrg, await claimLease(client, activationOrg), "sub_gone", "canceled"), true);
+  }
+  const activationRow = await billing(client, activationOrg);
+  assert.equal(new Date(activationRow.activated_at).toISOString(), paidAt, "the payment fact survived cancellation");
+  assert.equal(activationRow.activation_evidence.invoice_id, `in_${activationOrg}`, "and so did the evidence for it");
+  assert.equal(activationRow.needs_reconciliation, false, "the row converged instead of looping dirty");
+  assert.equal(
+    Number(activationRow.activation_requested),
+    Number(activationRow.activation_completed),
+    "no activation obligation can be left outstanding",
+  );
+  pass("a verified activation survives interruption and cancellation with no invoice redelivery");
+
+  // The latch is one-way and first-evidence-wins, so a redelivery months later
+  // cannot re-date it.
+  await activate(client, activationOrg, evidenceFor(activationOrg, new Date().toISOString()));
+  const relatched = await billing(client, activationOrg);
+  assert.equal(new Date(relatched.activated_at).toISOString(), paidAt, "a later redelivery must not move the latch");
+  assert.equal(relatched.activation_evidence.paid_at, paidAt, "nor overwrite the evidence that set it");
+  pass("activation is idempotent: a redelivered invoice cannot re-date the ever-paid latch");
 
   // -------------------------------------------------- staleness candidates
   const missed = await org(client, "completely-missed-webhook");
@@ -580,6 +704,109 @@ try {
     `alert reservation was backdated to before the lock wait ended (${reservedAt.toISOString()} < ${beforeRelease.toISOString()})`,
   );
   pass("a negative-alert reservation is stamped after its card row lock, not before the wait");
+
+  // --------------------- R10-06/R10-07: the locks nobody wrote down as locks
+  //
+  // Round 9 fixed the two cases above and asserted that "every lock this
+  // decision depends on is now held". Round 10 showed that was still false in
+  // three places, because the remaining locks are taken IMPLICITLY -- by a
+  // later UPDATE, and by foreign-key checks on INSERT. A foreign key is a
+  // lock; it just does not look like one at the statement that waits.
+  //
+  // Each of these blocks the function behind the specific implicit lock, lets
+  // real time pass, and asserts the decision used an instant from AFTER the
+  // wait. They fail against the round-9 implementation.
+
+  // 1. claim_negative_alert_send's log INSERT takes FOR KEY SHARE on the
+  //    organization. Held FOR UPDATE, it waits -- after v_now was fixed.
+  const fkOrg = await org(client, "alert-fk-lock");
+  const fkLoc = (await client.query("insert into public.locations(organization_id,name) values($1,'L') returning id", [fkOrg])).rows[0].id;
+  const fkCard = (await client.query("insert into public.nfc_cards(organization_id,location_id) values($1,$2) returning id", [fkOrg, fkLoc])).rows[0].id;
+
+  await third.query("begin");
+  await third.query("select 1 from public.organizations where id=$1 for update", [fkOrg]);
+  const fkClaim = second.query("select public.claim_negative_alert_send($1,5,30) as id", [fkCard]);
+  await waitForDbLock(client, secondPid);
+  const beforeFkRelease = (await client.query("select clock_timestamp() as t")).rows[0].t;
+  await client.query("select pg_sleep(1.2)");
+  await third.query("commit");
+  const fkLogId = (await fkClaim).rows[0].id;
+  assert.ok(fkLogId, "the claim itself still succeeds");
+  const fkReserved = (await client.query("select reserved_at from private.alert_email_log where id=$1", [fkLogId])).rows[0].reserved_at;
+  assert.ok(
+    fkReserved.getTime() >= beforeFkRelease.getTime(),
+    `alert reservation was backdated past a foreign-key lock wait (${fkReserved.toISOString()} < ${beforeFkRelease.toISOString()})`,
+  );
+  pass("a negative-alert reservation waits for the organization foreign-key lock BEFORE fixing its instant");
+
+  // 2. reserve_notification_email_change's final UPDATE of public.organizations
+  //    takes FOR NO KEY UPDATE. Its advisory lock made the function look
+  //    already serialized, but that UPDATE can still wait.
+  const emailOrg = await org(client, "email-change-update-lock");
+  const emailUser = "11111111-1111-1111-1111-111111111111";
+  await client.query("insert into auth.users(id) values($1) on conflict do nothing", [emailUser]);
+  await client.query("insert into public.organization_memberships(organization_id,user_id,role) values($1,$2,'owner')", [emailOrg, emailUser]);
+  await second.query("select set_config('request.jwt.claim.sub',$1,false)", [emailUser]);
+
+  await third.query("begin");
+  await third.query("select 1 from public.organizations where id=$1 for no key update", [emailOrg]);
+  const emailReserve = second.query("select public.reserve_notification_email_change($1,$2) as id", [emailOrg, "owner@example.test"]);
+  await waitForDbLock(client, secondPid);
+  const beforeEmailRelease = (await client.query("select clock_timestamp() as t")).rows[0].t;
+  await client.query("select pg_sleep(1.2)");
+  await third.query("commit");
+  const emailLogId = (await emailReserve).rows[0].id;
+  assert.ok(emailLogId, "the reservation itself still succeeds");
+  const emailReserved = (
+    await client.query("select reserved_at from private.notification_email_change_log where id=$1", [emailLogId])
+  ).rows[0].reserved_at;
+  assert.ok(
+    emailReserved.getTime() >= beforeEmailRelease.getTime(),
+    `email-change reservation was backdated past its own UPDATE's lock wait (${emailReserved.toISOString()} < ${beforeEmailRelease.toISOString()})`,
+  );
+  pass("a notification-email reservation waits for its own later UPDATE's lock BEFORE fixing its instant");
+
+  // 3. R10-07: public feedback's rate window used now() -- TRANSACTION-START
+  //    time -- so a submission queued behind the card lock counted a window
+  //    that had already moved on and refused a legitimate guest with VT003.
+  //    This is the one case where the person who pays for the bug is a
+  //    customer standing at a counter, with no account and no way to report it.
+  const rateOrg = await org(client, "feedback-rate-window-lock");
+  const rateLoc = (
+    await client.query("insert into public.locations(organization_id,name,google_review_url) values($1,'L','https://g.test/r') returning id", [rateOrg])
+  ).rows[0].id;
+  const rateCard = (
+    await client.query("insert into public.nfc_cards(organization_id,location_id) values($1,$2) returning id, public_id", [rateOrg, rateLoc])
+  ).rows[0];
+
+  // Twenty submissions aged 299 seconds: at the limit now, but every one of
+  // them leaves the five-minute window within the next second.
+  for (let i = 0; i < 20; i++) {
+    await client.query(
+      "insert into public.feedback(organization_id,location_id,nfc_card_id,rating,created_at) values($1,$2,$3,5,clock_timestamp()-interval '299 seconds')",
+      [rateOrg, rateLoc, rateCard.id],
+    );
+  }
+
+  await third.query("begin");
+  await third.query("select 1 from public.nfc_cards where id=$1 for update", [rateCard.id]);
+  const guest = second.query("select * from public.submit_feedback_atomic($1,5::smallint,null)", [rateCard.public_id]);
+  await waitForDbLock(client, secondPid);
+  await client.query("select pg_sleep(1.5)");
+  await third.query("commit");
+
+  const guestRows = (await guest).rows;
+  assert.equal(guestRows.length, 1, "a guest whose window emptied during the lock wait must not be refused");
+  assert.equal(
+    Number((await client.query("select count(*) c from public.feedback where nfc_card_id=$1 and created_at > clock_timestamp()-interval '5 minutes'", [rateCard.id])).rows[0].c),
+    1,
+    "and the true trailing-five-minute count really was zero when it was admitted",
+  );
+  // The row it wrote is stamped from the same post-lock instant, so the NEXT
+  // caller's window is measured against reality too.
+  const guestRow = (await client.query("select created_at from public.feedback where id=$1", [guestRows[0].feedback_id])).rows[0];
+  assert.ok(guestRow.created_at.getTime() >= beforeEmailRelease.getTime());
+  pass("public feedback's rate window is measured after the lock wait, not from transaction-start time");
 
   const confirmOrg = await org(client, "confirm-expiry-lock");
   // The same guard the real RPCs set -- prevent_direct_notification_email_change
@@ -666,7 +893,6 @@ try {
     "claim_reconciliation_lease",
     "renew_reconciliation_lease",
     "write_reconciliation_result",
-    "write_activation",
     "release_reconciliation_lease",
     "clear_reconciliation_dirty",
     "fail_billing_reconciliation",
@@ -675,6 +901,8 @@ try {
     "claim_stripe_customer_creation",
     "record_stripe_customer",
     "rotate_stripe_customer_creation",
+    "mark_stripe_customer_key_sent",
+    "get_billing_reconciliation_backlog",
   ];
   const grants = (
     await client.query(

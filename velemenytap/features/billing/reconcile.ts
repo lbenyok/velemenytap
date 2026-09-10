@@ -57,15 +57,27 @@ import { approvedPriceIds } from "@/features/billing/stripe-config";
  * subscription list happens after the lease is held, which is the property
  * that actually matters.
  *
- * R9-02: there are TWO obligations, and they are counted separately --
+ * R9-02: there are TWO obligations and they are counted separately --
  * refreshing subscription state, and persisting a paid activation. A writer
  * may only advance the counter for the work it actually performed, because
  * one shared counter let either kind mark the other kind's pending requests
- * complete. A subscription refresh that observes an `active` status does
- * additionally discharge the activation obligation, since an active
- * subscription IS the evidence that a payment succeeded -- without that, an
- * organization whose invoice event was never redelivered would stay dirty
- * forever with nothing able to satisfy it.
+ * complete.
+ *
+ * R10-01/R10-03 corrected the other half of that fix. Round 9 additionally let
+ * a subscription refresh observing an `active` status discharge the activation
+ * obligation, "since an active subscription IS the evidence that a payment
+ * succeeded". It is not: Stripe documents an invoiced subscription as starting
+ * active while its first invoice is unpaid, and that wrong equivalence
+ * permanently consumed an organization's prepayment grace. Activation is now
+ * atomic with the verified invoice evidence that justifies it
+ * (activateOrganizationBilling below), so this service NEVER writes
+ * activated_at and there is no pending activation for it to strand.
+ *
+ * R10-08: this service renews its lease between subscription pages. A scan
+ * that outlives its lease is not self-correcting -- retrying reproduces it --
+ * so ownership must hold for the whole traversal, not just its first page.
+ *
+ * See BILLING_INVARIANTS.md for the invariants this file is responsible for.
  */
 
 // R9-07: how many 100-item pages of subscription history one reconciliation
@@ -244,10 +256,6 @@ export async function reconcileOrganizationBilling(
   }
   const owner = lease.owner_token;
   const generation = lease.requested_generation;
-  // R9-02: the activation generation is carried through untouched by this
-  // path except when an `active` status discharges it -- a subscription
-  // refresh must never mark an activation obligation done on its own.
-  const activationGeneration = lease.activation_generation;
 
   try {
     let subscriptions: Stripe.Subscription[];
@@ -276,6 +284,41 @@ export async function reconcileOrganizationBilling(
         });
         subscriptions.push(...list.data);
         if (!list.has_more) break;
+
+        // R10-08 (round-10 review): R9-07 gave this loop the ability to make
+        // twenty sequential Stripe calls but left the lease at its original
+        // 45 seconds, never renewed. The review demonstrated an entirely
+        // HEALTHY three-page scan -- 16 s per page, every response a success,
+        // well inside both the page cap and the per-request timeout -- taking
+        // 48 s, losing the lease, and having its write correctly rejected.
+        // Every retry with the same latency reproduces it identically, so the
+        // organization never converges: a paid customer stays locally
+        // canceled while the sweep reports success.
+        //
+        // Ownership must therefore hold for the whole of the work it
+        // authorizes, not just its first page. Renewing between pages keeps
+        // the lease alive exactly as long as real progress is being made,
+        // without lengthening the lease for the crash case it exists to
+        // bound. A renewal that fails means someone else now owns this
+        // organization, so continuing would burn Stripe calls on a result
+        // that cannot be written -- stop immediately and let the owner finish.
+        const { data: renewed, error: renewError } = await admin.rpc("renew_reconciliation_lease", {
+          p_organization_id: organizationId,
+          p_owner: owner,
+        });
+        if (renewError) {
+          const message = `Failed to renew the reconciliation lease: ${renewError.message}`;
+          await admin.rpc("fail_billing_reconciliation", {
+            p_organization_id: organizationId,
+            p_owner: owner,
+            p_error: message,
+          });
+          return { outcome: "error", message };
+        }
+        if (renewed !== true) {
+          return { outcome: "deferred" };
+        }
+
         if (++pages >= SUBSCRIPTION_PAGE_CAP) {
           throw new Error(
             `more than ${SUBSCRIPTION_PAGE_CAP * 100} subscriptions for customer ${stripeCustomerId} -- refusing to ` +
@@ -344,7 +387,6 @@ export async function reconcileOrganizationBilling(
             p_organization_id: organizationId,
             p_owner: owner,
             p_requested_generation: generation,
-            p_activation_generation: activationGeneration,
             p_stripe_customer_id: stripeCustomerId,
             p_stripe_subscription_id: null,
             p_status: "canceled",
@@ -377,7 +419,6 @@ export async function reconcileOrganizationBilling(
         p_organization_id: organizationId,
         p_owner: owner,
         p_requested_generation: generation,
-        p_activation_generation: activationGeneration,
       });
       return { outcome: "no_subscriptions" };
     }
@@ -388,7 +429,6 @@ export async function reconcileOrganizationBilling(
       p_organization_id: organizationId,
       p_owner: owner,
       p_requested_generation: generation,
-      p_activation_generation: activationGeneration,
       p_stripe_customer_id: stripeCustomerId,
       p_stripe_subscription_id: current.id,
       p_status: status,
@@ -418,71 +458,72 @@ export async function reconcileOrganizationBilling(
 }
 
 /**
- * Finding 5/11: the invoice.paid activation path, under the SAME lease
- * discipline as reconcileOrganizationBilling -- an invoice.paid event
- * competing with a concurrent subscription sync for the same organization
- * is mutually excluded too, not independently fenced by a second
- * mechanism. Idempotent (activated_at only ever transitions null -> a
- * value, enforced by the database function itself via COALESCE).
+ * The verified payment that a Stripe `invoice.paid` event carries. Every
+ * field is checked by the webhook route BEFORE this reaches the database
+ * (invoice status `paid`, the invoice's Customer matching the organization's
+ * persisted Customer, and the subscription carrying an approved VéleményTap
+ * Price) -- see app/api/webhooks/stripe/route.ts's activateOnPayment.
  */
-export async function activateOrganizationBilling(organizationId: number): Promise<ReconcileOutcome> {
+export type ActivationEvidence = {
+  invoiceId: string;
+  subscriptionId: string;
+  priceId: string;
+  paidAt: string;
+};
+
+/**
+ * Sets the one-way "this organization has genuinely paid at least once" fact.
+ *
+ * R10-01 and R10-03 (round-10 review) rewrote this. It used to be a TWO-PHASE
+ * operation under the reconciliation lease: request the activation, then write
+ * it. That created two defects at once.
+ *
+ *   * The gap between the phases was interruptible. A handler that verified a
+ *     paid invoice, requested activation and then died left an obligation only
+ *     another invoice event could discharge -- and if the invoice was never
+ *     redelivered and the subscription was since canceled, no sweep could ever
+ *     finish it. Not a deadlock; a repeated-work livelock, reproduced over
+ *     three successful refreshes that each left the row exactly as dirty as
+ *     they found it.
+ *   * To avoid that, round 9 let a subscription refresh writing an `active`
+ *     status set activated_at as well. `active` is not a payment -- Stripe
+ *     documents an invoiced subscription as starting active with its first
+ *     invoice unpaid -- so a grandfathered organization could permanently lose
+ *     its prepayment grace without anyone ever paying.
+ *
+ * Both are gone because the two phases are now ONE statement: the evidence and
+ * the latch are written together, so a pending activation cannot exist and no
+ * writer ever has to reconstruct the payment fact from a live status.
+ *
+ * That also means no lease. The lease serializes Stripe READS for subscription
+ * refresh; this performs no Stripe call and depends on no other row state --
+ * `activated_at = coalesce(activated_at, paid_at)` is idempotent and
+ * order-independent, so a duplicate delivery, a redelivery months later, and a
+ * concurrent subscription sync all produce the same row. Deferral is therefore
+ * no longer a possible outcome: there is nothing to contend for.
+ *
+ * See BILLING_INVARIANTS.md § I1/I2.
+ */
+export async function activateOrganizationBilling(
+  organizationId: number,
+  evidence: ActivationEvidence,
+): Promise<ReconcileOutcome> {
   const admin = createAdminClient();
 
-  // R9-02: activation registers its OWN obligation. While one counter was
-  // shared with subscription refresh, either kind of work could mark the
-  // other kind's pending requests complete -- an activation write would
-  // silently discharge a pending refresh it had never looked at.
-  const { error: requestError } = await admin.rpc("request_billing_activation", {
+  const { error } = await admin.rpc("request_billing_activation", {
     p_organization_id: organizationId,
+    p_evidence: {
+      invoice_id: evidence.invoiceId,
+      subscription_id: evidence.subscriptionId,
+      price_id: evidence.priceId,
+      paid_at: evidence.paidAt,
+    } as unknown as Json,
   });
-  if (requestError) {
-    return { outcome: "error", message: `Failed to request activation: ${requestError.message}` };
+  if (error) {
+    return { outcome: "error", message: `Failed to record the verified activation: ${error.message}` };
   }
 
-  const { data: claim, error: claimError } = await admin.rpc("claim_reconciliation_lease", {
-    p_organization_id: organizationId,
-  });
-  if (claimError) {
-    return { outcome: "error", message: `Failed to claim reconciliation lease: ${claimError.message}` };
-  }
-  const lease = claim?.[0];
-  if (!lease) {
-    return { outcome: "deferred" };
-  }
-  const owner = lease.owner_token;
-  const generation = lease.requested_generation;
-  const activationGeneration = lease.activation_generation;
-
-  // Mirrors reconcileOrganizationBilling's own try/catch: an uncaught
-  // exception here (a network-level throw from admin.rpc, not merely an
-  // { error } result) would otherwise abandon the claimed lease with
-  // needs_reconciliation never set -- release_reconciliation_lease's own
-  // second UPDATE marks the organization dirty unconditionally, regardless
-  // of whether the owner-matched release itself succeeds, which is exactly
-  // the durable-recovery guarantee this function must not silently forfeit
-  // just because it never reaches write_activation.
-  try {
-    const { data: applied, error: writeError } = await admin.rpc("write_activation", {
-      p_organization_id: organizationId,
-      p_owner: owner,
-      p_requested_generation: generation,
-      p_activation_generation: activationGeneration,
-    });
-    if (writeError) {
-      return { outcome: "error", message: `Failed to write activation: ${writeError.message}` };
-    }
-    if (!applied) {
-      return { outcome: "deferred" };
-    }
-    return { outcome: "reconciled", subscriptionId: "", status: "active" };
-  } catch (err) {
-    try {
-      await admin.rpc("release_reconciliation_lease", { p_organization_id: organizationId, p_owner: owner });
-    } catch {
-      // Best-effort cleanup only -- the lease's own expiry is the fallback.
-    }
-    return { outcome: "error", message: err instanceof Error ? err.message : String(err) };
-  }
+  return { outcome: "reconciled", subscriptionId: evidence.subscriptionId, status: "active" };
 }
 
 /**

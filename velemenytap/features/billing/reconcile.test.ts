@@ -17,6 +17,9 @@ function defaultRpcImpl(name: string, args: unknown) {
   rpcCalls.push({ name, args });
   const q = rpcQueues[name];
   if (q && q.length > 0) return Promise.resolve(q.shift());
+  // A lease renewal succeeds unless a test says otherwise -- the healthy case,
+  // so pagination tests exercise traversal rather than renewal failure.
+  if (name === "renew_reconciliation_lease") return Promise.resolve({ data: true, error: null });
   return Promise.resolve({ data: null, error: null });
 }
 const rpc = vi.fn(defaultRpcImpl);
@@ -310,6 +313,47 @@ describe("subscription history pagination", () => {
     expect(rpcCalls.some((c) => c.name === "write_reconciliation_result")).toBe(false);
     expect(rpcCalls.some((c) => c.name === "fail_billing_reconciliation")).toBe(true);
   });
+
+  /**
+   * R10-08 (round-10 review, P2). R9-07 gave this loop up to twenty sequential
+   * Stripe calls but left the 45-second lease unrenewed, so an entirely
+   * healthy multi-page scan could outlive its own ownership and have its
+   * write correctly rejected -- reproducibly, on every retry.
+   *
+   * The requirement is that ownership holds for the whole traversal, so the
+   * assertion is that each additional page is preceded by a renewal.
+   */
+  it("R10-08: renews its ownership between pages, so a slow but healthy scan keeps the lease it will write under", async () => {
+    subscriptionsList
+      .mockResolvedValueOnce({ data: [sub({ id: "sub_a", status: "canceled" })], has_more: true })
+      .mockResolvedValueOnce({ data: [sub({ id: "sub_b", status: "canceled" })], has_more: true })
+      .mockResolvedValueOnce({ data: [sub({ id: "sub_c", status: "active" })], has_more: false });
+    queueRpc("claim_reconciliation_lease", { data: [{ owner_token: "owner_1", requested_generation: 1 }], error: null });
+    queueRpc("write_reconciliation_result", { data: true, error: null });
+
+    const result = await reconcileOrganizationBilling(42, "cus_1");
+
+    // Three pages, so two continuations, so two renewals -- each before the
+    // page it authorizes rather than after the work is already done.
+    const renewals = rpcCalls.filter((c) => c.name === "renew_reconciliation_lease");
+    expect(renewals).toHaveLength(2);
+    expect(renewals[0].args).toMatchObject({ p_organization_id: 42, p_owner: "owner_1" });
+    expect(result).toMatchObject({ outcome: "reconciled", subscriptionId: "sub_c" });
+  });
+
+  it("R10-08: stops immediately when renewal fails, rather than paging on toward a write it cannot make", async () => {
+    subscriptionsList.mockResolvedValue({ data: [sub({ id: "sub_a", status: "canceled" })], has_more: true });
+    queueRpc("claim_reconciliation_lease", { data: [{ owner_token: "owner_1", requested_generation: 1 }], error: null });
+    queueRpc("renew_reconciliation_lease", { data: false, error: null });
+
+    const result = await reconcileOrganizationBilling(42, "cus_1");
+
+    expect(result.outcome).toBe("deferred");
+    // One page fetched, then it stopped -- no further Stripe calls were spent
+    // on a result that could never be written.
+    expect(subscriptionsList).toHaveBeenCalledTimes(1);
+    expect(rpcCalls.some((c) => c.name === "write_reconciliation_result")).toBe(false);
+  });
 });
 
 describe("reconciliation generations", () => {
@@ -369,43 +413,45 @@ describe("reconciliation generations", () => {
   /**
    * R9-02 (round-9 review, P1). One shared generation pair meant either kind
    * of work could mark the other kind's pending requests complete. Activation
-   * now registers and satisfies its OWN obligation.
+   * registers and satisfies its OWN obligation -- and, after R10-01/R10-03,
+   * does so in one statement rather than two.
    */
   it("R9-02: activation registers an ACTIVATION obligation, never a subscription one", async () => {
-    queueRpc("claim_reconciliation_lease", { data: [{ owner_token: "owner_1", requested_generation: 7, activation_generation: 2 }], error: null });
-    queueRpc("write_activation", { data: true, error: null });
-
-    await activateOrganizationBilling(42);
+    await activateOrganizationBilling(42, EVIDENCE);
 
     expect(rpcCalls.some((c) => c.name === "request_billing_activation")).toBe(true);
     expect(rpcCalls.some((c) => c.name === "request_billing_reconciliation")).toBe(false);
-    const write = rpcCalls.find((c) => c.name === "write_activation");
-    expect(write?.args).toMatchObject({ p_requested_generation: 7, p_activation_generation: 2 });
   });
 
-  it("R9-02: a subscription refresh carries the activation generation through untouched", async () => {
-    queueRpc("claim_reconciliation_lease", { data: [{ owner_token: "owner_1", requested_generation: 4, activation_generation: 9 }], error: null });
-    queueRpc("write_reconciliation_result", { data: true, error: null });
+  /**
+   * R10-01 (round-10 review, P1). The requirement, stated without reference to
+   * the implementation: a subscription refresh must not be able to write the
+   * "this organization has ever paid" fact, because the status it observes is
+   * not evidence of a payment. Round 9's fix had it do exactly that.
+   */
+  it("R10-01: a subscription refresh never writes activation, whatever status it observes", async () => {
+    for (const status of ["active", "trialing", "past_due", "canceled"] as const) {
+      rpcCalls.length = 0;
+      subscriptionsList.mockResolvedValue({ data: [sub({ id: "sub_1", status })], has_more: false });
+      queueRpc("claim_reconciliation_lease", { data: [{ owner_token: "owner_1", requested_generation: 4 }], error: null });
+      queueRpc("write_reconciliation_result", { data: true, error: null });
 
-    await reconcileOrganizationBilling(42, "cus_1");
+      await reconcileOrganizationBilling(42, "cus_1");
 
-    const write = rpcCalls.find((c) => c.name === "write_reconciliation_result");
-    expect(write?.args).toMatchObject({ p_requested_generation: 4, p_activation_generation: 9 });
-  });
-
-  it("activation follows the same request-then-claim-then-write-under-that-generation order", async () => {
-    queueRpc("claim_reconciliation_lease", { data: [{ owner_token: "owner_1", requested_generation: 5 }], error: null });
-    queueRpc("write_activation", { data: true, error: null });
-
-    await activateOrganizationBilling(42);
-
-    const requestIndex = rpcCalls.findIndex((c) => c.name === "request_billing_reconciliation");
-    const claimIndex = rpcCalls.findIndex((c) => c.name === "claim_reconciliation_lease");
-    expect(claimIndex).toBeGreaterThan(requestIndex);
-    const write = rpcCalls.find((c) => c.name === "write_activation");
-    expect(write?.args).toMatchObject({ p_owner: "owner_1", p_requested_generation: 5 });
+      expect(rpcCalls.some((c) => c.name === "request_billing_activation")).toBe(false);
+      const write = rpcCalls.find((c) => c.name === "write_reconciliation_result");
+      // No activation argument exists to smuggle a latch through any more.
+      expect(Object.keys(write?.args ?? {})).not.toContain("p_activation_generation");
+    }
   });
 });
+
+const EVIDENCE = {
+  invoiceId: "in_1",
+  subscriptionId: "sub_1",
+  priceId: "price_month",
+  paidAt: "2026-09-10T10:00:00.000Z",
+};
 
 describe("activateOrganizationBilling", () => {
   beforeEach(() => {
@@ -415,36 +461,43 @@ describe("activateOrganizationBilling", () => {
     for (const key of Object.keys(rpcQueues)) delete rpcQueues[key];
   });
 
-  it("claims the lease, then writes activation", async () => {
-    queueRpc("claim_reconciliation_lease", { data: [{ owner_token: "owner_1", requested_generation: 3 }], error: null });
-    queueRpc("write_activation", { data: true, error: null });
-    const result = await activateOrganizationBilling(42);
+  /**
+   * R10-01: the payment that justifies the latch travels WITH it. Without
+   * this, "has this organization ever paid?" gets re-derived later from
+   * whatever Stripe currently reports, which is how R10-01 happened.
+   */
+  it("R10-01: carries the verified invoice evidence into the same write that sets the latch", async () => {
+    const result = await activateOrganizationBilling(42, EVIDENCE);
+
     expect(result.outcome).toBe("reconciled");
-    expect(rpcCalls.some((c) => c.name === "write_activation")).toBe(true);
-  });
-
-  it("defers when the lease can't be claimed", async () => {
-    queueRpc("claim_reconciliation_lease", { data: [], error: null });
-    const result = await activateOrganizationBilling(42);
-    expect(result.outcome).toBe("deferred");
-  });
-
-  it("defers when the write loses the lease", async () => {
-    queueRpc("claim_reconciliation_lease", { data: [{ owner_token: "owner_1", requested_generation: 3 }], error: null });
-    queueRpc("write_activation", { data: false, error: null });
-    const result = await activateOrganizationBilling(42);
-    expect(result.outcome).toBe("deferred");
-  });
-
-  it("releases the lease and returns an error when write_activation itself throws (not merely an { error } result) -- found during this round's own independent self-review: an earlier version had no try/catch here at all, unlike reconcileOrganizationBilling, silently abandoning the claimed lease with needs_reconciliation never set", async () => {
-    queueRpc("claim_reconciliation_lease", { data: [{ owner_token: "owner_1", requested_generation: 3 }], error: null });
-    rpc.mockImplementation((name: string, args: unknown) => {
-      if (name === "write_activation") throw new Error("network failure");
-      return defaultRpcImpl(name, args);
+    const call = rpcCalls.find((c) => c.name === "request_billing_activation");
+    expect(call?.args).toMatchObject({
+      p_organization_id: 42,
+      p_evidence: {
+        invoice_id: "in_1",
+        subscription_id: "sub_1",
+        price_id: "price_month",
+        paid_at: "2026-09-10T10:00:00.000Z",
+      },
     });
-    const result = await activateOrganizationBilling(42);
+  });
+
+  /**
+   * R10-03: the livelock existed because activation was two operations with a
+   * gap between them, and an interruption in that gap left an obligation only
+   * a redelivered invoice could discharge. One statement, no lease, no claim,
+   * therefore no gap -- and no `deferred` outcome to strand anything.
+   */
+  it("R10-03: performs no lease claim and no second write, so there is no interruptible gap", async () => {
+    await activateOrganizationBilling(42, EVIDENCE);
+
+    expect(rpcCalls.map((c) => c.name)).toEqual(["request_billing_activation"]);
+  });
+
+  it("surfaces a database failure as an error rather than reporting success", async () => {
+    queueRpc("request_billing_activation", { data: null, error: { message: "evidence rejected" } });
+    const result = await activateOrganizationBilling(42, EVIDENCE);
     expect(result.outcome).toBe("error");
-    const release = rpcCalls.find((c) => c.name === "release_reconciliation_lease");
-    expect(release?.args).toMatchObject({ p_organization_id: 42, p_owner: "owner_1" });
+    expect(result).toMatchObject({ message: expect.stringContaining("evidence rejected") });
   });
 });

@@ -33,6 +33,13 @@ const SWEEP_BATCH_LIMIT = 100;
 // something changed.
 const SWEEP_STALE_SECONDS = 60 * 60;
 
+// R10-08: how long an organization may stay dirty before that stops being
+// ordinary contention and becomes an operator-visible failure. Generous
+// relative to the 15-minute sweep interval -- four consecutive sweeps must
+// have failed to converge it -- so that normal lease contention, a brief
+// Stripe outage, or a single slow scan never pages anyone.
+const SWEEP_BACKLOG_SECONDS = 60 * 60;
+
 /**
  * Fourth independent review, Finding 5: "a monitored scheduled
  * reconciliation mechanism." Re-derives each candidate organization's
@@ -113,10 +120,53 @@ export async function POST(request: NextRequest) {
   // errors are escalated, so this cannot turn ordinary concurrency into a
   // page.
   const errors = results.filter((r) => r.outcome === "error").length;
-  if (errors > 0) {
-    console.error(`Reconciliation sweep: ${errors} of ${results.length} organizations failed to reconcile.`);
-    return NextResponse.json({ swept: results.length, errors, results }, { status: 500 });
+
+  // R10-08 (round-10 review): the paragraph above is right that `deferred` is
+  // ordinary contention and self-correcting -- and wrong to conclude that
+  // EVERY deferred case therefore is. The review demonstrated a perfectly
+  // healthy three-page subscription scan outliving its 45-second lease: the
+  // write is rejected, the row stays dirty, the sweep reports `deferred`, and
+  // every retry with the same latency reproduces it exactly. A paid
+  // organization can sit locally canceled with this endpoint returning 200
+  // forever.
+  //
+  // The durable dirty flag guarantees the work is not LOST. It does not tell
+  // anyone the work is STUCK, and those are different guarantees -- the same
+  // distinction R9-06 drew for errors, one level up. The signal that
+  // distinguishes them is not any single run's outcome but how long an
+  // organization has been dirty, which is something this app can always
+  // observe without being told what went wrong.
+  const { data: backlog, error: backlogError } = await admin.rpc("get_billing_reconciliation_backlog", {
+    p_older_than_seconds: SWEEP_BACKLOG_SECONDS,
+    p_limit: SWEEP_BATCH_LIMIT,
+  });
+  if (backlogError) {
+    console.error(`Reconciliation sweep: failed to read the backlog: ${backlogError.message}`);
+    return NextResponse.json(
+      { swept: results.length, errors, results, error: `Failed to read the reconciliation backlog: ${backlogError.message}` },
+      { status: 500 },
+    );
   }
 
-  return NextResponse.json({ swept: results.length, errors: 0, results });
+  const stuck = backlog ?? [];
+  if (stuck.length > 0) {
+    console.error(
+      `Reconciliation sweep: ${stuck.length} organization(s) have been awaiting reconciliation for over ` +
+        `${SWEEP_BACKLOG_SECONDS}s and are not converging on their own -- ` +
+        stuck
+          .map((o) => `org ${o.organization_id} (${o.dirty_seconds}s${o.last_error ? `, last error: ${o.last_error}` : ""})`)
+          .join("; ") +
+        ". See OPERATOR_RECOVERY.md § 3.",
+    );
+  }
+
+  if (errors > 0) {
+    console.error(`Reconciliation sweep: ${errors} of ${results.length} organizations failed to reconcile.`);
+  }
+
+  if (errors > 0 || stuck.length > 0) {
+    return NextResponse.json({ swept: results.length, errors, backlog: stuck, results }, { status: 500 });
+  }
+
+  return NextResponse.json({ swept: results.length, errors: 0, backlog: [], results });
 }

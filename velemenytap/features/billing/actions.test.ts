@@ -69,6 +69,7 @@ const checkoutSessionsCreate = vi.fn();
 const checkoutSessionsRetrieve = vi.fn();
 const checkoutSessionsExpire = vi.fn();
 const billingPortalSessionsCreate = vi.fn();
+const subscriptionsRetrieve = vi.fn();
 
 vi.mock("@/lib/stripe", () => ({
   createStripeClient: () => ({
@@ -76,6 +77,7 @@ vi.mock("@/lib/stripe", () => ({
     checkout: {
       sessions: { create: checkoutSessionsCreate, retrieve: checkoutSessionsRetrieve, expire: checkoutSessionsExpire },
     },
+    subscriptions: { retrieve: subscriptionsRetrieve },
     billingPortal: { sessions: { create: billingPortalSessionsCreate } },
   }),
 }));
@@ -107,6 +109,9 @@ function defaultRpcImpl(name: string, args: unknown) {
   rpcCalls.push({ name, args });
   const q = rpcQueues[name];
   if (q && q.length > 0) return Promise.resolve(q.shift());
+  // The pre-create fence succeeds unless a test says otherwise, so tests of
+  // the creation DECISION are not all rewritten as tests of the fence.
+  if (name === "mark_stripe_customer_key_sent") return Promise.resolve({ data: true, error: null });
   return Promise.resolve({ data: null, error: null });
 }
 const rpc = vi.fn(defaultRpcImpl);
@@ -211,6 +216,7 @@ function customerClaim(overrides: Partial<{
   creation_id: string | null;
   started_at: string | null;
   retry_safe: boolean;
+  needs_recovery: boolean;
   owner_token: string | null;
 }> = {}) {
   return {
@@ -220,6 +226,10 @@ function customerClaim(overrides: Partial<{
         creation_id: "creation_1",
         started_at: new Date().toISOString(),
         retry_safe: true,
+        // R10-04: by default this identity is one an earlier attempt may
+        // already have sent to Stripe, so recovery applies. Tests of the
+        // never-used case set this false explicitly.
+        needs_recovery: true,
         owner_token: "creation_owner_1",
         ...overrides,
       },
@@ -615,25 +625,112 @@ describe("createCheckoutSessionAction", () => {
     });
 
     /**
-     * R9-04 (round-9 review). A backfilled legacy row stands for a key the
-     * PREVIOUS billing version already used -- derived from the organization
-     * id, not random. Replaying a random replacement would not be a replay at
-     * all, so Stripe would not deduplicate it.
+     * R9-04 then R10-04. Round 9's reasoning was that a backfilled legacy row
+     * stands for a key the PREVIOUS billing version already used, so replaying
+     * it is a real replay. Round 10 showed the flaw: "the row is unresolved"
+     * does not establish which key, if any, was ever sent -- and a backfill
+     * that assumes one overwrote perfectly valid modern identities, producing
+     * a second Customer.
+     *
+     * The requirement now: an identity a MIGRATION supplied is never treated
+     * as a replay, however young it looks. Only a key this app recorded as
+     * actually sent can be replayed.
      */
-    it("R9-04: a backfilled legacy identity replays the ORIGINAL org-derived key", async () => {
+    it("R10-04: a migration-supplied identity is never replayed as if it were sent -- it goes through recovery", async () => {
       queueRpc("claim_checkout_attempt", claimResult());
       queue({ data: { stripe_customer_id: null }, error: null });
-      queueRpc("claim_stripe_customer_creation", customerClaim({ creation_id: "legacy-org-42", retry_safe: true }));
+      // What migration 20260910110000 produces for such a row: recovery is
+      // required, and retry-safety is withheld regardless of the timestamp.
+      queueRpc(
+        "claim_stripe_customer_creation",
+        customerClaim({ creation_id: "legacy-org-42", retry_safe: false, needs_recovery: true }),
+      );
+      customersSearch.mockResolvedValue({ data: [] });
+      customersList.mockResolvedValue({ data: [], has_more: false });
+      queueRpc("rotate_stripe_customer_creation", { data: "creation_rotated", error: null });
       queueRpc("record_stripe_customer", RECORD_CUSTOMER_OK);
       queueRpc("renew_checkout_attempt", RENEW_OK);
       queueRpc("record_checkout_session", RECORD_OK);
 
       await redirectedTo(createCheckoutSessionAction(checkoutFormData()));
 
+      // The canonical enumeration ran -- the legacy key was NOT replayed on
+      // the strength of its age.
+      expect(customersList).toHaveBeenCalled();
       expect(customersCreate).toHaveBeenCalledWith(
         { metadata: { organization_id: "42" } },
-        { idempotencyKey: "customer-create:org-42" },
+        { idempotencyKey: "customer-create:creation_rotated" },
       );
+    });
+
+    /**
+     * R10-04, the other direction. An identity this app minted and has never
+     * sent cannot have produced anything, so recovery would be pure cost. This
+     * is the ONLY case where creating without recovery is sound, and it is
+     * decided by recorded fact rather than by the identity being young.
+     */
+    it("R10-04: a never-sent identity creates directly, with no enumeration and no rotation", async () => {
+      queueRpc("claim_checkout_attempt", claimResult());
+      queue({ data: { stripe_customer_id: null }, error: null });
+      queueRpc(
+        "claim_stripe_customer_creation",
+        customerClaim({ creation_id: "creation_fresh", retry_safe: false, needs_recovery: false }),
+      );
+      queueRpc("record_stripe_customer", RECORD_CUSTOMER_OK);
+      queueRpc("renew_checkout_attempt", RENEW_OK);
+      queueRpc("record_checkout_session", RECORD_OK);
+
+      await redirectedTo(createCheckoutSessionAction(checkoutFormData()));
+
+      expect(customersSearch).not.toHaveBeenCalled();
+      expect(customersList).not.toHaveBeenCalled();
+      expect(rpcCalls.some((c) => c.name === "rotate_stripe_customer_creation")).toBe(false);
+      expect(customersCreate).toHaveBeenCalledWith(
+        { metadata: { organization_id: "42" } },
+        { idempotencyKey: "customer-create:creation_fresh" },
+      );
+    });
+
+    /**
+     * R10-05. The lease cannot fence a worker that resumes after it expired,
+     * so the last thing before the external call is a re-check with enough
+     * lease left to cover it. A worker that has lost it must not reach Stripe.
+     */
+    it("R10-05: a claimant whose lease has lapsed is refused before it can call Stripe", async () => {
+      queueRpc("claim_checkout_attempt", claimResult());
+      queue({ data: { stripe_customer_id: null }, error: null });
+      queueRpc("claim_stripe_customer_creation", customerClaim({ needs_recovery: false }));
+      queueRpc("mark_stripe_customer_key_sent", { data: false, error: null });
+
+      const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData()));
+
+      expect(target).toContain("error=checkout_failed");
+      expect(customersCreate).not.toHaveBeenCalled();
+    });
+
+    /**
+     * R10-05's residual case, which no lease can prevent: a stale worker's
+     * create() lands anyway and the row has moved on. The Customer is real and
+     * orphaned, and the previous version discarded that fact silently -- which
+     * is what made the race invisible rather than merely rare.
+     */
+    it("R10-05: a Customer created under an identity that has since been superseded is recorded as an orphan", async () => {
+      queueRpc("claim_checkout_attempt", claimResult());
+      queue({ data: { stripe_customer_id: null }, error: null });
+      queueRpc("claim_stripe_customer_creation", customerClaim({ needs_recovery: false }));
+      // The successor already resolved the organization to a different one.
+      queueRpc("record_stripe_customer", { data: false, error: null });
+      queue({ data: { stripe_customer_id: null }, error: null }, { data: { stripe_customer_id: "cus_winner" }, error: null });
+      queueRpc("renew_checkout_attempt", RENEW_OK);
+      queueRpc("record_checkout_session", RECORD_OK);
+
+      await redirectedTo(createCheckoutSessionAction(checkoutFormData()));
+
+      const anomaly = rpcCalls.find((c) => c.name === "record_billing_anomaly");
+      expect(anomaly?.args).toMatchObject({
+        p_kind: "orphaned_customer",
+        p_detail: { orphanedCustomerId: "cus_new", persistedCustomerId: "cus_winner" },
+      });
     });
 
     it("a claim that comes back already resolved returns that customer without creating or searching", async () => {
@@ -813,12 +910,54 @@ describe("createCheckoutSessionAction", () => {
       expect(target).toBe("https://checkout.stripe.com/session");
       expect(rpcCalls.some((c) => c.name === "release_checkout_attempt")).toBe(true);
     });
-    it("Finding 8: a complete-but-UNPAID session is never treated as success -- releases and lets a fresh attempt proceed", async () => {
+    /**
+     * R10-02 (round-10 review, P1). This test used to REQUIRE the defect. It
+     * asserted that a complete-but-unpaid Session releases its attempt and a
+     * replacement Checkout is created, on the reasoning ("Finding 8") that
+     * such a Session is a dead end that would otherwise trap every future
+     * attempt.
+     *
+     * Stripe reaches `complete` while a payment is still processing, so
+     * "unpaid" means unresolved, not dead. Releasing there authorized a second
+     * subscription while the first payment could still succeed -- and a green
+     * suite said it was correct, because the test had been written from the
+     * implementation rather than from the requirement.
+     *
+     * The requirement: a replacement may only be created once the previous
+     * Session is confirmed unable to collect.
+     */
+    it("R10-02: a complete session whose payment is still processing does NOT authorize a replacement", async () => {
       queueRpc(
         "claim_checkout_attempt",
         claimResult({ is_new_attempt: false, existing_session_id: "cs_unpaid", existing_interval: "monthly", existing_price_id: MONTHLY_PRICE }),
       );
-      checkoutSessionsRetrieve.mockResolvedValue({ id: "cs_unpaid", status: "complete", payment_status: "unpaid", line_items: sessionLineItems(MONTHLY_PRICE) });
+      checkoutSessionsRetrieve.mockResolvedValue({
+        id: "cs_unpaid", status: "complete", payment_status: "unpaid",
+        subscription: "sub_processing", line_items: sessionLineItems(MONTHLY_PRICE),
+      });
+      // The subscription it created has not resolved: the payment can still
+      // succeed, so this organization already has a pending obligation.
+      subscriptionsRetrieve.mockResolvedValue({ id: "sub_processing", status: "incomplete" });
+
+      const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData("monthly")));
+      expect(target).toContain("error=checkout_failed");
+
+      expect(checkoutSessionsCreate).not.toHaveBeenCalled();
+      expect(rpcCalls.some((c) => c.name === "release_checkout_attempt")).toBe(false);
+    });
+
+    it("R10-02: a complete/unpaid session whose subscription is terminal DOES release -- the customer is not trapped", async () => {
+      queueRpc(
+        "claim_checkout_attempt",
+        claimResult({ is_new_attempt: false, existing_session_id: "cs_unpaid", existing_interval: "monthly", existing_price_id: MONTHLY_PRICE }),
+      );
+      checkoutSessionsRetrieve.mockResolvedValue({
+        id: "cs_unpaid", status: "complete", payment_status: "unpaid",
+        subscription: "sub_dead", line_items: sessionLineItems(MONTHLY_PRICE),
+      });
+      // incomplete_expired is Stripe's terminal state for a first payment that
+      // never succeeded -- nothing can be collected on it any more.
+      subscriptionsRetrieve.mockResolvedValue({ id: "sub_dead", status: "incomplete_expired" });
       queueRpc("release_checkout_attempt", RELEASE_OK);
       queueRpc("claim_checkout_attempt", claimResult({ attempt_id: "attempt_after_unpaid" }));
       queue(CUSTOMER_EXISTS);
@@ -828,6 +967,22 @@ describe("createCheckoutSessionAction", () => {
       const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData("monthly")));
       expect(target).toBe("https://checkout.stripe.com/session");
       expect(checkoutSessionsCreate).toHaveBeenCalledTimes(1);
+    });
+
+    it("R10-02: an unreadable subscription is uncertainty, not permission -- no replacement is created", async () => {
+      queueRpc(
+        "claim_checkout_attempt",
+        claimResult({ is_new_attempt: false, existing_session_id: "cs_unpaid", existing_interval: "monthly", existing_price_id: MONTHLY_PRICE }),
+      );
+      checkoutSessionsRetrieve.mockResolvedValue({
+        id: "cs_unpaid", status: "complete", payment_status: "unpaid",
+        subscription: "sub_unknown", line_items: sessionLineItems(MONTHLY_PRICE),
+      });
+      subscriptionsRetrieve.mockRejectedValue(new Error("Stripe is down"));
+
+      const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData("monthly")));
+      expect(target).toContain("error=checkout_failed");
+      expect(checkoutSessionsCreate).not.toHaveBeenCalled();
     });
 
     it("treats a complete session with payment_status 'no_payment_required' as success too", async () => {
