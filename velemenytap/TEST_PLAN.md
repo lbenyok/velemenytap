@@ -145,7 +145,10 @@ The initial monthly purchase was verified by hand through the real UI. Everythin
 | Cancellation | Subscription cancelled; entitlement revoked to `canceled` |
 | Resubscription | New subscription created; entitlement restored and `stripe_subscription_id` points at the NEW subscription, not the cancelled one |
 | Convergence | `billing_sync_requested == billing_sync_completed` and `needs_reconciliation = false` after the whole lifecycle |
-| `activated_at` | Set once on first activation and never rewritten across renewal, failure, cancellation or resubscription |
+| `activated_at` | Set once on first activation and never rewritten across renewal, failure, cancellation or resubscription |
+| **Activation evidence** (round 10) | `activation_evidence` holds the real `invoice.paid` that justified the latch, and `activated_at` equals its `paid_at` exactly. Round 9 would have passed the row above for the wrong reason — it set `activated_at` from any `active` status — so the assertion is now on the evidence, not on the field being non-null |
+| **Latch immutability** (round 10) | Three real payments across the lifecycle (initial, renewal, resubscription); the latch and its evidence still name the FIRST invoice |
+| **No pending activation** (round 10) | `activation_requested == activation_completed` throughout — the end-to-end refutation of R10-03, since activation is one statement and the state its livelock lived in cannot be produced |
 
 **One property of the harness worth knowing before reading its output.** A webhook whose reconciliation defers (another writer holds the lease) returns HTTP 500 *on purpose*, so Stripe redelivers it — with the durable dirty flag and the scheduled sweep as the guarantee underneath. `stripe listen` does **not** redeliver on 5xx, so a local run silently loses exactly the retries production would make, and phase results vary run to run purely on which event lost a lease race. Driving the sweep from the harness restores the half of the production contract the CLI cannot model. Separately, `get_billing_reconciliation_candidates` backs off any organization attempted in the last minute, so a sweep fired immediately after a burst correctly reports nothing to do — the final convergence assertion has to wait that window out, which the 15-minute production schedule does by construction.
 

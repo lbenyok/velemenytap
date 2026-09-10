@@ -75,11 +75,10 @@ configuration either way.
 - [x] **[me]** Isolated Playwright suite re-run against the round-10
       implementation: **190/190, zero skipped.** It caught a regression the
       unit tests and the PostgreSQL harness both missed — see `STATUS.md`.
-- [ ] **[me]** Re-run the **Stripe test-mode lifecycle** (annual, renewal,
-      failed payment, recovery, cancellation, resubscription) against the
-      round-10 implementation. Still the largest outstanding verification gap:
-      the activation path changed shape, and only real Stripe events exercise
-      it end to end.
+- [x] **[me]** Stripe **test-mode lifecycle re-run** against the round-10
+      implementation: **16/16 phases**, real test clock, real invoices. Includes
+      new assertions that activation carries its verifying invoice and that
+      three later payments never re-dated the latch. See `STATUS.md`.
 - [ ] **[you]** Confirm the live account's **payment method settings**. The app
       sends no `payment_method_types`, which is how Stripe enables
       Dashboard-managed dynamic payment methods — so which methods customers

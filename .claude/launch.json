@@ -2,9 +2,9 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "veleminytap-dev",
+      "name": "velemenytap-dev",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "veleminytap", "run", "dev"],
+      "runtimeArgs": ["--prefix", "velemenytap", "run", "dev"],
       "port": 3000
     }
   ]

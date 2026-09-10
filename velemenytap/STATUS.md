@@ -84,6 +84,9 @@ R9-07 gave reconciliation up to twenty sequential Stripe calls but left the 45-s
 - `npm run test` — **578/578** across 25 files.
 - `scripts/verify-local-database.mjs` — **41 checks** against real PostgreSQL 17, all **44 migrations**, including the migration-17 upgrade path.
 - Isolated Playwright suite — **190/190 passed, zero failed, zero skipped.**
+- Stripe **test-mode lifecycle — 16/16 phases**, against real Stripe test mode with a
+  real test clock: initial purchase, renewal, failed renewal, recovery by paying the
+  open invoice, cancellation, resubscription, the scheduled sweep, and convergence.
 - `npm run typecheck` / `lint` / `build` — clean.
 - **8/8 mutation tests caught.** Each of the eight defects was re-introduced into the migration that fixes it and the harness re-run; every one fails, naming the specific check. A regression that has only ever been green proves nothing about the bug it names.
 - Two harness checks had to be **inverted**, both of which had encoded a round-9 defect: one asserted that an `active` subscription evidences payment, the other that a freshly minted creation identity is retry-safe. The browser suite's activation test — already inverted once in round 9 — was rewritten again, this time against the requirement rather than any implementation's shape.
@@ -102,7 +105,46 @@ Re-creating a function is not a mechanical operation: it discards everything pre
 
 **A second thing the suite surfaced:** `SUPABASE_DB_URL` was never propagated into the test process — `loadEnvVars` forwards only the three required credential keys — so every test needing a direct Postgres connection was silently skipping. That is **45 tests, including the entire 32-case RPC privilege matrix**, which is precisely what checks that new RPCs are `service_role`-only and that no function in the public schema is unaccounted for. They pass once the variable is set. Any previous “zero skipped” claim depended on it happening to be exported in the shell, and this round’s 190/190 was run with it set explicitly.
 
-**Not re-run this round:** the Stripe test-mode lifecycle against real Stripe test mode. Listed in `LAUNCH_CHECKLIST.md`.
+### The Stripe lifecycle, re-run against round 10
+
+Round 10 changed activation from "any writer that sees `active`" to "only a verified
+`invoice.paid`". That is the one change in this round that a green unit suite could
+not vouch for, because it moves the work onto a webhook path that only real Stripe
+events exercise. So the lifecycle was re-run, and its activation phase strengthened
+from "activated_at is set" (which round 9 would also have satisfied, for the wrong
+reason) to assertions that can only pass if the evidence path actually ran:
+
+| Phase | Result |
+|---|---|
+| 1. initial purchase reconciled active | pass |
+| 1b. activation carries the verified invoice that justifies it | pass — `activation_evidence` holds a real invoice id |
+| 1c. the latch is dated from the payment, not from observation | pass — `activated_at` equals `evidence.paid_at` exactly |
+| 1d. the evidence names the approved monthly price | pass |
+| 2. renewal charged, period rolled forward | pass |
+| 3. failed renewal leaves a recoverable status | pass (`past_due`) |
+| 4. paying the open invoice recovers to active | pass |
+| 5. cancellation revokes entitlement | pass |
+| 6/6b/6c/6d. resubscription, then the scheduled sweep | pass |
+| 7. generations converged, nothing outstanding | pass |
+| 8. `activated_at` set once and never rewritten | pass |
+| 8b. later `invoice.paid` events did not re-date the latch | pass — three real payments, evidence still the first invoice |
+| 8c. no activation obligation ever left outstanding | pass — `activation_requested = activation_completed = 1` |
+
+**16/16.** Phase 4 had failed in the round-9 run (a harness artefact: `stripe listen`
+does not redeliver on 5xx, so the deferred-reconciliation retry production would make
+was silently lost). It passes here.
+
+8c is the direct end-to-end refutation of R10-03: across a full lifecycle with three
+real payments, a failure, a recovery, a cancellation and a resubscription, the
+activation counters never diverged — because activation is one statement, so the state
+the livelock lived in cannot be produced.
+
+**Still not verified by this run:** R10-02's own scenario. A `complete` Checkout
+Session whose payment is still unresolved requires an asynchronous or delayed payment
+method; with card payments in test mode a Session completes already paid, so the state
+cannot be produced here. R10-02 is covered by unit tests against the actual coordinator
+— the same level of evidence the reviewer's own reproduction used — and by the account
+payment-method setting listed in `LAUNCH_CHECKLIST.md`.
 
 ## Round 9: an independent review found 7 defects — all 7 confirmed, all 7 fixed (2026-09-09)
 
