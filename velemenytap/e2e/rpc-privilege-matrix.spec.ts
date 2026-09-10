@@ -114,13 +114,7 @@ const EXPECTED: ExpectedGrant[] = [
   },
   {
     signature:
-      "public.write_reconciliation_result(bigint, text, bigint, bigint, text, text, text, timestamp with time zone, boolean)",
-    anon: false,
-    authenticated: false,
-    service_role: true,
-  },
-  {
-    signature: "public.write_activation(bigint, text, bigint, bigint)",
+      "public.write_reconciliation_result(bigint, text, bigint, text, text, text, timestamp with time zone, boolean)",
     anon: false,
     authenticated: false,
     service_role: true,
@@ -138,7 +132,7 @@ const EXPECTED: ExpectedGrant[] = [
   // outcome also cannot discard a request that arrived while it held the
   // lease.
   {
-    signature: "public.clear_reconciliation_dirty(bigint, text, bigint, bigint)",
+    signature: "public.clear_reconciliation_dirty(bigint, text, bigint)",
     anon: false,
     authenticated: false,
     service_role: true,
@@ -157,7 +151,7 @@ const EXPECTED: ExpectedGrant[] = [
     service_role: true,
   },
   {
-    signature: "public.request_billing_activation(bigint)",
+    signature: "public.request_billing_activation(bigint, jsonb)",
     anon: false,
     authenticated: false,
     service_role: true,
@@ -192,6 +186,18 @@ const EXPECTED: ExpectedGrant[] = [
   // service_role-only, same as every other billing RPC.
   {
     signature: "public.claim_stripe_customer_creation(bigint, integer)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  {
+    signature: "public.mark_stripe_customer_key_sent(bigint, text, text, integer)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  {
+    signature: "public.get_billing_reconciliation_backlog(integer, integer)",
     anon: false,
     authenticated: false,
     service_role: true,

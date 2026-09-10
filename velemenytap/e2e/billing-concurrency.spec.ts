@@ -705,6 +705,13 @@ test.describe("generation counters -- an event arriving DURING a reconciliation 
   test("R10-01: an unpaid `active` subscription never sets the ever-paid latch, and cancellation restores grace", async () => {
     member = await seedOrgWithMember("billing-concurrency-unpaid-active");
     const admin = adminClient();
+    // The organization in the counterexample is grandfathered -- that is what
+    // it has to lose. A freshly seeded row is not, so state it explicitly
+    // rather than relying on the fixture's default.
+    await admin
+      .from("organization_billing")
+      .update({ grandfathered_at: new Date(Date.now() - 60 * 86_400_000).toISOString() })
+      .eq("organization_id", member.orgId);
 
     const write = async (status: string, subscriptionId: string | null) => {
       await admin.rpc("request_billing_reconciliation", { p_organization_id: member.orgId });

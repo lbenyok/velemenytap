@@ -72,10 +72,14 @@ payment, recovery, cancellation, resubscription) — **but before the round-10
 billing changes.** It has not been re-run since. Live mode shares none of that
 configuration either way.
 
-- [ ] **[me]** Re-run the isolated Playwright suite and the Stripe test-mode
-      lifecycle against the round-10 implementation. The specs were updated for
-      the new RPC signatures and typecheck cleanly, but have not been executed.
-      This is the largest outstanding verification gap.
+- [x] **[me]** Isolated Playwright suite re-run against the round-10
+      implementation: **190/190, zero skipped.** It caught a regression the
+      unit tests and the PostgreSQL harness both missed — see `STATUS.md`.
+- [ ] **[me]** Re-run the **Stripe test-mode lifecycle** (annual, renewal,
+      failed payment, recovery, cancellation, resubscription) against the
+      round-10 implementation. Still the largest outstanding verification gap:
+      the activation path changed shape, and only real Stripe events exercise
+      it end to end.
 - [ ] **[you]** Confirm the live account's **payment method settings**. The app
       sends no `payment_method_types`, which is how Stripe enables
       Dashboard-managed dynamic payment methods — so which methods customers
@@ -116,7 +120,7 @@ renewals involve no customer visit.
 All of `20260907150000` … `20260908120000` go in the **`--expand`** phase. The exact
 command and manifest are in `DEPLOYMENT.md` § 7; do not retype the list from memory.
 
-- [ ] **[you]** Confirm production is still on migration 17 (`supabase migration list`) — there are now **43** migrations, so 18→43 all go in the expand phase
+- [ ] **[you]** Confirm production is still on migration 17 (`supabase migration list`) — there are now **44** migrations, so 18→44 all go in the expand phase
       before starting. **The safety argument depends on it.** Several of these
       migrations change function signatures, which is normally exactly what needs an
       expand/enforce split — it is safe here *only* because none of them has ever been

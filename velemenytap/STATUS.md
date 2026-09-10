@@ -82,99 +82,27 @@ R9-07 gave reconciliation up to twenty sequential Stripe calls but left the 45-s
 ### Verification
 
 - `npm run test` — **578/578** across 25 files.
-- `scripts/verify-local-database.mjs` — **41 checks** against real PostgreSQL 17, all **43 migrations**, including the migration-17 upgrade path.
+- `scripts/verify-local-database.mjs` — **41 checks** against real PostgreSQL 17, all **44 migrations**, including the migration-17 upgrade path.
+- Isolated Playwright suite — **190/190 passed, zero failed, zero skipped.**
 - `npm run typecheck` / `lint` / `build` — clean.
 - **8/8 mutation tests caught.** Each of the eight defects was re-introduced into the migration that fixes it and the harness re-run; every one fails, naming the specific check. A regression that has only ever been green proves nothing about the bug it names.
 - Two harness checks had to be **inverted**, both of which had encoded a round-9 defect: one asserted that an `active` subscription evidences payment, the other that a freshly minted creation identity is retry-safe. The browser suite's activation test — already inverted once in round 9 — was rewritten again, this time against the requirement rather than any implementation's shape.
 
-**Not re-run this round:** the isolated Playwright suite and the Stripe test-mode lifecycle. The browser specs were updated for the new signatures and typecheck cleanly, but they have not been executed against the isolated project since these changes. That is the largest outstanding verification gap and is listed in `LAUNCH_CHECKLIST.md`.
-
-## Round 10: two of round 9's fixes were wrong (2026-09-10)
-
-An independent reviewer was given `REVIEW_REQUEST_ROUND10.md` and the branch at `aa87587`, and returned **eight defects — two P1 and six P2 — every one confirmed and fixed.** The round-10 request asked specifically whether round 9's fixes were right, because several replaced one invariant with another. Two of them had not been.
-
-The eight are not eight separate stories. They are four causes:
-
-| Cause | Findings |
-|---|---|
-| A live Stripe **status** was treated as a historical **payment** | R10-01, and R10-03 as its consequence |
-| A **terminal-looking state** was treated as one that cannot collect | R10-02 |
-| An idempotency key's **age** was treated as proof it had been **sent** | R10-04, R10-05 |
-| A **time-based decision** was made before a lock it waits on | R10-06, R10-07 |
-| **Work not lost** was reported as **work done** | R10-08 |
-
-Four forward migrations: `20260910100000`, `20260910110000`, `20260910120000`, `20260910130000`. Production untouched — it is still on migration 17 with no Stripe environment variables.
-
-The requirements these now satisfy are written down once, in `BILLING_INVARIANTS.md`, so a future change can be checked against a requirement rather than against the current implementation. That file exists because the recurring failure mode across five rounds has been a comment stating a rule the code did not enforce.
-
-### R10-01 (P1) — an `active` subscription permanently consumed prepayment grace
-
-Round 9's R9-02 fix had `write_reconciliation_result` set `activated_at` whenever it wrote an `active` status, "from evidence it already holds". It holds no such evidence. Stripe documents a `collection_method=send_invoice` subscription as starting active with its first invoice unpaid, and a subscription can be created active out-of-band entirely.
-
-`activated_at` is a one-way latch that permanently ends grandfathering. The reviewer reproduced a grandfathered organization given an approved-price invoiced subscription that was never paid, then canceled: dashboard access went **true → true → false**, with no activation ever requested and no invoice ever paid. Unrecoverable without manual repair.
-
-**Fixed:** `activated_at` is now written *only* by `request_billing_activation`, which requires verified `invoice.paid` evidence and stores it in a new `activation_evidence` column. No reconciliation writer derives it from any status. The product's payment policy is unchanged and stated explicitly in `BILLING_INVARIANTS.md` § I1 — including that a **zero-total paid invoice still activates**, because the pre-round-9 path already accepted it and narrowing it would revoke access from organizations that legitimately have it.
-
-### R10-03 (P2) — a verified activation could never finish after cancellation
-
-The reason round 9 reached for that wrong rule was real. Activation was **two phases**: register the obligation, then discharge it under the reconciliation lease. A handler that verified a paid invoice and died in between left an obligation only another invoice event could satisfy — and if the invoice was never redelivered and the subscription was since canceled, every sweep could refresh the subscription and none could finish the activation. Reproduced over three successful canceled-state refreshes, each leaving the row exactly as dirty as it found it.
-
-**Fixed by removing the gap rather than adding a recovery path.** Activation is now a single statement that writes the evidence and the latch together, so a pending activation cannot exist — strictly stronger than "a pending activation can be finished later". `write_activation` is dropped; it *was* the interruptible half. The lease was never needed: activation makes no Stripe call and `activated_at = coalesce(activated_at, paid_at)` is idempotent and order-independent.
-
-### R10-02 (P1) — a completed Checkout with an unresolved payment authorized a replacement
-
-Round 9's R9-01 fix released a checkout attempt once the Session left the `open` state, arguing `complete` is "terminal for payment purposes". Stripe reaches `complete` while a payment is still processing; `payment_status: unpaid` means unresolved, not dead. The reviewer drove the actual checkout coordinator through both paths — an initially complete/unpaid Session and one that becomes complete/unpaid during expiration — and both released the attempt and returned a replacement URL, while the original payment could still succeed.
-
-**Fixed:** for a completed Session with an unresolved payment, the decision is made on **the subscription it created** — the object that would actually collect. Only a terminal subscription (`canceled`, `incomplete_expired`) releases the attempt. `incomplete`, `past_due`, `unpaid`, `active`, `trialing`, `paused`, an unreadable subscription, or no subscription at all all keep the obligation pending. `expired` remains a valid replacement case.
-
-**Scope note the reviewer raised and I am not resolving by assumption:** `buildCheckoutRequest` specifies no `payment_method_types`, which is how Stripe enables Dashboard-managed dynamic payment methods. The claim that this app is "card only" is an account *setting*, not something this source establishes. The fix above does not depend on it — it is about Stripe's states, not this app's configuration — but the card-only claim itself remains unverified and is now listed as such.
-
-### R10-04 (P2) — the corrective backfill overwrote valid modern identities
-
-Round 9's R9-04 fix stamped `legacy-org-<id>` on **every** unresolved row. "Unresolved" does not imply "used the old organization-derived key": a deployment that had run migration 36 could already hold a valid random identity whose Customer existed but was never recorded locally. The backfill overwrote it, and for a recent organization the replacement looked retry-safe — so recovery was skipped and `create()` replayed a *different* key. The reviewer's ledger ended with **two Customers under two keys**.
-
-Round 9 fixed one instance of a wrong inference by making the same inference in reverse. The real error, common to both, is that an identity's **age** was treated as proof it had been **sent**.
-
-**Fixed:** `customer_creation_key_state` makes that an explicit, durable fact — `unused` (minted here, never sent; nothing can exist under it), `sent` (may have landed; replay inside retention, enumerate outside it), `unverified_legacy` (a migration supplied it; always enumerate). The application moves `unused → sent` immediately *before* the Stripe call, so a crash during the call still records that it may have landed. No migration can manufacture a false replay, and no valid identity needs overwriting — the identity's *value* is no longer what decides safety.
-
-### R10-05 (P2) — an expired claimant could still create under a retired key
-
-The creation lease excludes live contenders but cannot fence a worker that resumes after its lease expired: it can wake after a successor has enumerated, rotated and created, and create a second Customer under the retired key. The reviewer demonstrated it with a scaled one-second lease.
-
-**Partially fixed, and the limit is stated rather than papered over.** `mark_stripe_customer_key_sent` is a fence taken immediately before the Stripe call: it re-checks the lease and requires enough of it to remain to cover the call's own bounded lifetime. That narrows the window to the gap between the check and Stripe receiving the request. **It does not close it, and no database lease can** — Stripe cannot be told to disregard a request already in flight. So the residual case is now *detected*: a Customer this request created that the row no longer points at is recorded as an `orphaned_customer` anomaly instead of being silently discarded, which is what made the race invisible rather than merely rare. `OPERATOR_RECOVERY.md` § 1 says what to do with one.
-
-### R10-06 (P2) — two more clock-before-lock cases, both at implicit locks
-
-The fifth round in which this class has been found. `reserve_notification_email_change` reads the clock after its advisory lock but then UPDATEs `organizations`, which waits; `claim_negative_alert_send` — fixed in round 9 for the card row — then INSERTs a log row whose **foreign key** takes `FOR KEY SHARE` on `organizations`, which waits. Both were observed backdating a reservation by ~1,520 ms. Round 9's own comment claimed "every lock this decision depends on is now held". A foreign key is a lock.
-
-**Fixed:** both acquire the organization row explicitly, in the mode the implicit operation would have used, *before* reading the clock. A documented lock order (`nfc_cards → locations → organizations`) keeps making them explicit from introducing deadlocks.
-
-### R10-07 (P2) — public feedback's rate window used transaction-start time
-
-`submit_feedback_atomic` waits for the card and location locks and then counts the last five minutes with `now()`, which is transaction-start time. Seeding twenty submissions aged 299 seconds and blocking a new one behind the card lock for 1.5 s produced a **VT003 rejection while the true trailing-five-minute count was zero**.
-
-Lower impact than the billing findings, and the one case where the person who pays is a customer standing at a counter with no account and no way to report it. **Fixed:** both the decision and the inserted `created_at` use one instant read after every lock is held. The limit itself is unchanged; `clock_timestamp()` only moves forward, so this makes the limit more accurate, not more permissive.
-
-### R10-08 (P2) — successful pagination could repeatedly expire the lease, invisibly
-
-R9-07 gave reconciliation up to twenty sequential Stripe calls but left the 45-second lease unrenewed and never called `renew_reconciliation_lease` at all — which `DECISIONS.md` had claimed it did. A healthy three-page scan at 16 s per page took 48 s, lost the lease, had its write correctly rejected, and returned `deferred`. Every retry reproduces it identically, and the sweep reported **HTTP 200**.
-
-**Fixed in two parts.** The service now renews between pages and stops immediately if renewal fails. And because "no work lost" and "someone has been told" are different guarantees, `get_billing_reconciliation_backlog` surfaces organizations dirty for over an hour — four consecutive sweeps — as an operator-visible failure, separately from per-run errors. Ordinary `deferred` contention stays non-fatal, which round 9 was right about.
-
-### What I did not change, and why
-
-- **`clear_reconciliation_dirty` checking owner but not expiry.** The reviewer recorded this as a contract inconsistency rather than a ninth defect, and demonstrated no entitlement failure from it. I added the expiry check anyway — "still the owner" and "still holds the lease" should not be different tests in different functions — but it fixes no reproduced bug.
-- **The 20-page caps.** Failing closed rather than deciding entitlement from a prefix is still correct. What was missing was the operator procedure, now in `OPERATOR_RECOVERY.md`.
-
-### Verification
-
-- `npm run test` — **578/578** across 25 files.
-- `scripts/verify-local-database.mjs` — **41 checks** against real PostgreSQL 17, all **43 migrations**, including the migration-17 upgrade path.
-- `npm run typecheck` / `lint` / `build` — clean.
-- **8/8 mutation tests caught.** Each of the eight defects was re-introduced into the migration that fixes it and the harness re-run; every one fails, naming the specific check. A regression that has only ever been green proves nothing about the bug it names.
-- Two harness checks had to be **inverted**, both of which had encoded a round-9 defect: one asserted that an `active` subscription evidences payment, the other that a freshly minted creation identity is retry-safe. The browser suite's activation test — already inverted once in round 9 — was rewritten again, this time against the requirement rather than any implementation's shape.
-
-**Not re-run this round:** the isolated Playwright suite and the Stripe test-mode lifecycle. The browser specs were updated for the new signatures and typecheck cleanly, but they have not been executed against the isolated project since these changes. That is the largest outstanding verification gap and is listed in `LAUNCH_CHECKLIST.md`.
+### The browser suite caught a regression I introduced
+
+The round’s sharpest lesson, and it is about my own work rather than the review’s. Migration 40 had to re-create `claim_reconciliation_lease`, because its return type changed. Re-creating it silently dropped three behaviours that earlier rounds had added to the version being replaced, none of them related to the change being made:
+
+  1. the **crash-gap dirty marking** (migration 33) — a successful claim must mark the organization dirty in the same statement, or a worker that dies between claiming and writing leaves no durable evidence that reconciliation is owed, and nothing ever selects it again;
+  2. the **refused contender’s dirty marking** — an event arriving while somebody else holds the lease would be lost when the holder’s write cleared the flag;
+  3. the **300-second lease cap**.
+
+Typecheck passed. Lint passed. 578 unit tests passed. The 41-check real-PostgreSQL harness passed — none of them exercised those guarantees. Three hosted browser tests failed immediately. Restored by migration `20260910140000`, which is why this round ships five migrations rather than four.
+
+Re-creating a function is not a mechanical operation: it discards everything previous rounds added to the version being replaced, and only a test written against the **guarantee** rather than the **change** notices.
+
+**A second thing the suite surfaced:** `SUPABASE_DB_URL` was never propagated into the test process — `loadEnvVars` forwards only the three required credential keys — so every test needing a direct Postgres connection was silently skipping. That is **45 tests, including the entire 32-case RPC privilege matrix**, which is precisely what checks that new RPCs are `service_role`-only and that no function in the public schema is unaccounted for. They pass once the variable is set. Any previous “zero skipped” claim depended on it happening to be exported in the shell, and this round’s 190/190 was run with it set explicitly.
+
+**Not re-run this round:** the Stripe test-mode lifecycle against real Stripe test mode. Listed in `LAUNCH_CHECKLIST.md`.
 
 ## Round 9: an independent review found 7 defects — all 7 confirmed, all 7 fixed (2026-09-09)
 
