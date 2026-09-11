@@ -1,6 +1,15 @@
 # Status
 
-Last updated: 2026-09-11, after an independent round-12 review found four more defects — **two P1** — and confirmed the activation, generation, key-state and lock designs are sound. All four are fixed. One of the two P1s is a trap my own round-11 fix created.
+Last updated: 2026-09-11. Round 12's four defects (two P1) are fixed and verified, and **production signup confirmation is now proven end to end** against the live site.
+
+> **Production email, measured rather than assumed (2026-09-11).** Signup
+> confirmation: real mailbox, real click, lands on `/onboarding`, account
+> confirmed in Auth — both faults closed for the flow every new customer hits.
+> Password reset: the email arrives and the link authenticates, then **404s**,
+> because `/auth/reset-password` exists only on this branch — as does
+> `/auth/forgot-password`, so production has no way to request a reset either.
+> That is a feature awaiting deploy, not a regression. See
+> `LAUNCH_CHECKLIST.md` § 1.
 
 ## Round 12: two P1s in the Checkout lifecycle, one of them mine (2026-09-11)
 

@@ -61,9 +61,41 @@ received in a real mailbox and clicked — signup confirmation → `/onboarding`
       such as `no-reply@` may read better, and any local part on the verified domain
       works.
 
-**Verify production the same way it was verified here:** sign up with a real address,
-click the emailed link, and confirm it lands on `/onboarding` rather than
-`/auth/auth-code-error`. An email that *arrives* proves only Fault A is fixed.
+**Production signup confirmation is now VERIFIED end to end** (2026-09-11). A real
+signup to a real external mailbox, the email received from
+`no-reply@velemenytap.hu`, the link clicked: it carries the `token_hash` shape and
+lands on **`/onboarding`**, and the account is genuinely confirmed in production
+Auth (`email_confirmed_at` set). Both faults are closed for the flow every new
+customer actually hits. The throwaway account was deleted afterwards.
+
+**Password reset is a DIFFERENT matter, and the recovery template alone cannot fix
+it.** Verified the same way, the reset email arrives and its link authenticates
+correctly (a real `sb-` session cookie is set) — and then lands on **HTTP 404**,
+because `/auth/reset-password` **does not exist in the deployed production code**.
+Nor does `/auth/forgot-password`, and master's login page has no "forgot
+password" link at all. Self-service password reset is a feature of this branch,
+not of what is deployed:
+
+| Route | master (production) | this branch |
+|---|---|---|
+| `/auth/confirm` | yes | yes |
+| `/auth/auth-code-error` | yes | yes |
+| `/auth/reset-password` | **no — 404** | yes |
+| `/auth/forgot-password` | **no** | yes |
+| password change in settings | **no** | — |
+
+So today no customer can even *request* a reset: there is no entry point. The
+recovery template is pointed at the page that ships **with this branch**, where
+the identical flow was already verified end to end against the isolated project.
+It is correct for the code about to ship and inert for the code running now.
+Deliberately left that way — repointing it at `{{ .ConfirmationURL }}` would
+restore the fragment bug, and repointing it at `/dashboard` would log a user in
+with still no way to change their password, and would need undoing at deploy.
+
+- [ ] **[you]** After the branch deploys, click one real password-reset email in
+      production and confirm it lands on `/auth/reset-password`. Until then that
+      flow is **not available to customers**, which is a missing feature rather
+      than a broken one.
 
 ## 2. Stripe live configuration
 
