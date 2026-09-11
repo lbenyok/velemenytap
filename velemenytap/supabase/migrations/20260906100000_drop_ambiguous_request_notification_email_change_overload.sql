@@ -1,0 +1,41 @@
+-- Round-7 finding, discovered during this round's OWN verification (not
+-- one of R7-01 through R7-08 as originally listed, but directly caused by
+-- fixing R7-03's test-environment drift, which is what first made this
+-- reproducible): round-6's R6-01/R6-03 design kept the round-3 3-argument
+-- request_notification_email_change(bigint, text, int) defined -- grants
+-- revoked (migration 20260906090000), but the function itself left in
+-- place -- specifically so it would coexist alongside the new
+-- 2-argument request_notification_email_change(bigint, text) from
+-- migration 20260905193325, honoring round-6 R6-03's ask for a rollout-
+-- compatible transition rather than an outright drop.
+--
+-- That coexistence never actually worked. PostgREST resolves an RPC call
+-- to a specific function overload by matching the CALLABLE parameter
+-- shape in its schema-cache introspection of pg_proc -- independent of
+-- which role is calling, or what EXECUTE grants either overload has. The
+-- round-3 function's third parameter, p_expires_in_minutes, has a
+-- `default 1440` -- making it callable with just TWO arguments. A call
+-- naming exactly (p_organization_id, p_email) -- the only way the
+-- application has ever called this RPC, old code and new code alike --
+-- therefore matches BOTH the 2-argument function AND the 3-argument one
+-- (via its default) simultaneously. PostgREST cannot pick one and fails
+-- the call outright with PGRST203, "Could not choose the best candidate
+-- function", before any grant is even checked.
+--
+-- Reproduced directly this round: once R7-03's test-environment repair
+-- brought the 3-argument function's real presence in line with
+-- production's actual history (it had been missing from the isolated
+-- test project by accident, which is exactly why round 6's own test
+-- suite never caught this), every call to request_notification_email_change
+-- with the normal two named arguments started failing with PGRST203 --
+-- not just for a hypothetical still-on-old-code caller, but for the
+-- CURRENT application code too. There is no version of "keep both
+-- overloads defined" that is safe once one of them has a default
+-- overlapping the other's arity; the round-6 compatibility strategy for
+-- this specific function was unsound from the moment it was written, and
+-- the reason it passed round 6's own verification is exactly the
+-- environment drift R7-03 fixed. See DECISIONS.md for the full
+-- correction and why dropping this overload now, rather than "in a
+-- future cleanup migration" as originally planned, is the only version
+-- of R6-03's own compatibility goal that can actually be satisfied here.
+drop function if exists public.request_notification_email_change(bigint, text, int);

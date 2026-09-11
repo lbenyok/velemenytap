@@ -1,0 +1,26 @@
+-- Found during an independent review of 20260907160000's own out-of-order
+-- webhook guard: comparing `last_synced_event_created_at` with a strict
+-- `<` breaks for two genuinely distinct Stripe events that happen to
+-- share the same one-second-resolution `created` timestamp (Stripe's own
+-- granularity, not this schema's choice) -- the second one arrives with
+-- last_synced_event_created_at.lt.<its own timestamp> evaluating false
+-- (equal, not less-than), so its update is skipped as "stale" even though
+-- it's the genuinely newer state. Fixed in application code
+-- (app/api/webhooks/stripe/route.ts) by switching to canonical
+-- current-state retrieval: syncSubscription no longer trusts an event's
+-- own embedded snapshot for what to write at all, it re-fetches the
+-- subscription directly from Stripe (`stripe.subscriptions.retrieve`)
+-- every time and writes whatever that returns -- so there is no longer
+-- any timestamp comparison to have a precision bug in, for any event
+-- ordering or delivery timing.
+--
+-- This column still exists, renamed and repurposed: not a correctness
+-- gate anymore, just a plain diagnostic "when did we last successfully
+-- sync this organization's billing state from Stripe" timestamp, set to
+-- the sync's own wall-clock time rather than any Stripe-supplied value.
+-- Kept (rather than dropped outright) because it's a cheap, genuinely
+-- useful piece of observability for support/debugging that already
+-- existed -- there was no reason to lose it while fixing the bug in its
+-- former role.
+alter table public.organization_billing
+  rename column last_synced_event_created_at to last_synced_at;

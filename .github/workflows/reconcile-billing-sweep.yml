@@ -1,0 +1,41 @@
+name: Scheduled billing reconciliation sweep
+
+# Fourth independent review, Finding 5: the "monitored scheduled
+# reconciliation mechanism" this app's own reconciliation-lease design
+# (supabase/migrations/20260907210000, features/billing/reconcile.ts)
+# depends on to guarantee eventual convergence even when a webhook is
+# permanently missed. Every 15 minutes, calls the production app's own
+# /api/admin/reconcile-billing-sweep, which re-derives entitlement from
+# Stripe for every organization currently marked needs_reconciliation.
+#
+# Requires PRODUCTION_RECONCILE_SWEEP_URL (a repository Variable, the
+# app's own public URL -- not a secret) and RECONCILE_SWEEP_SECRET (a
+# repository Secret, matching the SAME value configured as the
+# RECONCILE_SWEEP_SECRET environment variable in Vercel Production) --
+# both are owner actions, not something this repository's own code can
+# configure. Until both are set, this workflow runs and fails loudly
+# (a 503/401 from the endpoint) rather than silently doing nothing --
+# check this workflow's own Actions history if billing entitlement ever
+# seems to lag behind Stripe for longer than a webhook retry window
+# should explain.
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  sweep:
+    name: Reconcile organizations needing it
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call the reconciliation sweep endpoint
+        env:
+          SWEEP_URL: ${{ vars.PRODUCTION_RECONCILE_SWEEP_URL || 'https://veleminytap.vercel.app/api/admin/reconcile-billing-sweep' }}
+          SWEEP_SECRET: ${{ secrets.RECONCILE_SWEEP_SECRET }}
+        run: |
+          if [ -z "$SWEEP_SECRET" ]; then
+            echo "::error::RECONCILE_SWEEP_SECRET is not configured as a repository secret -- see DEPLOYMENT.md."
+            exit 1
+          fi
+          response="$(curl -fsS -X POST -H "Authorization: Bearer $SWEEP_SECRET" "$SWEEP_URL")"
+          echo "$response"

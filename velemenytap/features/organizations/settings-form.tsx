@@ -1,0 +1,94 @@
+"use client";
+
+import { useActionState } from "react";
+import {
+  updateOrganizationSettingsAction,
+  type SettingsActionState,
+} from "./settings-actions";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Field,
+  FieldGroup,
+  FieldLabel,
+  FieldDescription,
+} from "@/components/ui/field";
+
+export type SettingsFormValues = {
+  name: string;
+  notification_email: string | null;
+};
+
+const initialState: SettingsActionState = {};
+
+export function SettingsForm({
+  organization,
+  pendingNotificationEmail,
+}: {
+  organization: SettingsFormValues;
+  /** A still-unexpired, unconfirmed request (round-3 R3-03), if any. */
+  pendingNotificationEmail?: string | null;
+}) {
+  const [state, formAction, isPending] = useActionState(
+    updateOrganizationSettingsAction,
+    initialState,
+  );
+  // The action itself also reports a fresh pending address right after a
+  // successful submit (before the next server render picks it up from the
+  // database) -- prefer that over the page-load prop once it's set.
+  const currentPending = state.pendingEmail ?? pendingNotificationEmail;
+
+  return (
+    <form action={formAction} noValidate>
+      <FieldGroup>
+        <Field data-invalid={!!state.error}>
+          <FieldLabel htmlFor="name">Vállalkozás neve</FieldLabel>
+          <Input
+            id="name"
+            name="name"
+            defaultValue={organization.name}
+            placeholder="pl. Kávézó Kft."
+            required
+            aria-invalid={!!state.error}
+          />
+        </Field>
+        <Field>
+          <FieldLabel htmlFor="notification_email">Értesítési e-mail cím</FieldLabel>
+          <Input
+            id="notification_email"
+            name="notification_email"
+            type="email"
+            defaultValue={organization.notification_email ?? ""}
+            placeholder="ertesites@vallalkozasod.hu"
+          />
+          <FieldDescription>
+            Ide érkeznek a negatív véleményekről szóló értesítések. Hagyd
+            üresen, ha inkább minden csapattagot értesíteni szeretnél. Egy
+            új cím megadása után egy megerősítő linket küldünk rá — az
+            értesítések csak a megerősítés után kezdenek oda érkezni.
+          </FieldDescription>
+          {currentPending ? (
+            <FieldDescription>
+              Megerősítésre vár: <strong>{currentPending}</strong>. Nézd meg
+              a postaládádat, vagy add meg újra a mentéshez, ha új
+              megerősítő linket szeretnél.
+            </FieldDescription>
+          ) : null}
+        </Field>
+        <Field>
+          <div className="flex items-center gap-3">
+            <Button type="submit" disabled={isPending}>
+              {isPending ? "Mentés..." : "Változtatások mentése"}
+            </Button>
+            {state.error ? (
+              <span className="text-sm text-destructive">{state.error}</span>
+            ) : null}
+            {state.success ? (
+              <span className="text-sm text-muted-foreground">Mentve.</span>
+            ) : null}
+          </div>
+        </Field>
+      </FieldGroup>
+    </form>
+  );
+}

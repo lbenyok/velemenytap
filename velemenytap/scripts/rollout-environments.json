@@ -1,0 +1,8 @@
+{
+  "production": {
+    "supabaseProjectRef": "jvssnpvrcwjxldfeddnw",
+    "allowedOrigin": "https://veleminytap.vercel.app",
+    "healthUrl": "https://veleminytap.vercel.app/api/health",
+    "environment": "production"
+  }
+}
