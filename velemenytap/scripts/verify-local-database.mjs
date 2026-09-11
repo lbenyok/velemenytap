@@ -1090,6 +1090,8 @@ try {
     "rotate_stripe_customer_creation",
     "mark_stripe_customer_key_sent",
     "mark_checkout_request_sent",
+    "claim_stripe_webhook_event",
+    "mark_stripe_webhook_event_applied",
     "get_billing_reconciliation_backlog",
   ];
   const grants = (

@@ -191,6 +191,18 @@ const EXPECTED: ExpectedGrant[] = [
     service_role: true,
   },
   {
+    signature: "public.claim_stripe_webhook_event(text)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  {
+    signature: "public.mark_stripe_webhook_event_applied(text)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  {
     signature: "public.mark_checkout_request_sent(bigint, text, text)",
     anon: false,
     authenticated: false,

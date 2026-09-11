@@ -62,7 +62,16 @@ The webhook path verifies a Session's Customer against the organization's persis
 
 One mutation initially came back **NOT CAUGHT**: removing the state reset from the mint branch, because `release_checkout_attempt` also resets it and the two masked each other. The check was re-pointed at the legacy-row path, where the mint branch fires with no release involved, and now fails as it should. A vacuous regression is worse than none.
 
-**Not re-run this round, and the reason is external:** the isolated Supabase project's database was unreachable throughout (both pooler ports refused connections, while its REST and Auth endpoints answered normally). The two new migrations could not be applied there, so **the isolated Playwright suite and the Stripe test-mode lifecycle were not run against these changes.** Everything above is local verification. Those two suites are the gap and are listed in `LAUNCH_CHECKLIST.md`.
+**Isolated verification, completed after the project came back.** The isolated Supabase project's database refused connections on both pooler ports for the first part of this round (REST and Auth answered normally throughout), so migrations 47/48 could not be applied and neither hosted suite could run. It recovered; both were then run against these changes:
+
+- Isolated Playwright suite — **192/192**, zero skipped.
+- Stripe **test-mode lifecycle — 16/16 phases** against real test mode, with a real test clock.
+
+The first full browser run failed one check, and it was the right one to fail: **"EXPECTED accounts for every function in the public schema, not just the ones someone remembered to list"**. Migration 48 added two RPCs and I had added only one of the three new functions to the privilege matrix. The local harness passed — its list asserts one overload per named function but not completeness — so this was caught solely by the hosted check that exists for exactly that gap. Both are now listed in both matrices.
+
+One observable effect worth recording: the lifecycle's first phase now reports `requested=1, completed=1` where the round-11 run reported `3, 1`. That is R12-03 suppressing duplicate webhook deliveries — the extra subscription scans a redelivered event used to schedule simply do not happen any more.
+
+The only remaining failure across both runs was the known PostgREST schema-cache propagation flake in the rollout-compatibility spec, which passes in isolation once the cache settles (confirmed again here). It creates and drops its own scratch functions and touches no billing code.
 
 ## Round 11: the redesigns hold; a pre-existing write defeated them (2026-09-10)
 
