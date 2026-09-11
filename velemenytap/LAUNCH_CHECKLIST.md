@@ -92,6 +92,19 @@ Deliberately left that way — repointing it at `{{ .ConfirmationURL }}` would
 restore the fragment bug, and repointing it at `/dashboard` would log a user in
 with still no way to change their password, and would need undoing at deploy.
 
+**Round 13 called this a P1 launch blocker; I disagree, and the disagreement is
+recorded rather than settled.** The 404 is real. What is disputed is reachability:
+`master` has no `/auth/forgot-password` route and its login form renders no reset
+link, so there is no customer-reachable way to trigger a recovery email at all --
+the only way to send one is a deliberate API call, which is what the verification
+test did. Self-service reset is a feature that ships with this branch, where both
+routes exist and the flow was verified end to end against the isolated project.
+
+The alternatives are worse: `{{ .ConfirmationURL }}` reinstates the URL-fragment
+bug this branch exists to fix, and `/dashboard` logs a user in with no
+password-change UI on master at all -- and both would need undoing at deploy,
+adding a must-remember step whose omission breaks recovery **permanently** rather
+than temporarily. The gate below is the mitigation.
 - [ ] **[you]** After the branch deploys, click one real password-reset email in
       production and confirm it lands on `/auth/reset-password`. Until then that
       flow is **not available to customers**, which is a missing feature rather
