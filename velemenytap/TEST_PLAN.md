@@ -68,6 +68,7 @@ Per the product skill, re-run this whenever the public rating/review flow change
 - [ ] 1 star → Google Review CTA available, same placement/prominence as other ratings
 - [ ] 2–5 stars → same
 - [ ] No code path conditions CTA visibility on rating, sentiment, or AI analysis
+- [ ] The CTA is still offered on the **blameless failure** paths — a duplicate re-tap and a rate-limited card — not just on the success screen. (Added after this checklist's first five items all passed while every failed submission silently dropped the customer's route to Google: the checklist only ever asked what happened when submission *worked*.)
 - [ ] `features/feedback/schema.test.ts`'s `it.each([1,2,3,4,5])` still passes (schema-level guard)
 - [ ] `e2e/review-gating.spec.ts` still passes (browser-level guard, automated in CI)
 

@@ -10,9 +10,33 @@ import {
   sendNegativeFeedbackAlert,
 } from "@/features/notifications/negative-feedback-alert";
 
+/**
+ * Why the error variant carries a `code`.
+ *
+ * The Google Review CTA used to exist only on the success screen, so EVERY
+ * failed submission silently removed the customer's route to Google. Two of
+ * those failures are not the customer doing anything wrong:
+ *
+ *   * `duplicate` -- they already submitted on this card within the last few
+ *     minutes. Re-tapping the card is exactly what someone does when they lost
+ *     the confirmation screen and wanted the Google button, and it was the one
+ *     path that refused to give it to them.
+ *   * `rate_limited` -- the card is busy. Their feedback was not recorded, but
+ *     nothing about that should stop them reviewing on Google.
+ *
+ * The other two deliberately do NOT offer it: `inactive` means the business
+ * has turned this card off, and `failed` is an unknown error where retrying is
+ * the right next action rather than being sent elsewhere.
+ *
+ * This is not a review-gating question -- the CTA was lost identically for 1
+ * and 5 stars -- but it removed the product's whole purpose from the customers
+ * most likely to act on it.
+ */
+export type FeedbackErrorCode = "duplicate" | "rate_limited" | "inactive" | "failed";
+
 export type FeedbackActionState =
   | { status: "idle" }
-  | { status: "error"; error: string }
+  | { status: "error"; error: string; code: FeedbackErrorCode }
   | { status: "success"; organizationName: string; googleReviewUrl: string | null };
 
 // Anti-spam posture for this endpoint (documented in SECURITY.md): the
@@ -53,6 +77,7 @@ export async function submitFeedbackAction(
     return {
       status: "error",
       error: parsed.error.issues[0]?.message ?? "Hiba történt. Kérjük, próbáld újra.",
+      code: "failed",
     };
   }
 
@@ -62,6 +87,7 @@ export async function submitFeedbackAction(
     return {
       status: "error",
       error: "Ehhez a látogatáshoz már küldtél véleményt. Köszönjük!",
+      code: "duplicate",
     };
   }
 
@@ -82,17 +108,19 @@ export async function submitFeedbackAction(
 
   if (error) {
     if (error.code === "VT001" || error.code === "VT002") {
-      return { status: "error", error: "Ez a link már nem aktív." };
+      return { status: "error", error: "Ez a link már nem aktív.", code: "inactive" };
     }
     if (error.code === "VT003") {
       return {
         status: "error",
         error: "Túl sok vélemény érkezett erről a kártyáról. Kérjük, próbáld újra pár perc múlva.",
+        code: "rate_limited",
       };
     }
     return {
       status: "error",
       error: "Nem sikerült elküldeni a véleményedet. Kérjük, próbáld újra.",
+      code: "failed",
     };
   }
 

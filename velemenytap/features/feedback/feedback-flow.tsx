@@ -15,14 +15,30 @@ const REFLECTIONS: Record<number, string> = {
 
 const initialState: FeedbackActionState = { status: "idle" };
 
+/**
+ * The error codes on which a customer still gets their route to Google.
+ *
+ * `duplicate` and `rate_limited` are both "nothing you did was wrong": the
+ * first is someone re-tapping a card they already reviewed -- which is exactly
+ * what you do when you lost the confirmation screen and wanted the Google
+ * button -- and the second is a busy card. Withholding the CTA there removed
+ * the product's whole purpose from the customers most likely to act on it.
+ *
+ * `inactive` and `failed` deliberately do not: the business has switched that
+ * card off, or something went wrong and retrying is the right next step.
+ */
+const ERROR_CODES_KEEPING_THE_CTA = new Set(["duplicate", "rate_limited"]);
+
 export function FeedbackFlow({
   publicId,
   organizationName,
   locationName,
+  googleReviewUrl,
 }: {
   publicId: string;
   organizationName: string;
   locationName: string;
+  googleReviewUrl: string | null;
 }) {
   const [rating, setRating] = useState<number | null>(null);
   const [state, formAction, isPending] = useActionState(
@@ -80,9 +96,14 @@ export function FeedbackFlow({
                 Kérjük, ne írj ide személyes vagy egészségügyi adatot.
               </p>
               {state.status === "error" ? (
-                <p className="text-center text-sm text-red-700" role="alert">
-                  {state.error}
-                </p>
+                <div className="space-y-4">
+                  <p className="text-center text-sm text-red-700" role="alert">
+                    {state.error}
+                  </p>
+                  {ERROR_CODES_KEEPING_THE_CTA.has(state.code) ? (
+                    <GoogleReviewCta googleReviewUrl={googleReviewUrl} />
+                  ) : null}
+                </div>
               ) : null}
               <button
                 type="submit"
@@ -108,7 +129,6 @@ function ConfirmationScreen({
 }) {
   // Validity of the destination is the only gate here -- never the rating.
   // Every rating from 1 to 5 reaches this same branch with the same link.
-  const safeReviewUrl = safeGoogleReviewUrl(googleReviewUrl);
   return (
     <div className="public-feedback flex min-h-svh flex-col items-center justify-center gap-8 bg-[var(--pf-bg)] px-5 py-12 text-center text-[var(--pf-ink)]">
       <div className="space-y-2">
@@ -128,21 +148,34 @@ function ConfirmationScreen({
           A véleményedet elküldtük ide: {organizationName}.
         </p>
       </div>
-      {safeReviewUrl ? (
-        <div className="w-full max-w-sm space-y-3">
-          <p className="text-sm text-[var(--pf-ink-muted)]">
-            Megosztanád a Google-ön is?
-          </p>
-          <a
-            href={safeReviewUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="block w-full rounded-lg bg-[var(--pf-accent)] px-4 py-3 text-sm font-medium text-white transition-colors hover:bg-[var(--pf-accent-hover)]"
-          >
-            Google-értékelés írása
-          </a>
-        </div>
-      ) : null}
+      <GoogleReviewCta googleReviewUrl={googleReviewUrl} />
+    </div>
+  );
+}
+
+/**
+ * The one place the Google Review CTA is rendered, so every screen that offers
+ * it offers exactly the same thing -- same wording, same prominence, same
+ * validity check. Its ONLY condition is that the destination is a real Google
+ * review link; it never inspects the rating, and there is deliberately no
+ * parameter through which it could.
+ */
+function GoogleReviewCta({ googleReviewUrl }: { googleReviewUrl: string | null }) {
+  const safeReviewUrl = safeGoogleReviewUrl(googleReviewUrl);
+  if (!safeReviewUrl) return null;
+  return (
+    <div className="w-full max-w-sm space-y-3">
+      <p className="text-center text-sm text-[var(--pf-ink-muted)]">
+        Megosztanád a Google-ön is?
+      </p>
+      <a
+        href={safeReviewUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="block w-full rounded-lg bg-[var(--pf-accent)] px-4 py-3 text-center text-sm font-medium text-white transition-colors hover:bg-[var(--pf-accent-hover)]"
+      >
+        Google-értékelés írása
+      </a>
     </div>
   );
 }

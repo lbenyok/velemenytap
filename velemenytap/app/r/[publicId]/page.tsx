@@ -36,6 +36,7 @@ export default async function PublicFeedbackPage({
       publicId={publicId}
       organizationName={card.organizationName}
       locationName={card.locationName}
+      googleReviewUrl={card.googleReviewUrl}
     />
   );
 }

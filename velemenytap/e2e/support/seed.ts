@@ -118,7 +118,15 @@ export async function seedActiveCard(orgId: number, namePrefix: string): Promise
 
 export type SeededOrg = {
   orgId: number;
-  cards: { rating: number; publicId: string }[];
+  locationId: number;
+  cards: { rating: number; publicId: string; cardId: number }[];
+  /**
+   * A card used by nothing else, for the test that deliberately exhausts a
+   * card's rate-limit window. Filling one of the five shared cards would make
+   * whichever rating test ran afterwards fail, and `fullyParallel` means the
+   * order is not fixed.
+   */
+  rateLimitCard: { publicId: string; cardId: number };
 };
 
 /**
@@ -135,40 +143,99 @@ export async function seedReviewGatingOrg(): Promise<SeededOrg> {
   const admin = adminClient();
   const orgName = `E2E Review Gating ${Date.now()}`;
 
-  const { data: org, error: orgError } = await admin
-    .from("organizations")
-    .insert({ name: orgName, slug: `e2e-review-gating-${Date.now()}` })
-    .select("id")
-    .single();
+  // Every write here goes through retryOnClockSkew for the same reason
+  // seedOrgWithMember's does: PGRST303 ("JWT issued at future") shows up
+  // intermittently against this isolated project and has nothing to do with
+  // what these tests assert. Without it, a seed that loses that coin flip
+  // fails the whole file -- which is exactly what happened on the first run
+  // after this fixture grew a sixth card.
+  const { data: org, error: orgError } = await retryOnClockSkew(() =>
+    admin
+      .from("organizations")
+      .insert({ name: orgName, slug: `e2e-review-gating-${Date.now()}` })
+      .select("id")
+      .single(),
+  );
   if (orgError) throw orgError;
 
-  const { data: location, error: locationError } = await admin
-    .from("locations")
-    .insert({
-      organization_id: org.id,
-      name: "E2E Test Location",
-      google_review_url: "https://g.page/r/e2e-test-review-link",
-    })
-    .select("id")
-    .single();
+  const { data: location, error: locationError } = await retryOnClockSkew(() =>
+    admin
+      .from("locations")
+      .insert({
+        organization_id: org.id,
+        name: "E2E Test Location",
+        google_review_url: "https://g.page/r/e2e-test-review-link",
+      })
+      .select("id")
+      .single(),
+  );
   if (locationError) throw locationError;
 
-  const cards: { rating: number; publicId: string }[] = [];
+  const cards: { rating: number; publicId: string; cardId: number }[] = [];
   for (const rating of [1, 2, 3, 4, 5]) {
-    const { data: card, error: cardError } = await admin
+    const { data: card, error: cardError } = await retryOnClockSkew(() =>
+      admin
+        .from("nfc_cards")
+        .insert({
+          organization_id: org.id,
+          location_id: location.id,
+          display_name: `E2E Card (rating ${rating})`,
+        })
+        .select("id, public_id")
+        .single(),
+    );
+    if (cardError) throw cardError;
+    cards.push({ rating, publicId: card.public_id, cardId: card.id });
+  }
+
+  const { data: rateLimitCard, error: rateLimitCardError } = await retryOnClockSkew(() =>
+    admin
       .from("nfc_cards")
       .insert({
         organization_id: org.id,
         location_id: location.id,
-        display_name: `E2E Card (rating ${rating})`,
+        display_name: "E2E Card (rate limit)",
       })
-      .select("public_id")
-      .single();
-    if (cardError) throw cardError;
-    cards.push({ rating, publicId: card.public_id });
-  }
+      .select("id, public_id")
+      .single(),
+  );
+  if (rateLimitCardError) throw rateLimitCardError;
 
-  return { orgId: org.id, cards };
+  return {
+    orgId: org.id,
+    locationId: location.id,
+    cards,
+    rateLimitCard: { publicId: rateLimitCard.public_id, cardId: rateLimitCard.id },
+  };
+}
+
+/**
+ * Fills a card's per-card rate-limit window (20 submissions per 5 minutes, see
+ * submit_feedback_atomic) so the next real submission is refused with VT003.
+ *
+ * Inserts directly rather than submitting twenty times through the UI: the
+ * limit is what is under test, not the path that reaches it, and twenty real
+ * submissions would also trip the duplicate cookie after the first.
+ */
+export async function fillRateLimitWindow(
+  orgId: number,
+  locationId: number,
+  cardId: number,
+): Promise<void> {
+  const admin = adminClient();
+  const oneMinuteAgo = new Date(Date.now() - 60_000).toISOString();
+  const { error } = await retryOnClockSkew(() =>
+    admin.from("feedback").insert(
+      Array.from({ length: 20 }, () => ({
+        organization_id: orgId,
+        location_id: locationId,
+        nfc_card_id: cardId,
+        rating: 5,
+        created_at: oneMinuteAgo,
+      })),
+    ),
+  );
+  if (error) throw error;
 }
 
 /** Deletes everything the seed created, in FK-safe order. */
