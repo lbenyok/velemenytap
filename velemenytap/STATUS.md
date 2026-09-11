@@ -1,6 +1,68 @@
 # Status
 
-Last updated: 2026-09-10, after an independent round-11 review found four more defects — one P1 — and **accepted round 10's main redesigns**. All four are confirmed and fixed. The P1 was a pre-existing write that round 10 preserved faithfully and my own audit could not see.
+Last updated: 2026-09-11, after an independent round-12 review found four more defects — **two P1** — and confirmed the activation, generation, key-state and lock designs are sound. All four are fixed. One of the two P1s is a trap my own round-11 fix created.
+
+## Round 12: two P1s in the Checkout lifecycle, one of them mine (2026-09-11)
+
+An independent reviewer was given `REVIEW_REQUEST_ROUND12.md` and the branch at `92007ff`, and returned **four defects — two P1 and two P2 — every one confirmed and fixed**, plus a qualified ownership gap that is also closed. The activation redesign, reconciliation generations, customer-creation key states and lock-before-clock work were all judged sound. Two forward migrations: `20260911100000`, `20260911110000`.
+
+Both P1s were in the **Checkout attempt lifecycle**, and between them they are the clearest illustration yet of this project's recurring failure mode.
+
+### R12-01 (P1) — "no RECORDED Session" was read as "no Session"
+
+Two places decided it was safe to discard a checkout attempt — which frees the idempotency key, so the next attempt mints a new one and Stripe creates a genuinely new Session. Both were sound only if a missing local Session pointer meant Stripe had created nothing.
+
+It does not. `sessions.create()` and the record of its id are two separate calls; a crash between them leaves a **real, open, payable Session** at Stripe and no local pointer.
+
+The codebase said so, twice, and relied on the negation anyway. At the record call: *"A Session that exists at Stripe but was never written down here is invisible to every later attempt — which is exactly how a customer ends up with two."* And at the rotation branch, in a comment I wrote in round 9 narrowing an earlier overclaim: *"there is no RECORDED Session to lose here, so discarding the attempt costs nothing **that this app can see**."*
+
+The qualifier was the tell. Not being able to see it is not evidence that it is not there — the **third** instance of one inference in this project, after an empty Customer Search read as absence (§ I5) and an identity's age read as proof it was sent (§ I4).
+
+The timing was not hypothetical either: the rotation window is ~23 hours (idempotency-key retention) while a Checkout Session lives 24 hours **from its own creation**. Two different clocks, as round 9 had already noted and then not acted on.
+
+**Fixed with the mechanism this project already had twice.** `checkout_request_state` (`unused`/`sent`) records whether a create() was ever issued, marked immediately *before* the call. A `sent` attempt is never discarded on local state; the coordinator asks Stripe by enumerating the customer's Sessions for an open one. A completed enumeration finding none is a sound negative; anything else leaves the attempt pending. Reconciliation is simply barred from retiring a `sent` attempt — it never talks to Stripe about Sessions, so it can never hold the evidence that would justify it.
+
+### R12-02 (P1) — a paid Session hijacked every later resubscription
+
+**This one I created in round 11.** A complete+paid Session ended the operation and returned its success URL, keeping the attempt, on the stated grounds that *"only reconciliation may clear it"*. R11-01 then stopped reconciliation clearing any attempt with a recorded Session — so nothing cleared it, and the attempt became permanent.
+
+Once that subscription is canceled, `hasLiveSubscription` correctly allows a new Checkout, the claim hands back the same paid Session, and the customer is redirected to a stale success page. Forever. And because that branch never consulted `planMatches`, a customer asking for **yearly** was sent to an old **monthly** Session's success URL.
+
+This is exactly the symmetric failure the round-12 request asked to be looked for — *"can an attempt now leak permanently, blocking or misdirecting an organization's future checkouts?"* — and the answer was yes. Fixing an over-broad write created a stuck one.
+
+**Fixed** by asking § I3's question instead: a paid Session whose subscription is still live IS the current subscription, so return its success URL and keep the attempt (which is what prevents a duplicate while local state catches up). One whose subscription is terminal is history, so release the attempt and create a real new Checkout for the plan actually requested. Paid with no subscription at all is a billing incident — money taken, nothing created — and fails closed with an anomaly.
+
+### R12-03 (P2) — the ledger recorded duplicates without preventing them
+
+The webhook route applied an event's effects first and inserted its id afterwards, reporting `duplicate: true` for a unique violation that had already let the effects run. Apply-then-record is right as a *retry* policy, but the effects are not all idempotent in their bookkeeping: activation advances its counters and (since R11-02) `billing_sync_requested` on every delivery, so a duplicate arriving after the first reconciliation finished scheduled another full subscription scan for nothing. The focused duplicate test asserted only the HTTP body, so it passed either way.
+
+**Fixed** with the recoverable started/applied distinction: an event is claimed before being applied, `applied_at` null means "claimed and unfinished" (re-apply), set means "done" (true no-op). The retry guarantee is unchanged — a failed apply leaves it null and Stripe redelivers.
+
+### R12-04/05/06 (P2) — operator procedures that could not be run
+
+Round 11 fixed one documented step that could not execute; round 12 found three more, by running them:
+
+- the weekly anomaly-review query selected `created_at` from a table whose column is `detected_at` — it failed immediately, blocking the only documented review of every anomaly kind;
+- the stuck-Checkout repair told the operator to release with a token from `claim_stripe_customer_creation`, which `release_checkout_attempt` does not accept — it needs a **checkout** claim, and the direct SQL call returns no row rather than `false`;
+- the activation-recovery step named an RPC with no SQL, no evidence shape, no role requirement and nothing to verify afterwards.
+
+All three are now executable, with the checks to run first and the results to expect.
+
+### Also closed: the success-page customer binding
+
+The webhook path verifies a Session's Customer against the organization's persisted one before reconciling; the billing success page did not, and `write_reconciliation_result` overwrites `stripe_customer_id` unconditionally. The identifier check there proves a Session *claims* to belong to this organization, not that its Customer does. Not reachable through ordinary customer use — but "only reachable by an operator" is not an access-control argument, so the same check now applies on both paths.
+
+### Verification
+
+- `npm run test` — **590/590** across 25 files.
+- `scripts/verify-local-database.mjs` — **48 checks** against real PostgreSQL 17, all **48 migrations**, including the migration-17 upgrade path.
+- `npm run typecheck` / `lint` / `build` — clean.
+- **5/5 mutation tests caught** — three SQL (retiring a sent attempt; not resetting the state when an identity is minted; letting any caller mark a request sent) and two TypeScript (skipping the Stripe enumeration; restoring the old paid-Session branch).
+- The re-created `claim_checkout_attempt` and `release_checkout_attempt` were column-diffed against their originals: nothing lost, `checkout_request_state` added. That check is necessary and **not sufficient** — it is precisely the check that missed R11-01 — so it is reported as one input, not as assurance.
+
+One mutation initially came back **NOT CAUGHT**: removing the state reset from the mint branch, because `release_checkout_attempt` also resets it and the two masked each other. The check was re-pointed at the legacy-row path, where the mint branch fires with no release involved, and now fails as it should. A vacuous regression is worse than none.
+
+**Not re-run this round, and the reason is external:** the isolated Supabase project's database was unreachable throughout (both pooler ports refused connections, while its REST and Auth endpoints answered normally). The two new migrations could not be applied there, so **the isolated Playwright suite and the Stripe test-mode lifecycle were not run against these changes.** Everything above is local verification. Those two suites are the gap and are listed in `LAUNCH_CHECKLIST.md`.
 
 ## Round 11: the redesigns hold; a pre-existing write defeated them (2026-09-10)
 

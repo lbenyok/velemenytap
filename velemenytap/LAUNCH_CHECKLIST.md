@@ -72,6 +72,12 @@ payment, recovery, cancellation, resubscription) — **but before the round-10
 billing changes.** It has not been re-run since. Live mode shares none of that
 configuration either way.
 
+- [ ] **[me]** Re-run the **isolated Playwright suite** and the **Stripe test-mode
+      lifecycle** against the round-12 changes. Blocked on 2026-09-11: the
+      isolated Supabase project's database refused connections on both
+      pooler ports (REST and Auth answered normally), so migrations 47/48 could
+      not be applied there and neither suite could run. Everything else in
+      round 12 is locally verified. Retry when the project is reachable.
 - [x] **[me]** Isolated Playwright suite re-run against the round-10
       implementation: **190/190, zero skipped.** It caught a regression the
       unit tests and the PostgreSQL harness both missed — see `STATUS.md`.
@@ -119,7 +125,7 @@ renewals involve no customer visit.
 All of `20260907150000` … `20260908120000` go in the **`--expand`** phase. The exact
 command and manifest are in `DEPLOYMENT.md` § 7; do not retype the list from memory.
 
-- [ ] **[you]** Confirm production is still on migration 17 (`supabase migration list`) — there are now **46** migrations, so 18→46 are the pending set
+- [ ] **[you]** Confirm production is still on migration 17 (`supabase migration list`) — there are now **48** migrations, so 18→48 are the pending set — **29 expand + 2 enforce**, and re-derive both lists from `supabase migration list` immediately before the run rather than from any prose
       before starting. **The safety argument depends on it.** Several of these
       migrations change function signatures, which is normally exactly what needs an
       expand/enforce split — it is safe here *only* because none of them has ever been

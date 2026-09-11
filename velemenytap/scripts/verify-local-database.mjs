@@ -731,6 +731,83 @@ try {
   );
   pass("a checkout still holding its operation lease is never retired by a concurrent refresh");
 
+  // ------------ R12-01: a SENT attempt is never retired on local state alone
+  //
+  // The case R11-01's predicate still missed. create() and the record of its
+  // Session id are two separate calls; a crash between them leaves a real,
+  // open, PAYABLE Session at Stripe and no local pointer. Both the retire
+  // predicate and the app's rotation branch treated that missing pointer as
+  // proof no Session existed -- freeing the idempotency key, so the next
+  // create() mints a SECOND payable Session.
+  //
+  // The app's own comment admitted the gap and relied on it anyway:
+  // "there is no RECORDED Session to lose here, so discarding the attempt
+  // costs nothing THAT THIS APP CAN SEE." Not being able to see it is not
+  // evidence that it is not there.
+  const sentOrg = await org(client, "sent-attempt-is-never-retired");
+  await seedCustomer(client, sentOrg);
+  const sentAttempt = await checkout(client, sentOrg);
+  assert.equal(sentAttempt.request_state, "unused", "a freshly minted attempt has never been sent");
+
+  // A caller without the lease may not mark it, and neither may one whose
+  // lease has gone.
+  assert.notEqual(
+    (await client.query("select public.mark_checkout_request_sent($1,$2,$3) as ok", [sentOrg, sentAttempt.attempt_id, "not_the_owner"])).rows[0].ok,
+    true,
+  );
+  assert.equal(
+    (await client.query("select public.mark_checkout_request_sent($1,$2,$3) as ok", [sentOrg, sentAttempt.attempt_id, sentAttempt.owner_token])).rows[0].ok,
+    true,
+  );
+  pass("a checkout request can only be marked sent by the lease holder");
+
+  // Now the attempt looks exactly like the dangerous case: sent, no recorded
+  // Session, and no live operation lease.
+  await client.query(
+    "update public.organization_billing set checkout_attempt_expires_at = clock_timestamp() - interval '1 hour', checkout_owner_token = null where organization_id=$1",
+    [sentOrg],
+  );
+  assert.equal(await writeResult(client, sentOrg, await claimLease(client, sentOrg), `sub_sent_${sentOrg}`, "canceled"), true);
+  const sentRow = await billing(client, sentOrg);
+  assert.equal(sentRow.checkout_attempt_id, sentAttempt.attempt_id, "a sent attempt survives an unrelated refresh");
+  assert.equal(sentRow.checkout_request_state, "sent", "and keeps saying it may have produced a Session");
+  assert.ok(sentRow.checkout_request, "and keeps the request needed to replay its idempotency key");
+  pass("a refresh cannot retire an attempt whose create() was already issued to Stripe");
+
+  // The state belongs to the IDENTITY. Once Stripe has been asked and the
+  // attempt released, the next identity must start clean -- otherwise a fresh
+  // attempt inherits a stale "sent" and is treated as possibly having produced
+  // a Session it never could. Enforced by the mint branch of
+  // claim_checkout_attempt; release_checkout_attempt also clears it, which is
+  // defence in depth rather than the enforcing write.
+  const resumedAttempt = await checkout(client, sentOrg);
+  assert.equal(resumedAttempt.request_state, "sent", "the state belongs to the identity, and the identity survived");
+  assert.equal(
+    (await client.query("select public.release_checkout_attempt($1,$2,$3) as ok", [sentOrg, resumedAttempt.attempt_id, resumedAttempt.owner_token])).rows[0].ok,
+    true,
+  );
+  const afterRelease = await checkout(client, sentOrg);
+  assert.notEqual(afterRelease.attempt_id, resumedAttempt.attempt_id, "a released attempt is genuinely replaced");
+  assert.equal(afterRelease.request_state, "unused", "and its successor starts unused, not inheriting `sent`");
+
+  // The other way an identity is replaced, and the one that actually exercises
+  // the MINT branch on its own: a legacy row from before 20260908100000, whose
+  // attempt id is set but whose stored request is null. claim_checkout_attempt
+  // mints a new identity in place, with no release involved -- so if the mint
+  // branch did not reset the state, this successor would inherit `sent` and be
+  // treated forever as possibly having produced a Session it never could.
+  const legacyOrg = await org(client, "legacy-attempt-mints-unused");
+  await seedCustomer(client, legacyOrg);
+  const legacyAttempt = await checkout(client, legacyOrg);
+  await client.query(
+    "update public.organization_billing set checkout_request_state = 'sent', checkout_request = null, checkout_owner_token = null, checkout_attempt_expires_at = null where organization_id=$1",
+    [legacyOrg],
+  );
+  const mintedOverLegacy = await checkout(client, legacyOrg);
+  assert.notEqual(mintedOverLegacy.attempt_id, legacyAttempt.attempt_id, "a legacy attempt is replaced in place");
+  assert.equal(mintedOverLegacy.request_state, "unused", "and the minted identity starts unused");
+  pass("a newly minted attempt never inherits the previous identity's sent state");
+
   // -------------------------------------------------- staleness candidates
   const missed = await org(client, "completely-missed-webhook");
   await seedCustomer(client, missed);
@@ -1012,6 +1089,7 @@ try {
     "record_stripe_customer",
     "rotate_stripe_customer_creation",
     "mark_stripe_customer_key_sent",
+    "mark_checkout_request_sent",
     "get_billing_reconciliation_backlog",
   ];
   const grants = (

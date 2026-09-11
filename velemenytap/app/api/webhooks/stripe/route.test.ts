@@ -44,8 +44,19 @@ function chain() {
   return c;
 }
 
+// R12-03: the route now claims the event through an RPC and marks it applied
+// afterwards, rather than inserting into the ledger after the effects ran.
+// eventClaim is what a test sets to model an already-applied duplicate.
+let eventClaim: boolean = true;
+const webhookRpc = vi.fn(async (name: string) => {
+  if (name === "claim_stripe_webhook_event") return { data: eventClaim, error: null };
+  if (name === "mark_stripe_webhook_event_applied") return { data: true, error: null };
+  return { data: null, error: null };
+});
+
 vi.mock("@/lib/supabase/admin", () => ({
   createAdminClient: () => ({
+    rpc: (...args: unknown[]) => webhookRpc(...(args as [string])),
     from: (table: string) => {
       if (table === "stripe_webhook_events") {
         return { insert };
@@ -131,6 +142,8 @@ describe("POST /api/webhooks/stripe", () => {
     constructEvent.mockReset();
     subscriptionsRetrieve.mockReset();
     insert.mockReset();
+    webhookRpc.mockClear();
+    eventClaim = true;
     reconcileOrganizationBilling.mockReset();
     activateOrganizationBilling.mockReset();
     recordAnomaly.mockReset();
@@ -211,7 +224,7 @@ describe("POST /api/webhooks/stripe", () => {
     const res = await POST(webhookRequest("{}"));
     expect(res.status).toBe(200);
     expect(reconcileOrganizationBilling).toHaveBeenCalledWith(42, "cus_1");
-    expect(insert).toHaveBeenCalledWith({ id: "evt_1" });
+    expect(webhookRpc).toHaveBeenCalledWith("mark_stripe_webhook_event_applied", { p_event_id: "evt_1" });
   });
 
   it("Finding 11: refuses to sync (asks Stripe to retry) when the subscription's Stripe Customer does not match the organization's already-persisted customer -- quarantined, never rebinding the organization", async () => {
@@ -277,14 +290,46 @@ describe("POST /api/webhooks/stripe", () => {
     expect(reconcileOrganizationBilling).not.toHaveBeenCalled();
   });
 
-  it("reprocesses a duplicate delivery of the same event id idempotently, still reporting it as a duplicate", async () => {
+  /**
+   * R12-03 (round-12 review, P2). This test used to assert only the final
+   * HTTP body, so it passed even though the effects had ALREADY RUN by the
+   * time the duplicate was detected -- the ledger recorded duplicates without
+   * preventing them. For invoice.paid that meant another activation
+   * bookkeeping write and, after R11-02, another full subscription scan
+   * scheduled for nothing.
+   *
+   * It now asserts the requirement: a duplicate of an event that already
+   * completed does no work at all.
+   */
+  it("R12-03: a duplicate of an already-applied event does no work, not merely reports itself", async () => {
     constructEvent.mockReturnValue(subscriptionEvent());
-    insert.mockResolvedValue({ error: { code: "23505", message: "duplicate key" } });
+    eventClaim = false; // already applied by an earlier delivery
     const { POST } = await import("./route");
     const res = await POST(webhookRequest("{}"));
     const body = await res.json();
     expect(res.status).toBe(200);
     expect(body).toEqual({ received: true, duplicate: true });
+    expect(subscriptionsRetrieve).not.toHaveBeenCalled();
+    expect(reconcileOrganizationBilling).not.toHaveBeenCalled();
+  });
+
+  it("R12-03: a delivery that CLAIMED the event but never finished is re-applied, not skipped", async () => {
+    // claim returns true for a row whose applied_at is still null.
+    constructEvent.mockReturnValue(subscriptionEvent());
+    eventClaim = true;
+    const { POST } = await import("./route");
+    const res = await POST(webhookRequest("{}"));
+    expect(res.status).toBe(200);
+    expect(reconcileOrganizationBilling).toHaveBeenCalledWith(42, "cus_1");
+  });
+
+  it("R12-03: a failed apply is NOT marked applied, so Stripe redelivers", async () => {
+    constructEvent.mockReturnValue(subscriptionEvent());
+    reconcileOrganizationBilling.mockResolvedValue({ outcome: "error", message: "boom" });
+    const { POST } = await import("./route");
+    const res = await POST(webhookRequest("{}"));
+    expect(res.status).toBe(500);
+    expect(webhookRpc).not.toHaveBeenCalledWith("mark_stripe_webhook_event_applied", expect.anything());
   });
 
   it("ignores event types it doesn't need to act on, but still acknowledges them", async () => {
@@ -293,7 +338,7 @@ describe("POST /api/webhooks/stripe", () => {
     const res = await POST(webhookRequest("{}"));
     expect(res.status).toBe(200);
     expect(subscriptionsRetrieve).not.toHaveBeenCalled();
-    expect(insert).toHaveBeenCalledWith({ id: "evt_2" });
+    expect(webhookRpc).toHaveBeenCalledWith("mark_stripe_webhook_event_applied", { p_event_id: "evt_2" });
   });
 
   describe("Finding 5/11: invoice.paid activation", () => {

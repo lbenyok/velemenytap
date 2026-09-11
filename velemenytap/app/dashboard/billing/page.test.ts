@@ -17,6 +17,11 @@ vi.mock("@/lib/stripe", () => ({
 const reconcileOrganizationBilling = vi.fn();
 vi.mock("@/features/billing/reconcile", () => ({
   reconcileOrganizationBilling: (...args: unknown[]) => reconcileOrganizationBilling(...args),
+  // Round-12 ownership gap: the success page now verifies the Session's
+  // Customer against the persisted one before reconciling. Real
+  // implementation, not a stub -- the point of the check is the rule it
+  // applies, and a stub would assert nothing.
+  customerIdMatches: (persisted: string | null, observed: string) => persisted === null || persisted === observed,
 }));
 
 vi.mock("next/navigation", () => ({ redirect: vi.fn() }));
@@ -151,5 +156,38 @@ describe("resolveCheckoutSuccessState", () => {
   it("returns 'pending' when billing is null (no row read yet / race)", async () => {
     const result = await resolveCheckoutSuccessState(42, "cs_1", null);
     expect(result).toBe("confirmed"); // reconciliation succeeds and matches sub_1
+  });
+
+  /**
+   * Round-12 review, qualified ownership gap. The webhook path checks the
+   * Session's Customer against the organization's persisted one before
+   * reconciling; this path did not, and write_reconciliation_result overwrites
+   * stripe_customer_id unconditionally.
+   *
+   * The identifier check above proves a Session CLAIMS to belong to this
+   * organization — not that its Customer does. A Session created outside the
+   * normal flow carrying this organization's metadata could bind a foreign
+   * Customer and make its subscriptions the organization's entitlement source.
+   */
+  it("R12: refuses a Session naming a Customer the organization is not bound to", async () => {
+    const result = await resolveCheckoutSuccessState(
+      42,
+      "cs_1",
+      billingRow({ stripe_customer_id: "cus_SOMEONE_ELSE", stripe_subscription_id: null }) as never,
+    );
+    expect(result).toBe("invalid");
+    expect(reconcileOrganizationBilling).not.toHaveBeenCalled();
+  });
+
+  it("R12: still reconciles when the organization has no Customer bound yet", async () => {
+    // A null persisted Customer is "nothing to check", not a mismatch — this
+    // is a first-ever checkout, and refusing it would break the normal path.
+    const result = await resolveCheckoutSuccessState(
+      42,
+      "cs_1",
+      billingRow({ stripe_customer_id: null, stripe_subscription_id: null }) as never,
+    );
+    expect(result).toBe("confirmed");
+    expect(reconcileOrganizationBilling).toHaveBeenCalled();
   });
 });

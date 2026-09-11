@@ -23,6 +23,8 @@ export type OrganizationBilling = {
   current_period_end: string | null;
   cancel_at_period_end: boolean;
   stripe_subscription_id: string | null;
+  /** Needed to verify a Checkout Session names THIS organization's Customer. */
+  stripe_customer_id: string | null;
   grandfathered_at: string | null;
   activated_at: string | null;
 };

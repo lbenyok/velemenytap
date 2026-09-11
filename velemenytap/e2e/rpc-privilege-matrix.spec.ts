@@ -191,6 +191,12 @@ const EXPECTED: ExpectedGrant[] = [
     service_role: true,
   },
   {
+    signature: "public.mark_checkout_request_sent(bigint, text, text)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  {
     signature: "public.mark_stripe_customer_key_sent(bigint, text, text, integer)",
     anon: false,
     authenticated: false,

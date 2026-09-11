@@ -99,6 +99,7 @@ export interface Database {
           customer_creation_id: string | null;
           customer_creation_started_at: string | null;
           customer_creation_key_state: string;
+          checkout_request_state: string;
           customer_creation_lease_owner: string | null;
           customer_creation_lease_expires_at: string | null;
           reconciliation_lease_owner: string | null;
@@ -138,6 +139,7 @@ export interface Database {
           customer_creation_id?: string | null;
           customer_creation_started_at?: string | null;
           customer_creation_key_state?: string;
+          checkout_request_state?: string;
           customer_creation_lease_owner?: string | null;
           customer_creation_lease_expires_at?: string | null;
           reconciliation_lease_owner?: string | null;
@@ -177,6 +179,7 @@ export interface Database {
           customer_creation_id?: string | null;
           customer_creation_started_at?: string | null;
           customer_creation_key_state?: string;
+          checkout_request_state?: string;
           customer_creation_lease_owner?: string | null;
           customer_creation_lease_expires_at?: string | null;
           reconciliation_lease_owner?: string | null;
@@ -539,6 +542,8 @@ export interface Database {
           existing_mode: string | null;
           request: Json | null;
           retry_safe: boolean;
+          request_state: string;
+          attempt_created_at: string | null;
         }[];
       };
       record_checkout_session: {
@@ -597,6 +602,22 @@ export interface Database {
           p_required_seconds?: number;
         };
         Returns: boolean;
+      };
+      claim_stripe_webhook_event: {
+        Args: { p_event_id: string };
+        Returns: boolean | null;
+      };
+      mark_stripe_webhook_event_applied: {
+        Args: { p_event_id: string };
+        Returns: boolean | null;
+      };
+      mark_checkout_request_sent: {
+        Args: {
+          p_organization_id: number;
+          p_attempt_id: string;
+          p_owner_token: string;
+        };
+        Returns: boolean | null;
       };
       record_stripe_customer: {
         Args: {

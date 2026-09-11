@@ -8,7 +8,7 @@ import { getOrganizationBilling } from "@/features/billing/queries";
 import { isBillingActive, hasLiveSubscription, type OrganizationBilling } from "@/features/billing/status";
 import { createCheckoutSessionAction, createPortalSessionAction } from "@/features/billing/actions";
 import { resyncOrganizationBillingFormAction } from "@/features/billing/admin-actions";
-import { reconcileOrganizationBilling } from "@/features/billing/reconcile";
+import { reconcileOrganizationBilling, customerIdMatches } from "@/features/billing/reconcile";
 import { PLAN_PRICING, type BillingInterval } from "@/features/billing/plans";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
@@ -117,6 +117,24 @@ export async function resolveCheckoutSuccessState(
 
   if (sessionSubscriptionId) {
     const customerId = typeof session.customer === "string" ? session.customer : session.customer?.id;
+    // Round-12 review, qualified ownership gap. The webhook path checks the
+    // Session's Customer against the organization's persisted one before
+    // reconciling (customerIdMatches); this path did not, and
+    // write_reconciliation_result overwrites stripe_customer_id
+    // unconditionally. The identifier check above proves the Session CLAIMS to
+    // belong to this organization, not that its Customer does -- so a Session
+    // created outside the normal flow carrying this organization's metadata
+    // could have bound a foreign Customer and made its subscriptions the
+    // entitlement source. Not reachable through ordinary customer use, which
+    // always passes the persisted Customer; closed anyway, because "only
+    // reachable by an operator" is not an access-control argument.
+    if (customerId && !customerIdMatches(billing?.stripe_customer_id ?? null, customerId)) {
+      console.error(
+        `Billing page: Checkout Session ${sessionId} names customer ${customerId}, but organization ` +
+          `${organizationId} is persisted against ${billing?.stripe_customer_id} -- refusing to reconcile.`,
+      );
+      return "invalid";
+    }
     if (customerId) {
       const result = await reconcileOrganizationBilling(organizationId, customerId);
       if (result.outcome === "reconciled" && result.subscriptionId === sessionSubscriptionId && (result.status === "active" || result.status === "trialing")) {

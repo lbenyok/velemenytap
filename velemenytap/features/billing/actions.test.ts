@@ -68,6 +68,7 @@ const customersList = vi.fn();
 const checkoutSessionsCreate = vi.fn();
 const checkoutSessionsRetrieve = vi.fn();
 const checkoutSessionsExpire = vi.fn();
+const checkoutSessionsList = vi.fn();
 const billingPortalSessionsCreate = vi.fn();
 const subscriptionsRetrieve = vi.fn();
 
@@ -75,7 +76,7 @@ vi.mock("@/lib/stripe", () => ({
   createStripeClient: () => ({
     customers: { create: customersCreate, update: customersUpdate, search: customersSearch, list: customersList },
     checkout: {
-      sessions: { create: checkoutSessionsCreate, retrieve: checkoutSessionsRetrieve, expire: checkoutSessionsExpire },
+      sessions: { create: checkoutSessionsCreate, retrieve: checkoutSessionsRetrieve, expire: checkoutSessionsExpire, list: checkoutSessionsList },
     },
     subscriptions: { retrieve: subscriptionsRetrieve },
     billingPortal: { sessions: { create: billingPortalSessionsCreate } },
@@ -112,6 +113,9 @@ function defaultRpcImpl(name: string, args: unknown) {
   // The pre-create fence succeeds unless a test says otherwise, so tests of
   // the creation DECISION are not all rewritten as tests of the fence.
   if (name === "mark_stripe_customer_key_sent") return Promise.resolve({ data: true, error: null });
+  // R12-01: the checkout-request fence, same treatment -- tests of the
+  // creation DECISION should not all become tests of the fence.
+  if (name === "mark_checkout_request_sent") return Promise.resolve({ data: true, error: null });
   return Promise.resolve({ data: null, error: null });
 }
 const rpc = vi.fn(defaultRpcImpl);
@@ -162,6 +166,8 @@ function claimResult(overrides: Partial<{
   existing_mode: string | null;
   request: unknown;
   retry_safe: boolean;
+  request_state: string;
+  attempt_created_at: string | null;
 }> = {}) {
   return {
     data: [
@@ -175,6 +181,9 @@ function claimResult(overrides: Partial<{
         existing_mode: null,
         request: null,
         retry_safe: true,
+        // R12-01: a fresh attempt has never been sent to Stripe.
+        request_state: "unused",
+        attempt_created_at: new Date().toISOString(),
         ...overrides,
       },
     ],
@@ -870,7 +879,10 @@ describe("createCheckoutSessionAction", () => {
       checkoutSessionsRetrieve.mockResolvedValue({ id: "cs_raced", status: "open", url: "https://checkout.stripe.com/raced", line_items: sessionLineItems(MONTHLY_PRICE) });
       checkoutSessionsExpire.mockRejectedValue(new Error("Session already completed"));
       checkoutSessionsRetrieve.mockResolvedValueOnce({ id: "cs_raced", status: "open", url: "https://checkout.stripe.com/raced", line_items: sessionLineItems(MONTHLY_PRICE) });
-      checkoutSessionsRetrieve.mockResolvedValueOnce({ id: "cs_raced", status: "complete", payment_status: "paid" });
+      checkoutSessionsRetrieve.mockResolvedValueOnce({ id: "cs_raced", status: "complete", payment_status: "paid", subscription: "sub_raced" });
+      // R12-02: a paid Session is settled on the subscription it created --
+      // a live one means this IS the current subscription.
+      subscriptionsRetrieve.mockResolvedValue({ id: "sub_raced", status: "active" });
 
       const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData("yearly")));
       expect(target).toContain("checkout=success");
@@ -1023,13 +1035,197 @@ describe("createCheckoutSessionAction", () => {
       expect(checkoutSessionsCreate).not.toHaveBeenCalled();
     });
 
+    /**
+     * R12-01 (round-12 review, P1). The create() and the record of its Session
+     * id are two separate steps. A crash between them leaves a REAL, open,
+     * payable Session at Stripe and no local pointer — and the rotation branch
+     * treated that missing pointer as proof no Session existed, released the
+     * attempt, freed the idempotency key, and let the next create() mint a
+     * SECOND payable Session.
+     *
+     * The code said so itself and relied on the negation anyway: "there is no
+     * RECORDED Session to lose here, so discarding the attempt costs nothing
+     * that this app can see." Not being able to see it is not evidence.
+     *
+     * The requirement: an attempt that was actually SENT is never discarded on
+     * local state alone. Stripe is asked.
+     */
+    it("R12-01: a sent attempt with no recorded Session reuses the open Session Stripe still has", async () => {
+      queueRpc(
+        "claim_checkout_attempt",
+        // Sent, no recorded Session, and a plan mismatch -- the branch that
+        // used to release and re-mint.
+        claimResult({
+          is_new_attempt: false,
+          existing_session_id: null,
+          existing_price_id: YEARLY_PRICE,
+          retry_safe: false,
+          request_state: "sent",
+        }),
+      );
+      queue(CUSTOMER_EXISTS);
+      checkoutSessionsList.mockResolvedValue({
+        data: [{ id: "cs_lost", status: "open" }],
+        has_more: false,
+      });
+      checkoutSessionsRetrieve.mockResolvedValue({
+        id: "cs_lost", status: "open", url: "https://checkout.stripe.com/lost",
+        line_items: sessionLineItems(MONTHLY_PRICE),
+      });
+      queueRpc("record_checkout_session", RECORD_OK);
+
+      const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData("monthly")));
+
+      expect(target).toBe("https://checkout.stripe.com/lost");
+      // The whole point: no second payable Session.
+      expect(checkoutSessionsCreate).not.toHaveBeenCalled();
+      expect(rpcCalls.some((c) => c.name === "release_checkout_attempt")).toBe(false);
+    });
+
+    it("R12-01: an enumeration that cannot finish is uncertainty, not permission to re-mint", async () => {
+      queueRpc(
+        "claim_checkout_attempt",
+        claimResult({ is_new_attempt: false, existing_session_id: null, retry_safe: false, request_state: "sent" }),
+      );
+      queue(CUSTOMER_EXISTS);
+      checkoutSessionsList.mockRejectedValue(new Error("Stripe is down"));
+
+      const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData("monthly")));
+
+      expect(target).toContain("error=checkout_failed");
+      expect(checkoutSessionsCreate).not.toHaveBeenCalled();
+      expect(rpcCalls.some((c) => c.name === "release_checkout_attempt")).toBe(false);
+    });
+
+    it("R12-01: a completed enumeration finding nothing open DOES authorize a fresh attempt", async () => {
+      queueRpc(
+        "claim_checkout_attempt",
+        claimResult({ is_new_attempt: false, existing_session_id: null, retry_safe: false, request_state: "sent" }),
+        claimResult({ attempt_id: "attempt_after_probe" }),
+      );
+      queue(CUSTOMER_EXISTS);
+      checkoutSessionsList.mockResolvedValue({ data: [{ id: "cs_done", status: "complete" }], has_more: false });
+      queueRpc("release_checkout_attempt", RELEASE_OK);
+      queueRpc("renew_checkout_attempt", RENEW_OK);
+      queueRpc("record_checkout_session", RECORD_OK);
+
+      const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData("monthly")));
+
+      expect(target).toBe("https://checkout.stripe.com/session");
+      expect(checkoutSessionsCreate).toHaveBeenCalledTimes(1);
+    });
+
+    it("R12-01: the key is marked sent BEFORE the Stripe call, not after", async () => {
+      queueRpc("claim_checkout_attempt", claimResult());
+      queue(CUSTOMER_EXISTS);
+      queueRpc("renew_checkout_attempt", RENEW_OK);
+      queueRpc("record_checkout_session", RECORD_OK);
+
+      // Capture whether the key was already marked at the instant Stripe was
+      // called -- a crash DURING create() must still leave the row saying
+      // "this may have produced a Session".
+      let markedBeforeCreate = false;
+      checkoutSessionsCreate.mockImplementation(() => {
+        markedBeforeCreate = rpcCalls.some((c) => c.name === "mark_checkout_request_sent");
+        return Promise.resolve({ id: "cs_new", url: "https://checkout.stripe.com/session" });
+      });
+
+      await redirectedTo(createCheckoutSessionAction(checkoutFormData()));
+
+      expect(markedBeforeCreate).toBe(true);
+      const mark = rpcCalls.find((c) => c.name === "mark_checkout_request_sent");
+      expect(mark?.args).toMatchObject({ p_attempt_id: "attempt_1", p_owner_token: "owner_1" });
+    });
+
+    /**
+     * R12-02 (round-12 review, P1), and a fix I caused myself.
+     *
+     * A complete+paid Session used to end the operation and return its success
+     * URL, keeping the attempt, "because only reconciliation may clear it".
+     * R11-01 then stopped reconciliation from clearing any attempt with a
+     * recorded Session — so nothing cleared it, and the attempt became
+     * permanent.
+     *
+     * Once that subscription is canceled, hasLiveSubscription correctly allows
+     * a new Checkout, the claim hands back the same paid Session, and the
+     * customer is redirected to a stale success page forever. Asking for
+     * YEARLY returns an old MONTHLY Session's URL, because that branch never
+     * consulted planMatches.
+     */
+    it("R12-02: a paid Session whose subscription is canceled does not trap resubscription", async () => {
+      queueRpc(
+        "claim_checkout_attempt",
+        claimResult({ is_new_attempt: false, existing_session_id: "cs_old_paid", existing_interval: "monthly", existing_price_id: MONTHLY_PRICE }),
+        claimResult({ attempt_id: "attempt_resubscribe" }),
+      );
+      checkoutSessionsRetrieve.mockResolvedValue({
+        id: "cs_old_paid", status: "complete", payment_status: "paid",
+        subscription: "sub_gone", line_items: sessionLineItems(MONTHLY_PRICE),
+      });
+      subscriptionsRetrieve.mockResolvedValue({ id: "sub_gone", status: "canceled" });
+      queueRpc("release_checkout_attempt", RELEASE_OK);
+      queue(CUSTOMER_EXISTS);
+      queueRpc("renew_checkout_attempt", RENEW_OK);
+      queueRpc("record_checkout_session", RECORD_OK);
+
+      const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData("yearly")));
+
+      // A real new Checkout, for the plan actually asked for -- not the old
+      // monthly Session's success page.
+      expect(target).toBe("https://checkout.stripe.com/session");
+      expect(target).not.toContain("checkout=success");
+      expect(checkoutSessionsCreate).toHaveBeenCalledTimes(1);
+    });
+
+    it("R12-02: a paid Session whose subscription is still live keeps returning its success URL", async () => {
+      queueRpc(
+        "claim_checkout_attempt",
+        claimResult({ is_new_attempt: false, existing_session_id: "cs_current", existing_interval: "monthly", existing_price_id: MONTHLY_PRICE }),
+      );
+      queue(CUSTOMER_EXISTS);
+      checkoutSessionsRetrieve.mockResolvedValue({
+        id: "cs_current", status: "complete", payment_status: "paid",
+        subscription: "sub_live", line_items: sessionLineItems(MONTHLY_PRICE),
+      });
+      subscriptionsRetrieve.mockResolvedValue({ id: "sub_live", status: "active" });
+
+      const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData("monthly")));
+
+      // Keeping the attempt here is what prevents a duplicate while the local
+      // row catches up -- this half of the old behaviour was right.
+      expect(target).toContain("checkout=success");
+      expect(target).toContain("session_id=cs_current");
+      expect(checkoutSessionsCreate).not.toHaveBeenCalled();
+      expect(rpcCalls.some((c) => c.name === "release_checkout_attempt")).toBe(false);
+    });
+
+    it("R12-02: a paid Session that created no subscription is an incident, not a release", async () => {
+      queueRpc(
+        "claim_checkout_attempt",
+        claimResult({ is_new_attempt: false, existing_session_id: "cs_orphan", existing_interval: "monthly", existing_price_id: MONTHLY_PRICE }),
+      );
+      queue(CUSTOMER_EXISTS);
+      checkoutSessionsRetrieve.mockResolvedValue({
+        id: "cs_orphan", status: "complete", payment_status: "paid",
+        subscription: null, line_items: sessionLineItems(MONTHLY_PRICE),
+      });
+
+      const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData("monthly")));
+
+      expect(target).toContain("error=checkout_failed");
+      expect(checkoutSessionsCreate).not.toHaveBeenCalled();
+      const anomaly = rpcCalls.find((c) => c.name === "record_billing_anomaly");
+      expect(anomaly?.args).toMatchObject({ p_kind: "paid_session_without_subscription" });
+    });
+
     it("treats a complete session with payment_status 'no_payment_required' as success too", async () => {
       queueRpc(
         "claim_checkout_attempt",
         claimResult({ is_new_attempt: false, existing_session_id: "cs_free", existing_interval: "monthly", existing_price_id: MONTHLY_PRICE }),
       );
       queue(CUSTOMER_EXISTS);
-      checkoutSessionsRetrieve.mockResolvedValue({ id: "cs_free", status: "complete", payment_status: "no_payment_required", line_items: sessionLineItems(MONTHLY_PRICE) });
+      checkoutSessionsRetrieve.mockResolvedValue({ id: "cs_free", status: "complete", payment_status: "no_payment_required", subscription: "sub_free", line_items: sessionLineItems(MONTHLY_PRICE) });
+      subscriptionsRetrieve.mockResolvedValue({ id: "sub_free", status: "trialing" });
       const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData("monthly")));
       expect(target).toContain("checkout=success");
     });
@@ -1227,6 +1423,7 @@ describe("createCheckoutSessionAction", () => {
         }
         const q = rpcQueues[name];
         if (q && q.length > 0) return q.shift();
+        if (name === "mark_checkout_request_sent") return { data: true, error: null };
         return { data: null, error: null };
       });
       queue(CUSTOMER_EXISTS);

@@ -8,6 +8,7 @@ function billing(overrides: Partial<OrganizationBilling>): OrganizationBilling {
     current_period_end: null,
     cancel_at_period_end: false,
     stripe_subscription_id: null,
+    stripe_customer_id: null,
     grandfathered_at: null,
     activated_at: null,
     ...overrides,

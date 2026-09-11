@@ -39,6 +39,15 @@ type ClaimResult = {
   request: Stripe.Checkout.SessionCreateParams | null;
   /** Whether this attempt's idempotency key is still inside Stripe's retention window. */
   retrySafe: boolean;
+  /**
+   * R12-01: whether a create() was ever ISSUED under this attempt's key.
+   * `unused` is the only state in which discarding the attempt is free; a
+   * `sent` attempt may have produced a Session at Stripe that was never
+   * recorded here, and a missing local pointer is not evidence of absence.
+   */
+  requestState: "unused" | "sent";
+  /** When this attempt was minted -- bounds the Session recovery window. */
+  attemptCreatedAt: string | null;
 };
 
 /**
@@ -132,6 +141,110 @@ async function claimAttempt(
     existingMode: row.existing_mode,
     request: (row.request as unknown as Stripe.Checkout.SessionCreateParams | null) ?? null,
     retrySafe: row.retry_safe,
+    requestState: (row.request_state as "unused" | "sent" | null) ?? "unused",
+    attemptCreatedAt: row.attempt_created_at ?? null,
+  };
+}
+
+/**
+ * R12-01's fence, taken immediately before `checkout.sessions.create()`.
+ *
+ * Records that a create() is about to be issued under this attempt's
+ * idempotency key, so a crash during the call cannot leave the row claiming
+ * the key was never used. That is what makes `sent` trustworthy, and therefore
+ * what makes "this attempt may have produced a Session" answerable at all.
+ *
+ * Exactly the same shape as `mark_stripe_customer_key_sent` (§ I4), for
+ * exactly the same reason.
+ */
+async function markRequestSent(
+  admin: ReturnType<typeof createAdminClient>,
+  organizationId: number,
+  attemptId: string,
+  ownerToken: string,
+): Promise<boolean> {
+  const { data, error } = await admin.rpc("mark_checkout_request_sent", {
+    p_organization_id: organizationId,
+    p_attempt_id: attemptId,
+    p_owner_token: ownerToken,
+  });
+  if (error) {
+    throw new Error(`Failed to record the checkout request for organization ${organizationId}: ${error.message}`);
+  }
+  return data === true;
+}
+
+// Pages of 100 the Session enumeration will walk before giving up. Hitting
+// this cap means "I could not finish looking", which is deliberately NOT the
+// same answer as "I looked everywhere and found nothing".
+const SESSION_PROBE_MAX_PAGES = 20;
+
+// How far before the attempt's recorded creation time the enumeration starts,
+// covering clock skew between this database and Stripe.
+const SESSION_PROBE_SLACK_MS = 5 * 60 * 1000;
+
+type OpenSessionProbe =
+  | { outcome: "found"; session: Stripe.Checkout.Session }
+  | { outcome: "absent" }
+  | { outcome: "unknown"; reason: string };
+
+/**
+ * R12-01. Answers the question a `sent` attempt with no recorded Session
+ * raises: **is there an open, payable Checkout Session for this customer?**
+ *
+ * The application creates a Session and records its id in two separate steps.
+ * A crash between them leaves a real, open Session at Stripe and no local
+ * pointer — and both the rotation branch and reconciliation used to treat that
+ * missing pointer as proof no Session existed. It is not; it is exactly the
+ * inference § I5 exists to forbid.
+ *
+ * Note what this deliberately does NOT try to do: identify *which* attempt
+ * produced a given Session. That is unanswerable for a Session whose id was
+ * never written down, and it is also not the question. The question that
+ * decides whether creating another Session is safe is simply whether this
+ * customer already has one that can still take money.
+ *
+ * Bounded by the attempt's own creation time, since a Session produced by this
+ * attempt cannot predate it. Anything that stops the enumeration finishing —
+ * an API error, or more pages than the cap — returns `unknown`, never
+ * `absent`.
+ */
+async function findOpenCheckoutSession(
+  stripe: Stripe,
+  customerId: string,
+  attemptCreatedAt: string | null,
+): Promise<OpenSessionProbe> {
+  if (!attemptCreatedAt) {
+    return { outcome: "unknown", reason: "no recorded attempt time to bound the search window with" };
+  }
+  const startedAtMs = Date.parse(attemptCreatedAt);
+  if (Number.isNaN(startedAtMs)) {
+    return { outcome: "unknown", reason: `unparseable attempt time ${attemptCreatedAt}` };
+  }
+  const createdGte = Math.floor((startedAtMs - SESSION_PROBE_SLACK_MS) / 1000);
+
+  let startingAfter: string | undefined;
+  for (let page = 0; page < SESSION_PROBE_MAX_PAGES; page++) {
+    let batch: Stripe.ApiList<Stripe.Checkout.Session>;
+    try {
+      batch = await stripe.checkout.sessions.list({
+        customer: customerId,
+        created: { gte: createdGte },
+        limit: 100,
+        ...(startingAfter ? { starting_after: startingAfter } : {}),
+      });
+    } catch (err) {
+      return { outcome: "unknown", reason: `Stripe session list failed: ${err instanceof Error ? err.message : err}` };
+    }
+    const open = batch.data.find((s) => s.status === "open");
+    if (open) return { outcome: "found", session: open };
+    if (!batch.has_more) return { outcome: "absent" };
+    startingAfter = batch.data[batch.data.length - 1]?.id;
+    if (!startingAfter) return { outcome: "absent" };
+  }
+  return {
+    outcome: "unknown",
+    reason: `more than ${SESSION_PROBE_MAX_PAGES * 100} Checkout Sessions since the attempt began`,
   };
 }
 
@@ -803,6 +916,88 @@ async function assertPreviousSessionCannotCollect(
   }
 }
 
+/**
+ * R12-02 (round-12 review, P1). What to do with a Session that is complete and
+ * PAID.
+ *
+ * The old answer was: end the operation, keep the attempt, and send the
+ * customer to that Session's success URL — on the stated grounds that
+ * "only reconciliation may clear it". That was true right up until R11-01
+ * stopped reconciliation from clearing any attempt with a recorded Session,
+ * at which point nothing cleared it at all and the attempt became permanent.
+ *
+ * The consequence is a trap: once the subscription that Session created is
+ * canceled, `hasLiveSubscription` correctly allows a new Checkout, the claim
+ * hands back the same old paid Session, and this branch returns its stale
+ * success URL. Every later resubscribe does the same thing forever — and
+ * because this branch never consults `planMatches`, a customer asking for
+ * YEARLY is redirected to an old MONTHLY Session's success page. Fixing
+ * R11-01's over-broad write created this one; it is the symmetric failure the
+ * round-12 request asked to be looked for, and it was there.
+ *
+ * The right question is the same one § I3 already asks everywhere else: is
+ * this Session still the organization's live subscription, or is it history?
+ *
+ *   * Still live (or recoverable) — this IS the current subscription. Return
+ *     its success URL so the billing page reconciles; keep the attempt, which
+ *     is exactly what stops a duplicate while local state catches up.
+ *   * Terminal — the payment is long settled and the subscription is gone. The
+ *     Session cannot collect again, so the attempt is released and the caller
+ *     creates a genuinely new Checkout for the plan actually requested.
+ *   * Unreadable, or paid with no subscription at all — uncertainty, and the
+ *     second case is a real billing incident (money taken, nothing created).
+ *     Fail closed and record it.
+ */
+async function settlePaidSession(
+  stripe: Stripe,
+  admin: ReturnType<typeof createAdminClient>,
+  organizationId: number,
+  claim: ClaimResult,
+  ownerToken: string,
+  session: Stripe.Checkout.Session,
+  siteUrl: string,
+): Promise<ReconcileSessionOutcome> {
+  const successUrl = `${siteUrl}/dashboard/billing?checkout=success&session_id=${session.id}`;
+  const subscriptionRef = session.subscription;
+  const subscriptionId = typeof subscriptionRef === "string" ? subscriptionRef : subscriptionRef?.id;
+
+  if (!subscriptionId) {
+    await recordAnomaly(admin, organizationId, "paid_session_without_subscription", {
+      sessionId: session.id,
+      paymentStatus: session.payment_status,
+    });
+    throw new Error(
+      `The previous Checkout Session (${session.id}) for organization ${organizationId} is paid but created no ` +
+        "subscription this app can see, so a replacement was not created. This needs support -- see " +
+        "OPERATOR_RECOVERY.md § 4.",
+    );
+  }
+
+  let subscription: Stripe.Subscription;
+  try {
+    subscription = await stripe.subscriptions.retrieve(subscriptionId);
+  } catch (err) {
+    throw new Error(
+      `Could not read subscription ${subscriptionId} for organization ${organizationId}'s completed Checkout ` +
+        `Session, so a replacement was not created: ${err instanceof Error ? err.message : err}`,
+    );
+  }
+
+  if (!TERMINAL_STRIPE_SUBSCRIPTION_STATUSES.has(subscription.status)) {
+    // The live case: this paid Session is the organization's current
+    // subscription. Keep the attempt -- it is what prevents a second checkout
+    // while the local row catches up -- and end only the operation lease.
+    await finishOperation(admin, organizationId, claim.attemptId, ownerToken);
+    return { done: true, url: successUrl };
+  }
+
+  // Terminal: the subscription this Session paid for is over. The Session
+  // itself can never collect again, so releasing the attempt is exactly what
+  // § I3 permits, and it is what lets the customer subscribe again at all.
+  await releaseAttempt(admin, organizationId, claim.attemptId, ownerToken);
+  return { done: false };
+}
+
 async function reconcileExistingSession(
   stripe: Stripe,
   admin: ReturnType<typeof createAdminClient>,
@@ -820,13 +1015,7 @@ async function reconcileExistingSession(
 
   if (existing.status === "complete") {
     if (existing.payment_status === "paid" || existing.payment_status === "no_payment_required") {
-      // The attempt is done with, but only reconciliation may clear it
-      // (write_reconciliation_result does, on the billing page this URL
-      // leads to). Release just the operation lease so a concurrent
-      // request is not told "already in progress" for the next 150
-      // seconds over an attempt nothing is still working on.
-      await finishOperation(admin, organizationId, claim.attemptId, ownerToken);
-      return { done: true, url: `${siteUrl}/dashboard/billing?checkout=success&session_id=${existing.id}` };
+      return settlePaidSession(stripe, admin, organizationId, claim, ownerToken, existing, siteUrl);
     }
     // Finding 8 released this unconditionally, to avoid trapping every
     // future attempt on one dead-end Session. R10-02: "unpaid" is not
@@ -870,15 +1059,9 @@ async function reconcileExistingSession(
       if (recheck) existing = recheck;
     }
     if (existing.status === "complete" && (existing.payment_status === "paid" || existing.payment_status === "no_payment_required")) {
-      // Raced: it completed before/during expiration. Reconcile it as a
-      // real success instead of discarding a genuine payment.
-      // The attempt is done with, but only reconciliation may clear it
-      // (write_reconciliation_result does, on the billing page this URL
-      // leads to). Release just the operation lease so a concurrent
-      // request is not told "already in progress" for the next 150
-      // seconds over an attempt nothing is still working on.
-      await finishOperation(admin, organizationId, claim.attemptId, ownerToken);
-      return { done: true, url: `${siteUrl}/dashboard/billing?checkout=success&session_id=${existing.id}` };
+      // Raced: it completed before/during expiration. Reconcile it as a real
+      // success instead of discarding a genuine payment.
+      return settlePaidSession(stripe, admin, organizationId, claim, ownerToken, existing, siteUrl);
     }
   }
 
@@ -985,9 +1168,68 @@ async function claimAndCreateCheckoutSession(
     // That conflated the ATTEMPT's age with the SESSION's expiry. They are
     // different clocks -- this app sets no explicit `expires_at`, so Stripe's
     // default is 24 hours from SESSION creation, not from when the attempt
-    // was minted. The claim was not established and is withdrawn. What is
-    // actually true is narrower: there is no RECORDED Session to lose here,
-    // so discarding the attempt costs nothing that this app can see.
+    // was minted.
+    //
+    // R12-01: the narrower claim it was replaced with -- "there is no RECORDED
+    // Session to lose here, so discarding the attempt costs nothing that this
+    // app can see" -- was still wrong, and the qualifier was the tell. Not
+    // being able to see a Session is not evidence that there isn't one: the
+    // create() and the record are two steps, and a crash between them leaves a
+    // real open Session at Stripe with no local pointer. Releasing the attempt
+    // then frees the idempotency key, and the next create() makes a SECOND
+    // payable Session.
+    //
+    // So an attempt that was actually SENT is never discarded on local state.
+    // Stripe is asked directly whether this customer still has an open Session
+    // (§ I5: only a completed enumeration is a sound negative).
+    if (claim.requestState === "sent") {
+      const probe = await findOpenCheckoutSession(stripe, customerId, claim.attemptCreatedAt);
+      if (probe.outcome === "found") {
+        // There is a live payable Session this app had lost track of. Bind it
+        // to the current attempt so the normal reconciliation path owns it
+        // from here -- it will be reused if it still matches the requested
+        // plan, or expired first if it does not.
+        const rebound = await recordSession(admin, organizationId, claim.attemptId, claim.ownerToken, probe.session.id);
+        if (!rebound) {
+          throw new Error("A newer checkout attempt has since started for this organization -- try again.");
+        }
+        console.error(
+          `Organization ${organizationId}: recovered open Checkout Session ${probe.session.id}, which was created ` +
+            "but never recorded. Re-bound to the current attempt rather than creating a second one.",
+        );
+        await recordAnomaly(admin, organizationId, "recovered_unrecorded_session", {
+          sessionId: probe.session.id,
+          attemptId: claim.attemptId,
+        });
+        return reconcileExistingSession(
+          stripe,
+          admin,
+          organizationId,
+          { ...claim, existingSessionId: probe.session.id },
+          claim.ownerToken,
+          priceId,
+          siteUrl,
+        ).then((outcome) => {
+          if (outcome.done) return outcome.url;
+          throw new Error(
+            `Recovered Checkout Session ${probe.session.id} for organization ${organizationId} could not be reused ` +
+              "-- try again in a moment.",
+          );
+        });
+      }
+      if (probe.outcome === "unknown") {
+        // Uncertainty is not permission. Keeping the attempt costs one retry;
+        // discarding it on a guess can cost the customer a second charge.
+        throw new Error(
+          `Cannot establish whether an earlier checkout for organization ${organizationId} already created a ` +
+            `Checkout Session that is still payable, so a replacement was not created: ${probe.reason}`,
+        );
+      }
+      // outcome === "absent": a COMPLETED enumeration over the whole window
+      // this attempt could have created in, which found nothing open. That is
+      // a sound negative, and the only thing that authorizes discarding a sent
+      // attempt.
+    }
     await releaseAttempt(admin, organizationId, claim.attemptId, claim.ownerToken);
     claim = await claimAttempt(admin, organizationId, interval, priceId, request);
     if (!claim.ownerToken) {
@@ -1015,6 +1257,15 @@ async function claimAndCreateCheckoutSession(
   // resolution included) finishing inside one static claim window.
   const stillOwned = await renewAttempt(admin, organizationId, attemptId, ownerToken);
   if (!stillOwned) {
+    throw new Error("This checkout attempt expired before it could be completed -- try again.");
+  }
+
+  // R12-01: record that a create() is about to be issued under this key,
+  // BEFORE issuing it. A crash during the call then still leaves the row
+  // saying "this may have produced a Session", which is what stops a later
+  // rotation from discarding the attempt and minting a second payable one.
+  const marked = await markRequestSent(admin, organizationId, attemptId, ownerToken);
+  if (!marked) {
     throw new Error("This checkout attempt expired before it could be completed -- try again.");
   }
 

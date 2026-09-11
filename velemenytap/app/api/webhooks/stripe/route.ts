@@ -84,6 +84,32 @@ export async function POST(request: NextRequest) {
 
   const admin = createAdminClient();
 
+  // R12-03: claim the event BEFORE applying it, and distinguish "claimed but
+  // unfinished" from "already applied".
+  //
+  // Round 9's apply-then-record ordering was right as a retry policy -- record
+  // first and fail, and the work is lost because the next delivery skips it --
+  // but it left the ledger recording duplicates without preventing their
+  // effects. Activation in particular is not idempotent in its bookkeeping: it
+  // advances the activation counters and (since R11-02) billing_sync_requested
+  // on every delivery, so a duplicate arriving after the first reconciliation
+  // finished scheduled another full subscription-history scan for nothing.
+  //
+  // The claim keeps the retry guarantee exactly -- a failed apply leaves
+  // applied_at null, Stripe redelivers, and the next delivery re-applies --
+  // while making a duplicate of an event that already SUCCEEDED a genuine
+  // no-op.
+  const { data: shouldApply, error: claimError } = await admin.rpc("claim_stripe_webhook_event", {
+    p_event_id: event.id,
+  });
+  if (claimError) {
+    console.error(`Failed to claim Stripe webhook event ${event.id}: ${claimError.message}`);
+    return NextResponse.json({ error: "failed to record event" }, { status: 500 });
+  }
+  if (shouldApply !== true) {
+    return NextResponse.json({ received: true, duplicate: true });
+  }
+
   let handled = true;
   switch (event.type) {
     case "customer.subscription.created":
@@ -102,15 +128,23 @@ export async function POST(request: NextRequest) {
   }
 
   if (!handled) {
+    // applied_at stays null, so Stripe's redelivery re-applies rather than
+    // being turned away as a duplicate.
     return NextResponse.json({ error: "failed to apply event" }, { status: 500 });
   }
 
-  const { error: insertError } = await admin.from("stripe_webhook_events").insert({ id: event.id });
-  if (insertError && insertError.code !== "23505") {
+  const { error: appliedError } = await admin.rpc("mark_stripe_webhook_event_applied", {
+    p_event_id: event.id,
+  });
+  if (appliedError) {
+    // The effects DID land; only the bookkeeping failed. Returning 500 asks
+    // Stripe to redeliver, which re-applies them -- safe, and strictly better
+    // than leaving an event that can never be marked done.
+    console.error(`Applied Stripe webhook event ${event.id} but failed to mark it: ${appliedError.message}`);
     return NextResponse.json({ error: "failed to record event" }, { status: 500 });
   }
 
-  return NextResponse.json({ received: true, duplicate: insertError?.code === "23505" });
+  return NextResponse.json({ received: true, duplicate: false });
 }
 
 /**

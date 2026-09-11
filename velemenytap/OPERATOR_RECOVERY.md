@@ -280,16 +280,41 @@ permanent block, not an "try again in a moment", and it needs a person.
    failed, or still processing. Still processing is not terminal — wait.
 
 4. **Only once the payment is confirmed dead or refunded**, retire that exact
-   attempt, checking the result:
+   attempt, checking the result.
+
+   **This needs the CHECKOUT lease, not the customer-creation one.** An earlier
+   version of this step said "a fresh claim, as in § 1 step 5" -- but § 1 step 5
+   claims `claim_stripe_customer_creation`, and its token is meaningless to
+   `release_checkout_attempt`. Called with it the release matches no row and the
+   attempt survives. Found by the round-12 review actually executing it.
+
+   Take a checkout claim. It validates the request against the row, so read the
+   real values first:
 
    ```sql
-   -- attempt_id and owner_token from a fresh claim, as in § 1 step 5.
+   select stripe_customer_id, checkout_attempt_price_id, checkout_attempt_interval
+   from public.organization_billing where organization_id = $1;
+   ```
+
+   ```sql
+   -- $2 interval ('monthly'|'yearly'), $3 price id, $4 the request jsonb.
+   -- The request must satisfy claim_checkout_attempt's own validation:
+   --   mode='subscription', customer=<the row's stripe_customer_id>,
+   --   line_items[0].price=$3, client_reference_id=<organization id as text>.
+   select * from public.claim_checkout_attempt($1, $2, $3, $4::jsonb, 600);
+   ```
+
+   Then release with **that claim's** `attempt_id` and `owner_token`:
+
+   ```sql
    select public.release_checkout_attempt($1, $2, $3);
    ```
 
    `release_checkout_attempt` is the only function that destroys a checkout
    identity deliberately, and it refuses unless the attempt id and owner token
-   both match. A `false` result means the row moved: re-read and stop.
+   both match. Called directly in SQL it returns **no row (NULL)** when it
+   refuses -- not `false`; the `false` the application sees is its own
+   normalisation. Either way: re-read the row and stop rather than retrying.
 
 5. **If the payment succeeded but produced no subscription**, that is a real
    billing incident — the customer has been charged for nothing. Resolve it in
@@ -312,11 +337,16 @@ it meant "someone will know":
   wrong for them. There is one operator; pretending otherwise would be fiction.
 
   ```sql
-  select created_at, organization_id, kind, detail
+  select detected_at, organization_id, kind, detail
   from private.billing_anomalies
-  order by created_at desc
+  order by detected_at desc
   limit 50;
   ```
+
+  (The column is `detected_at`. An earlier version of this document said
+  `created_at`, which does not exist -- the query failed immediately with
+  "column created_at does not exist", blocking the only documented review of
+  every anomaly kind below. Found by the round-12 review actually running it.)
 
 - The kinds and where each is handled:
 
@@ -343,9 +373,42 @@ leaving it pending is the R10-03 livelock — but **it is a closure, not a
 recovery.**
 
 The organization may genuinely have paid. Its access is currently decided as if
-it had not. If one of these rows exists, check the Stripe Dashboard's invoice
-history for that customer, and if a paid invoice exists, activate deliberately
-through `request_billing_activation` with that invoice's real details.
+it had not.
+
+**Verify in Stripe first**, because this call writes the irreversible ever-paid
+latch (§ I1): the invoice must be `paid`, its Customer must be the one this
+organization is persisted against, and its subscription must carry an approved
+VéleményTap Price. Those are exactly the checks the webhook performs, and
+nothing re-checks them here.
+
+Then call it as `service_role` -- the RPC is service-role only, so this runs
+from the Supabase SQL editor or a trusted server context, never an application
+client:
+
+```sql
+select public.request_billing_activation(
+  $1,
+  jsonb_build_object(
+    'invoice_id',      'in_...',
+    'subscription_id', 'sub_...',
+    'price_id',        'price_...',
+    'paid_at',         '2026-09-01T12:00:00Z'
+  )
+);
+```
+
+It returns the resulting `activated_at`. Every field is required and
+`paid_at` must parse and not be in the future, or it raises `VT303` and
+writes nothing. Confirm afterwards:
+
+```sql
+select activated_at, activation_evidence, activation_requested, activation_completed
+from public.organization_billing where organization_id = $1;
+```
+
+`activated_at` should equal the invoice's `paid_at`, the evidence should
+name that invoice, and the two counters should be equal. The latch is
+first-evidence-wins, so a second call cannot re-date it.
 
 Related, and important when reading any pre-round-10 row: **a null
 `activation_evidence` does not prove no payment happened.** Rows latched before
