@@ -6,6 +6,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { TriangleAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -65,7 +66,17 @@ export function LocationsTable({ locations }: { locations: LocationRow[] }) {
               {location.google_review_url ? (
                 <Badge variant="secondary">Beállítva</Badge>
               ) : (
-                <span className="text-muted-foreground">Nincs beállítva</span>
+                // Not a muted "—" like the address column above it. A
+                // location with no Google destination still collects
+                // feedback perfectly well, so nothing anywhere else looks
+                // wrong -- while every customer who taps a card here reaches
+                // a dead end instead of the review the product exists to
+                // produce. The icon carries the same meaning as the colour,
+                // so this does not depend on colour alone.
+                <Badge variant="destructive">
+                  <TriangleAlert aria-hidden="true" />
+                  Nincs beállítva
+                </Badge>
               )}
             </TableCell>
             <TableCell>

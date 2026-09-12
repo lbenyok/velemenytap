@@ -4,6 +4,8 @@ import { getCurrentOrganization } from "@/features/organizations/current";
 import { LocationDialog } from "@/features/locations/location-dialog";
 import { LocationsTable, type LocationRow } from "@/features/locations/locations-table";
 import { Button } from "@/components/ui/button";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { TriangleAlert } from "lucide-react";
 
 export const metadata: Metadata = { title: "Helyszínek — VéleményTap" };
 
@@ -23,6 +25,16 @@ export default async function LocationsPage() {
 
   const rows: LocationRow[] = locations ?? [];
 
+  // An active location with no Google destination is the one misconfiguration
+  // that disables what this product is for while leaving every other signal
+  // looking healthy: cards still work, feedback still arrives, the dashboard
+  // still fills up -- and not one customer is ever offered the Google review.
+  // Inactive locations are excluded deliberately: they aren't collecting
+  // anything, so there is nothing to warn about.
+  const missingReviewUrl = rows.filter(
+    (location) => location.status === "active" && !location.google_review_url,
+  );
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -39,6 +51,22 @@ export default async function LocationsPage() {
           <LocationDialog trigger={<Button>Helyszín hozzáadása</Button>} />
         ) : null}
       </div>
+      {missingReviewUrl.length > 0 ? (
+        <Alert variant="destructive">
+          <TriangleAlert aria-hidden="true" />
+          <AlertTitle>
+            {missingReviewUrl.length === 1
+              ? "Egy aktív helyszínhez nincs Google-értékelési link"
+              : `${missingReviewUrl.length} aktív helyszínhez nincs Google-értékelési link`}
+          </AlertTitle>
+          <AlertDescription>
+            {missingReviewUrl.map((location) => location.name).join(", ")} — a
+            vendégek véleménye ide beérkezik, de a Google-értékelés gombot nem
+            látják. Szerkeszd a helyszínt, és másold be a Google Cégprofil
+            értékelési linkjét.
+          </AlertDescription>
+        </Alert>
+      ) : null}
       <LocationsTable locations={rows} />
     </div>
   );
