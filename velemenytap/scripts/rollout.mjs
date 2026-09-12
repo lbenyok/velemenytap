@@ -755,6 +755,40 @@ export async function pollHealth(healthUrl, expectedSha, expectedEnvironment, ti
       );
     } catch (err) {
       console.log(`  health check request failed: ${err instanceof Error ? err.message : err}`);
+      // `redirect: "error"` above turns an auth redirect into a generic fetch
+      // failure, which reads exactly like an unreachable host -- so an
+      // operator watching this loop cannot tell "the deploy has not landed"
+      // from "this endpoint is behind the login wall and never will answer".
+      // That second case is real: /api/health shipped to production without
+      // being added to proxy.ts's PUBLIC_PATHS, so it answered 307 ->
+      // /login?next=%2Fapi%2Fhealth to every caller. Re-asking with
+      // redirect: "manual" costs one request and turns a five-minute wait
+      // into a sentence naming the fix.
+      //
+      // The probe is bounded by whatever is actually left of the overall
+      // deadline, for the same reason the request above is, and is skipped
+      // entirely when nothing is left. An unbounded diagnostic would hang on
+      // exactly the half-open connection this loop exists to survive -- which
+      // is what the first version of it did, and what this file's own
+      // hanging-server tests caught immediately.
+      const probeTimeoutMs = Math.min(5_000, Math.max(0, deadline - Date.now()));
+      try {
+        if (probeTimeoutMs === 0) throw new Error("no time left for a diagnostic probe");
+        const probe = await fetch(healthUrl, {
+          cache: "no-store",
+          redirect: "manual",
+          signal: AbortSignal.timeout(probeTimeoutMs),
+        });
+        if (probe.status >= 300 && probe.status < 400) {
+          console.log(
+            `    ^ that was HTTP ${probe.status} redirecting to '${probe.headers.get("location") ?? "?"}', ` +
+              "not an unreachable host. /api/health is not publicly reachable on the deployed commit -- " +
+              "check that it is listed in PUBLIC_PATHS in proxy.ts. Waiting will not fix this.",
+          );
+        }
+      } catch {
+        // The probe is diagnostics only; its own failure changes nothing.
+      }
     }
     // Same fix as the request timeout above: the retry sleep must never
     // push the loop past its own deadline either. Breaking out immediately

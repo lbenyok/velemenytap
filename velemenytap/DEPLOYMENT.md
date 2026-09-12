@@ -14,13 +14,13 @@ These are Vercel Project Settings, set once by hand and periodically worth re-ve
 
 | Setting | Required value | Where |
 |---|---|---|
-| **Root Directory** | `velemenytap` | Settings → General → Build and Deployment |
+| **Root Directory** | `veleminytap` **until** `feature/billing-subscriptions` merges, `velemenytap` from that merge onward | Settings → General → Build and Deployment |
 | **Production Branch** | `master` | Settings → Git |
 | **Connected Git Repository** | `lbenyok/velemenytap`, connection healthy (not just displaying a repo name — see § 7 for how that can lie) | Settings → Git |
 | **Automatically expose System Environment Variables** | Enabled | Settings → Environment Variables |
 | **Framework Preset** | Next.js | Settings → General |
 
-If **Root Directory** is wrong, the build fails immediately with `Couldn't find any pages or app directory` — loud, at least. If the **Git connection** is broken, nothing fails at all; deployments simply stop being created, silently, forever, which is what actually happened here. **Automatically expose System Environment Variables** must be on for `/api/health` (§ 6) to report anything — without it, `VERCEL_GIT_COMMIT_SHA`/`VERCEL_ENV` are unset even in a genuinely healthy production deployment, which `/api/health` cannot distinguish from a broken one on its own (this is precisely why the CI verification job in § 5 exists as an independent check, not just a self-report).
+**The Root Directory value is coupled to the pending merge and is the one row here that must change at a specific moment.** `master` still holds the app in `veleminytap/`; `feature/billing-subscriptions` renames it to `velemenytap/`. Whichever value is set is wrong for the other branch, so this setting has to be changed in the same window as that merge, and a Preview build of the branch will fail until it is. If **Root Directory** is wrong, the build fails immediately with `Couldn't find any pages or app directory` — loud, at least. If the **Git connection** is broken, nothing fails at all; deployments simply stop being created, silently, forever, which is what actually happened here. **Automatically expose System Environment Variables** must be on for `/api/health` (§ 6) to report anything — without it, `VERCEL_GIT_COMMIT_SHA`/`VERCEL_ENV` are unset even in a genuinely healthy production deployment, which `/api/health` cannot distinguish from a broken one on its own (this is precisely why the CI verification job in § 5 exists as an independent check, not just a self-report).
 
 ## 3. Environment variables and scopes
 
@@ -267,7 +267,7 @@ Add `--dry-run` to either command to preview what it would push, with nothing ap
 
 After any production deploy, whether via the automated `verify-production-deployment` CI job or by hand:
 
-1. `curl https://veleminytap.vercel.app/api/health` — expect `"ok":true` and `commitSha` matching the deployed commit.
+1. `curl https://veleminytap.vercel.app/api/health` — expect `"ok":true` and `commitSha` matching the deployed commit. **On `master` today this returns `307 -> /login` instead**, because `/api/health` was never added to `proxy.ts`'s `PUBLIC_PATHS` there; `feature/billing-subscriptions` fixes that, and `e2e/public-route-reachability.spec.ts` is the regression guard. Until that ships, neither this step nor CI's `verify-production-deployment` job can succeed.
 2. Load `https://veleminytap.vercel.app/` in a real browser — no console errors, homepage renders.
 3. Load `/login` — renders, no console errors.
 4. **Never** log into the dashboard with real credentials from an automated tool, and never run the e2e suite against the production Supabase project — the isolated test project (§ 3) exists specifically so verification never touches real customer data.

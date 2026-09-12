@@ -164,7 +164,33 @@ renewals involve no customer visit.
 - [x] **[auto]** The 15-minute schedule itself — `.github/workflows/reconcile-billing-sweep.yml`.
 - [ ] **[you]** Verify one run returns **200**, not 503, after deploying.
 
-## 4. Migration ordering
+## 4. Merge-time Vercel setting (do this in the same window as the merge)
+
+`master` holds the app in `veleminytap/`; this branch renames it to
+`velemenytap/`. Vercel's **Root Directory** must match whichever branch is
+building, so it is the one project setting that has to change at a specific
+moment rather than once, up front. Get it wrong and the build fails immediately
+with `Couldn't find any pages or app directory` — loud, but it means production
+is not rebuilding.
+
+- [ ] **[you]** Confirm the current value in Settings → General → Build and
+      Deployment. It should read `veleminytap` today.
+- [ ] **[you]** Change it to `velemenytap` **as part of merging this branch**, not
+      before (a Preview build of the branch will fail until it is changed, and
+      `master` will fail the moment it is).
+- [ ] **[you]** While you are there, confirm the Vercel **project name** and the
+      host it serves. `https://veleminytap.vercel.app` serves production today and
+      `https://velemenytap.vercel.app` returns 404 (measured 2026-09-12), so the
+      project appears **not** to have been renamed — despite commit `08f765f`'s
+      message saying it was. The two workflow fallbacks, `scripts/rollout-environments.json`
+      and `README.md` all point at `veleminytap.vercel.app` and are therefore
+      **correct as written**; do not "fix the spelling" in them without renaming the
+      project first, or CI's production verification and the billing sweep will both
+      point at a host that 404s.
+- [ ] **[you]** If you do rename the project, Auth's `site_url` and the two workflow
+      fallbacks move with it — see § 1's `site_url` item.
+
+## 5. Migration ordering
 
 All of `20260907150000` … `20260908120000` go in the **`--expand`** phase. The exact
 command and manifest are in `DEPLOYMENT.md` § 7; do not retype the list from memory.
@@ -181,9 +207,12 @@ command and manifest are in `DEPLOYMENT.md` § 7; do not retype the list from me
 - [ ] **[me]** Re-verify the manifest against the migrations directory immediately
       before the run — it goes stale the moment another migration lands.
 
-## 5. Post-deployment checks
+## 6. Post-deployment checks
 
-- [ ] **[me]** `/api/health` reports the expected latest migration and commit.
+- [ ] **[me]** `/api/health` reports the expected latest migration and commit. It is
+      reachable unauthenticated only from this branch onward — on `master` it answers
+      `307 -> /login`, which is why CI's `verify-production-deployment` job could not
+      succeed. `e2e/public-route-reachability.spec.ts` is the regression guard.
 - [ ] **[you]** One real **live-mode** transaction, start to finish, with a real card:
       subscribe → dashboard unlocks → Billing Portal opens → cancel. No live-mode
       transaction has ever been made.
@@ -203,6 +232,7 @@ command and manifest are in `DEPLOYMENT.md` § 7; do not retype the list from me
 1. Apply **both** email fixes to production — SMTP *and* the two templates. Fixing only SMTP produces emails that arrive and links that still dead-end.
 2. Stripe live Product, Prices, webhook endpoint, and the env vars for them.
 3. Three sweep secrets/variables, set together.
-4. Confirming production's migration state, then running the two rollout commands.
-5. One real live-mode transaction and one real password-reset click.
-6. Everything in `BUSINESS_DECISIONS.md` — none of which is an engineering question.
+4. Changing Vercel's **Root Directory** to `velemenytap` in the same window as the merge — the repo subdirectory is renamed on this branch, and the build fails immediately if the two disagree.
+5. Confirming production's migration state, then running the two rollout commands.
+6. One real live-mode transaction and one real password-reset click.
+7. Everything in `BUSINESS_DECISIONS.md` — none of which is an engineering question.

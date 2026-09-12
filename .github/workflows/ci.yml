@@ -179,7 +179,23 @@ jobs:
         run: |
           deadline=$((SECONDS + 300))
           while [ "$SECONDS" -lt "$deadline" ]; do
-            response="$(curl -fsS --max-time 10 "$HEALTH_URL" || echo '')"
+            # Status captured separately from the body. The previous version
+            # used `curl -fsS` with no `-L`: -f fails on 4xx/5xx but a 3xx is
+            # a SUCCESS to curl, so an auth-gated /api/health handed this job
+            # the body "Redirecting..." -- non-empty, parses as no JSON, every
+            # field reads empty -- and it polled the full five minutes before
+            # failing with a message blaming the Vercel deployment. That is
+            # exactly what production did: /api/health was never added to
+            # proxy.ts's PUBLIC_PATHS, so this guard could not succeed. A
+            # redirect is a configuration fault, not a slow deploy, and
+            # waiting cannot fix it -- so it is reported as itself, at once.
+            status="$(curl -sS -o /tmp/health-body --max-time 10 -w '%{http_code}' "$HEALTH_URL")" || status="000"
+            response="$(cat /tmp/health-body 2>/dev/null || echo '')"
+            if [ "$status" -ge 300 ] 2>/dev/null && [ "$status" -lt 400 ] 2>/dev/null; then
+              location="$(curl -sS -o /dev/null --max-time 10 -w '%{redirect_url}' "$HEALTH_URL" || echo '')"
+              echo "::error::$HEALTH_URL returned HTTP $status redirecting to '$location' instead of a health report. The endpoint is not publicly reachable -- check that '/api/health' is in PUBLIC_PATHS in proxy.ts on the DEPLOYED commit. This job cannot verify anything until it is; retrying would not help, so it is failing now rather than in five minutes."
+              exit 1
+            fi
             if [ -n "$response" ]; then
               actual_sha="$(node -e "try{console.log(JSON.parse(process.argv[1]).commitSha||'')}catch{console.log('')}" "$response")"
               actual_env="$(node -e "try{console.log(JSON.parse(process.argv[1]).environment||'')}catch{console.log('')}" "$response")"
@@ -198,9 +214,9 @@ jobs:
                 echo "Production is serving the expected commit ($EXPECTED_SHA)."
                 exit 0
               fi
-              echo "Not yet -- production reports commitSha=$actual_sha ok=$ok environment=$actual_env, expected $EXPECTED_SHA in production. Retrying in 15s."
+              echo "Not yet -- HTTP $status, production reports commitSha=$actual_sha ok=$ok environment=$actual_env, expected $EXPECTED_SHA in production. Retrying in 15s."
             else
-              echo "No response from $HEALTH_URL yet. Retrying in 15s."
+              echo "No response body from $HEALTH_URL yet (HTTP $status). Retrying in 15s."
             fi
             sleep 15
           done
