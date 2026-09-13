@@ -4,6 +4,7 @@ import {
   cleanupOrgWithMember,
   seedFeedbackFixture,
   userClient,
+  adminClient,
   type SeededOrgMember,
   type SeededFeedbackFixture,
 } from "./support/seed";
@@ -170,4 +171,94 @@ test("Org A's dashboard shows only Org A's data, never Org B's", async ({ page }
   // Org B's feedback fixture has distinctive text -- it must never render
   // in Org A's inbox no matter how the page is reached.
   await expect(page.getByText("Original feedback text")).toHaveCount(0);
+});
+
+/**
+ * Membership rows are the root of every other check in this file: the RLS
+ * policies on organizations, locations, nfc_cards and feedback all resolve
+ * through `private.is_org_member(organization_id)`. Whoever can write a
+ * membership row can grant themselves everything else.
+ *
+ * `organization_memberships` has a SELECT policy and NOTHING else, so with RLS
+ * enabled there is no INSERT, UPDATE or DELETE path for `authenticated` at
+ * all -- the boundary is held by the ABSENCE of a policy rather than by the
+ * presence of a restrictive one, which is precisely the kind of guarantee a
+ * later migration can dissolve without anything looking wrong. Nothing tested
+ * it; these three do.
+ *
+ * The role column matters more than it currently appears to. `canManageBilling`
+ * is the only role check in the entire application -- every other tenant
+ * mutation (locations, cards, feedback status and notes, organization
+ * settings) is open to any member regardless of role. That is not reachable
+ * today, because the only code path that creates a membership is
+ * `create_organization_atomic`, which always writes `owner`, and there is no
+ * invitation flow. It becomes reachable the moment one ships.
+ */
+test("a member cannot promote themselves by updating their own membership row", async () => {
+  const clientA = await userClient(orgA.email, orgA.password);
+  const { data } = await clientA
+    .from("organization_memberships")
+    .update({ role: "owner" })
+    .eq("user_id", orgA.userId)
+    .select("id");
+
+  // Zero rows affected, not an error: with no UPDATE policy the row is simply
+  // invisible to the write. Asserting the row is unchanged afterwards is what
+  // makes this a real check rather than a check on the shape of the response.
+  expect(data).toEqual([]);
+
+  const { data: unchanged } = await clientA
+    .from("organization_memberships")
+    .select("role")
+    .eq("user_id", orgA.userId)
+    .single();
+  expect(unchanged?.role).toBe("owner");
+
+  // Non-vacuity control. A zero-row result also happens when the filter
+  // matches nothing or the column does not exist -- in which case this test
+  // would pass forever while proving nothing about RLS. The identical write
+  // through the admin client (service_role, which bypasses RLS by design)
+  // must affect exactly one row, which establishes that the row is real,
+  // the column is writable, and the ONLY reason the member could not do it
+  // is the missing policy.
+  const admin = adminClient();
+  const { data: adminUpdated } = await admin
+    .from("organization_memberships")
+    .update({ role: "admin" })
+    .eq("user_id", orgA.userId)
+    .select("id");
+  expect(adminUpdated).toHaveLength(1);
+  await admin
+    .from("organization_memberships")
+    .update({ role: "owner" })
+    .eq("user_id", orgA.userId);
+});
+
+test("a member cannot insert a membership for themselves into another organization", async () => {
+  const clientA = await userClient(orgA.email, orgA.password);
+  const { error } = await clientA
+    .from("organization_memberships")
+    .insert({ organization_id: orgB.orgId, user_id: orgA.userId, role: "owner" });
+
+  expect(error).not.toBeNull();
+
+  // And Org B's roster is genuinely untouched -- read as Org B, since Org A
+  // cannot see it either way and an empty read would prove nothing.
+  const clientB = await userClient(orgB.email, orgB.password);
+  const { data: roster } = await clientB
+    .from("organization_memberships")
+    .select("user_id")
+    .eq("organization_id", orgB.orgId);
+  expect(roster?.map((r) => r.user_id)).toEqual([orgB.userId]);
+});
+
+test("a member cannot delete a membership row", async () => {
+  const clientA = await userClient(orgA.email, orgA.password);
+  await clientA.from("organization_memberships").delete().eq("user_id", orgA.userId);
+
+  const { count } = await clientA
+    .from("organization_memberships")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", orgA.userId);
+  expect(count).toBe(1);
 });

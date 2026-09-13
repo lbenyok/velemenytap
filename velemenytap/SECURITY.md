@@ -104,6 +104,79 @@ Also verified with real calls as `anon`, `authenticated`, and `service_role` (`e
 - Alert-email cooldown and organization-wide budget — see "Negative-feedback alert abuse controls" below.
 - Cookie-based duplicate-submission guard (below) — no personal data, opaque marker, card-scoped.
 
+**What the rate limit bounds, and what it does not.** It bounds the *rate*, not
+the *total*. Someone who has seen one specific card — tapped it, photographed
+it, read the URL off a table — can keep submitting at 20 per 5 minutes
+indefinitely, roughly 5 760 rows per day on that card. `public_id` is a v4
+UUID, so cards cannot be enumerated and this never generalises beyond the cards
+an attacker has physically seen. Nothing on that path reads any data, and no
+submission can reach Google, so the business's public reputation is untouchable
+this way; the cost is entirely to the business's own inbox and analytics. The
+email side is separately bounded by the cooldown and organization budget below,
+so a flood does not become an email flood.
+
+That residual is deliberate rather than unnoticed. The controls that would stop
+it — per-IP limits, proof of presence, a CAPTCHA — all tax the legitimate
+customer standing at a counter with no account, which this product's own rules
+put first. `feedback` also has no DELETE policy for `authenticated` on
+purpose, so a business cannot quietly erase feedback it dislikes; the flip side
+is that it cannot clean up a flood either. The recovery path is therefore an
+operator procedure rather than a product feature: **`OPERATOR_RECOVERY.md`
+§ 7**, which starts with the mitigation the business can apply itself in one
+click (deactivate the card — the status re-check is inside the insert's own
+transaction, so it takes effect on the very next submission).
+
+## Password change requires proof, not just a session
+
+Found by reviewing this branch's own unreviewed code and **reproduced end to
+end before it was fixed**: `/auth/reset-password` gated on nothing but "is
+there a session", and `updatePasswordAction` never asked for the current
+password. Anyone at an already-signed-in browser could set a new password in
+two clicks — no email, no knowledge of the old one. The reproduction is
+unambiguous: the attacker's password worked afterwards and **the owner's
+stopped working**, so this is account takeover plus owner lockout, not a
+nuisance.
+
+For this product's customers that is an ordinary situation rather than an
+exotic one. The dashboard lives on a laptop behind the counter of a café,
+salon or clinic, with staff and strangers near it.
+
+Demanding the current password unconditionally would break the one flow that
+cannot supply it, so the two are distinguished:
+
+- A **recovery link** — and only a link whose OTP or PKCE exchange has actually
+  succeeded — is issued a short-lived grant (`features/auth/recovery-grant.ts`):
+  HttpOnly so no script can set it, `path=/auth`, 15 minutes, and **spent on
+  use**, so one recovery email buys one password change rather than a standing
+  permission on that browser.
+- **Every other session** must supply the current password, verified through a
+  throwaway client with `persistSession: false` so the check cannot disturb
+  the caller's own session. Missing configuration fails closed.
+
+Deliberately not read from the session's own `amr`/`aal` claims: their shape
+for a recovery sign-in is not a contract this project controls, and a security
+decision resting on an undocumented field is the kind of thing this repository
+has already been caught doing. The grant is issued by this application at one
+moment it can prove.
+
+Covered by `e2e/password-change-session-riding.spec.ts` (the attack, the
+current-password path, a wrong current password, and genuine recovery still
+working without one) plus the unit cases in
+`features/auth/recovery-actions.test.ts` and `app/auth/callback/route.test.ts`
+for when the grant is and is not issued. Reverting the guard fails exactly the
+two tests that should fail.
+
+**One finding from verifying it, which matters beyond this file.** The first
+version of that spec passed against the unfixed code. Two independent
+vacuities: `getByText` is a case-insensitive *substring* match and matched the
+page's own description, which is present before any submit; and
+`userClient(...).catch(() => null)` treats Supabase Auth's **rate limiter** as
+"wrong password", so "the attacker was rejected" passed whenever the suite was
+busy. `signInOutcome()` in `e2e/support/seed.ts` now returns
+`accepted | rejected | error` and refuses to conclude anything from `error`.
+Any other test in this repository that catches-all around a sign-in has the
+same shape.
+
 ## Negative-feedback alert abuse controls (round 2, R2-08)
 
 The round-1 alert cooldown was a plain column (`nfc_cards.last_negative_alert_at`) updated via a raw admin-client `UPDATE`, guarded only by RLS's row-level `nfc_cards_update` policy — RLS is row-level, not column-level (the same class of gap findings #3/#4 already fixed for other columns on `feedback`/`nfc_cards`), and this was confirmed empirically: a real authenticated org member's own session could reset `last_negative_alert_at` to `NULL` via a direct `UPDATE`. Combined with an unverified `notification_email` and a per-card limit that does nothing to bound total volume across an org's cards, this was a real spam-relay vector: a malicious tenant could point `notification_email` at an arbitrary third party, reset the cooldown at will, and fan qualifying submissions out across as many cards as they create to drive real emails through this app's verified sending domain at volume.

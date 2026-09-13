@@ -440,3 +440,46 @@ export async function generateConfirmToken(email: string): Promise<{ tokenHash: 
   if (error) throw error;
   return { tokenHash: data.properties.hashed_token };
 }
+
+/**
+ * A real, single-use password-recovery token_hash for an existing user -- the
+ * same thing a "reset your password" email carries -- so a test can complete
+ * the genuine recovery flow without a mailbox. Distinct from
+ * generateConfirmToken above, which issues a magiclink: only `type: "recovery"`
+ * is what the recovery grant (features/auth/recovery-grant.ts) keys on.
+ */
+export async function generateRecoveryToken(email: string): Promise<{ tokenHash: string }> {
+  const admin = adminClient();
+  const { data, error } = await admin.auth.admin.generateLink({ type: "recovery", email });
+  if (error) throw error;
+  return { tokenHash: data.properties.hashed_token };
+}
+
+/**
+ * Whether a password actually works, told apart from every other reason a
+ * sign-in can fail.
+ *
+ * `userClient(...).catch(() => null)` reads as "the password does not work",
+ * and it is not: it also swallows Supabase Auth's shared rate limiter, which a
+ * large parallel run hits routinely. A test asserting "the attacker's password
+ * was rejected" on top of that passes whenever the suite is merely busy --
+ * which is exactly how the first version of
+ * e2e/password-change-session-riding.spec.ts passed against the very defect it
+ * was written to catch. Anything other than a real credential rejection is
+ * reported as "error" here so a test can refuse to conclude anything from it.
+ */
+export async function signInOutcome(
+  email: string,
+  password: string,
+): Promise<"accepted" | "rejected" | "error"> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+  if (!url || !key) throw new Error("NEXT_PUBLIC_SUPABASE_URL/PUBLISHABLE_KEY are required.");
+  const client = createClient<Database>(url, key, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+  const { error } = await client.auth.signInWithPassword({ email, password });
+  if (!error) return "accepted";
+  if (error.status === 400 || /invalid login credentials/i.test(error.message)) return "rejected";
+  return "error";
+}

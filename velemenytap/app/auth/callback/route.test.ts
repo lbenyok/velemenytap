@@ -29,6 +29,14 @@ vi.mock("next/navigation", () => ({
 const exchangeCodeForSession = vi.fn();
 const verifyOtp = vi.fn();
 
+const cookieStore = { set: vi.fn(), get: vi.fn(() => undefined) };
+// The recovery grant is written with cookies(), which has no request scope in
+// a unit test. Mocked rather than stubbed out entirely so these tests can
+// assert WHEN it is issued -- the grant is what allows a password change
+// without the current password, so issuing it on the wrong link would be the
+// whole defect again.
+vi.mock("next/headers", () => ({ cookies: async () => cookieStore }));
+
 vi.mock("@/lib/supabase/server", () => ({
   createClient: async () => ({ auth: { exchangeCodeForSession, verifyOtp } }),
 }));
@@ -55,6 +63,7 @@ beforeEach(() => {
   // to /dashboard when it is unset -- which would silently mask what these
   // tests are actually asserting about the redirect target.
   process.env.NEXT_PUBLIC_SITE_URL = "http://localhost:3000";
+  cookieStore.set.mockClear();
   exchangeCodeForSession.mockResolvedValue({ error: null });
   verifyOtp.mockResolvedValue({ error: null });
 });
@@ -100,5 +109,46 @@ describe("GET /auth/callback", () => {
   it("never honours an off-site next, even with a valid code", async () => {
     const target = await redirectedTo(GET(request("?code=abc&next=https://evil.example.com")));
     expect(target).not.toContain("evil.example.com");
+  });
+});
+
+/**
+ * Which links may grant a password change without the current password. The
+ * grant is the entire security boundary added after an ordinary signed-in
+ * session was shown to be able to take over an account
+ * (`e2e/password-change-session-riding.spec.ts`), so issuing it too freely
+ * restores the defect exactly.
+ */
+describe("the recovery password-change grant", () => {
+  const grantCookie = () =>
+    cookieStore.set.mock.calls.find((call) => call[0] === "pw_recovery_grant");
+
+  it("is issued for a recovery link that lands on the reset page", async () => {
+    await redirectedTo(GET(request("?token_hash=hash123&type=recovery&next=/auth/reset-password")));
+    expect(grantCookie()).toBeDefined();
+  });
+
+  it("is issued for the PKCE shape too, which carries no type at all", async () => {
+    await redirectedTo(GET(request("?code=abc&next=/auth/reset-password")));
+    expect(grantCookie()).toBeDefined();
+  });
+
+  it("is NOT issued for a signup confirmation", async () => {
+    await redirectedTo(GET(request("?token_hash=hash123&type=signup&next=/onboarding")));
+    expect(grantCookie()).toBeUndefined();
+  });
+
+  it("is NOT issued when the exchange itself fails", async () => {
+    exchangeCodeForSession.mockResolvedValue({ error: { message: "bad code" } });
+    verifyOtp.mockResolvedValue({ error: { message: "bad token" } });
+    await redirectedTo(GET(request("?code=abc&next=/auth/reset-password")));
+    expect(grantCookie()).toBeUndefined();
+  });
+
+  it("is HttpOnly and short-lived", async () => {
+    await redirectedTo(GET(request("?token_hash=hash123&type=recovery&next=/auth/reset-password")));
+    const options = grantCookie()?.[2];
+    expect(options).toMatchObject({ httpOnly: true, secure: true });
+    expect(options?.maxAge).toBeLessThanOrEqual(15 * 60);
   });
 });

@@ -1,6 +1,9 @@
 # Operator recovery
 
-Three billing states can stop making progress on their own. Each fails closed
+Three billing states can stop making progress on their own, and one public-product
+incident needs a person too (§ 7 — a card flooded with fabricated feedback; it is
+the only procedure here that an ordinary customer-facing URL can trigger, and the
+only one that applies to what is deployed today). Each fails closed
 on purpose — refusing to guess is the correct behaviour, because the wrong
 guess charges a customer twice or takes away access they paid for — but
 "refuses to guess" is only safe if a person eventually looks. Repeating the
@@ -417,6 +420,85 @@ carry no evidence at all. Null means "not recorded", not "not paid". Do not
 clear a legitimate paid organization's latch on that basis; audit it against
 Stripe's own history first. (Production is on migration 17 and has never run
 any of this, so it has no such rows.)
+
+---
+
+## 7. A card flooded with fabricated feedback
+
+Everything above is billing. This one is the public product, and it is the only
+procedure here an ordinary customer's behaviour can trigger.
+
+**What is actually possible.** `/r/{publicId}` is unauthenticated by design —
+that is the product. `public_id` is a v4 UUID (`gen_random_uuid()`), so it
+cannot be enumerated; an attacker has to have seen one specific card, by
+tapping it, photographing it, or reading its URL off a table. With one, they
+can submit up to **20 rows per card per 5 minutes** (`submit_feedback_atomic`),
+indefinitely — roughly 5 760 rows per card per day. The duplicate cookie stops
+an accidental double-tap and nothing else; it was never a security boundary and
+does not claim to be.
+
+**What is not possible, so nobody spends time on it.** No submission can reach
+Google — that link is the customer's own deliberate click — so this cannot
+touch the business's public reputation. Nothing on that path reads any data.
+And the email blast is already bounded: negative-feedback alerts go through the
+per-card cooldown and the organization-wide budget (`SECURITY.md` § Negative-
+feedback alert abuse controls), so a flood produces at most the budgeted number
+of emails, not one per row.
+
+**What it does cost.** The business's own feedback inbox and analytics — total
+volume, average rating, the rating distribution, per-card comparisons — are
+polluted, and `feedback` has **no DELETE policy for `authenticated`, on
+purpose**: a business must never be able to erase feedback it dislikes and then
+present the resulting average as real. So the business cannot clean this up
+itself, by design, and that is the right design.
+
+**Step 1 — the business can stop it immediately, without you.** Dashboard →
+NFC-kártyák → Deaktiválás on that card. `submit_feedback_atomic` re-checks the
+card and location status inside the same transaction as the insert, so the very
+next submission fails `VT001`/`VT002`. Issue a new card; the old
+`public_id` is now inert. Do this first — it stops the bleeding and costs
+nothing if the diagnosis turns out to be wrong.
+
+**Step 2 — establish it is actually a flood, before deleting anything.** Real
+feedback from a busy Saturday looks like volume too. Rows arriving faster than
+people can physically tap, all on one card, with no text, are the signature:
+
+```sql
+select date_trunc('minute', created_at) as minute,
+       count(*),
+       count(*) filter (where feedback_text is null) as no_text,
+       array_agg(distinct rating) as ratings
+from public.feedback
+where nfc_card_id = :card_id
+  and created_at >= :suspected_start
+group by 1
+order by 1;
+```
+
+**Step 3 — purge, service_role only, on the business's explicit request.**
+There is no RPC for this and deliberately no UI. Delete by the narrowest window
+you can defend from step 2's output, never "everything on this card":
+
+```sql
+delete from public.feedback
+where nfc_card_id = :card_id
+  and created_at >= :window_start
+  and created_at <  :window_end
+returning id, rating, created_at;
+```
+
+Count the returned rows against step 2's count before committing. Anything that
+does not match means the window is wrong.
+
+**What this cannot restore.** A negative-feedback alert already emailed is
+gone; deleting the row does not unsend it. If `status` was changed or an
+`internal_note` written on a fabricated row, that work is discarded with it.
+
+**The residual, stated plainly.** Nothing here prevents the next flood on the
+next card. The only preventive controls that would — per-IP limits, a proof of
+presence, a CAPTCHA — all tax the legitimate customer standing at a counter,
+which this product's own rules put first. The current position is deliberate:
+make it bounded and cheap to recover from rather than harder to do.
 
 ---
 

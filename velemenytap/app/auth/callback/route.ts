@@ -3,6 +3,7 @@ import { type NextRequest } from "next/server";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { safeRedirectTarget } from "@/lib/safe-redirect";
+import { grantRecoveryPasswordChange } from "@/features/auth/recovery-grant";
 
 /**
  * Completes an emailed auth link (password recovery, and any other link
@@ -33,11 +34,20 @@ export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;
   const next = safeRedirectTarget(params.get("next"));
 
+  // The PKCE shape carries no `type`, so the destination is what identifies a
+  // recovery: `next=/auth/reset-password` is set by requestPasswordResetAction
+  // and by nothing else. The grant is issued only after the exchange has
+  // actually succeeded, which needs a code from the account owner's own inbox.
+  const isRecoveryDestination = next === "/auth/reset-password";
+
   const code = params.get("code");
   if (code) {
     const client = await createClient();
     const { error } = await client.auth.exchangeCodeForSession(code);
-    if (!error) redirect(next);
+    if (!error) {
+      if (isRecoveryDestination) await grantRecoveryPasswordChange();
+      redirect(next);
+    }
   }
 
   const tokenHash = params.get("token_hash");
@@ -45,7 +55,10 @@ export async function GET(request: NextRequest) {
   if (tokenHash && type) {
     const client = await createClient();
     const { error } = await client.auth.verifyOtp({ type, token_hash: tokenHash });
-    if (!error) redirect(next);
+    if (!error) {
+      if (type === "recovery" || isRecoveryDestination) await grantRecoveryPasswordChange();
+      redirect(next);
+    }
   }
 
   redirect("/auth/auth-code-error");

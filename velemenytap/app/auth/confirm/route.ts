@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { safeRedirectTarget } from "@/lib/safe-redirect";
+import { grantRecoveryPasswordChange } from "@/features/auth/recovery-grant";
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
@@ -14,6 +15,9 @@ export async function GET(request: NextRequest) {
     const supabase = await createClient();
     const { error } = await supabase.auth.verifyOtp({ type, token_hash });
     if (!error) {
+      // A recovery link is the one case allowed to set a password without
+      // knowing the old one -- see features/auth/recovery-grant.ts.
+      if (type === "recovery") await grantRecoveryPasswordChange();
       redirect(next);
     }
   }
