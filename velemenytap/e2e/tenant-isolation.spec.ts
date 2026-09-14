@@ -5,6 +5,7 @@ import {
   seedFeedbackFixture,
   userClient,
   adminClient,
+  addOrgMember,
   type SeededOrgMember,
   type SeededFeedbackFixture,
 } from "./support/seed";
@@ -261,4 +262,41 @@ test("a member cannot delete a membership row", async () => {
     .select("id", { count: "exact", head: true })
     .eq("user_id", orgA.userId);
   expect(count).toBe(1);
+});
+
+/**
+ * Round-14 R14-04. `getCurrentOrganization` resolved "the earliest membership
+ * row I can SEE" and called it "my membership". Those differ: the roster is
+ * readable by every member of the organization -- deliberately, and the
+ * dashboard needs it -- so ordering it by `created_at` and taking the first row
+ * hands a later STAFF member the earlier OWNER's row, and `role` came back as
+ * `owner`.
+ *
+ * `canManageBilling(organization.role)` reads that value directly, which made
+ * the one role check in the application a check on a role that need not belong
+ * to the caller. Unreachable in the shipped product -- the only
+ * membership-creating path writes `owner` and there is no invite flow -- but
+ * unreachable for a reason unrelated to why it was wrong, which is not a
+ * property worth relying on.
+ *
+ * Asserted end to end rather than by inspecting the resolver: a staff member
+ * who submits the real checkout form must land on `error=unauthorized`.
+ */
+test("a staff member is resolved as staff, not as the organization's owner", async ({ page }) => {
+  const staff = await addOrgMember(orgA.orgId, "tenant-isolation-staff", "staff");
+  try {
+    await signInViaUi(page, staff.email, staff.password);
+    await page.waitForURL("/dashboard");
+
+    await page.goto("/dashboard/billing");
+    await page.getByRole("button", { name: "Előfizetek" }).first().click();
+
+    // The refusal canManageBilling produces. Before the fix this member
+    // resolved as `owner` and the action proceeded past this gate entirely.
+    await page.waitForURL(/\/dashboard\/billing\?error=unauthorized/, { timeout: 15_000 });
+  } finally {
+    const admin = adminClient();
+    await admin.from("organization_memberships").delete().eq("user_id", staff.userId);
+    await admin.auth.admin.deleteUser(staff.userId);
+  }
 });

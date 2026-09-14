@@ -29,6 +29,7 @@ vi.mock("next/navigation", () => ({
 const exchangeCodeForSession = vi.fn();
 const verifyOtp = vi.fn();
 
+const hoisted = vi.hoisted(() => ({ grantRecoveryPasswordChange: vi.fn() }));
 const cookieStore = { set: vi.fn(), get: vi.fn(() => undefined) };
 // The recovery grant is written with cookies(), which has no request scope in
 // a unit test. Mocked rather than stubbed out entirely so these tests can
@@ -36,6 +37,9 @@ const cookieStore = { set: vi.fn(), get: vi.fn(() => undefined) };
 // without the current password, so issuing it on the wrong link would be the
 // whole defect again.
 vi.mock("next/headers", () => ({ cookies: async () => cookieStore }));
+vi.mock("@/features/auth/recovery-grant", () => ({
+  grantRecoveryPasswordChange: hoisted.grantRecoveryPasswordChange,
+}));
 
 vi.mock("@/lib/supabase/server", () => ({
   createClient: async () => ({ auth: { exchangeCodeForSession, verifyOtp } }),
@@ -64,8 +68,9 @@ beforeEach(() => {
   // tests are actually asserting about the redirect target.
   process.env.NEXT_PUBLIC_SITE_URL = "http://localhost:3000";
   cookieStore.set.mockClear();
-  exchangeCodeForSession.mockResolvedValue({ error: null });
-  verifyOtp.mockResolvedValue({ error: null });
+  exchangeCodeForSession.mockResolvedValue({ data: { user: { id: "pkce-user-id" } }, error: null });
+  hoisted.grantRecoveryPasswordChange.mockClear();
+  verifyOtp.mockResolvedValue({ data: { user: { id: "recovered-user-id" } }, error: null });
 });
 
 describe("GET /auth/callback", () => {
@@ -120,35 +125,37 @@ describe("GET /auth/callback", () => {
  * restores the defect exactly.
  */
 describe("the recovery password-change grant", () => {
-  const grantCookie = () =>
-    cookieStore.set.mock.calls.find((call) => call[0] === "pw_recovery_grant");
+  const granted = () => hoisted.grantRecoveryPasswordChange.mock.calls;
 
-  it("is issued for a recovery link that lands on the reset page", async () => {
+  it("is issued for a VERIFIED recovery OTP, bound to the user it authenticated", async () => {
     await redirectedTo(GET(request("?token_hash=hash123&type=recovery&next=/auth/reset-password")));
-    expect(grantCookie()).toBeDefined();
+    expect(granted()).toEqual([["recovered-user-id"]]);
   });
 
-  it("is issued for the PKCE shape too, which carries no type at all", async () => {
+  it("is NOT issued for a PKCE code exchange, whose type this route cannot establish", async () => {
+    // Round-14 R14-01. A previous version granted here whenever `next` was the
+    // reset page, treating caller-controlled routing as proof of how someone
+    // authenticated. A `code` exchange proves a valid emailed code was
+    // presented and nothing about which KIND of link carried it.
     await redirectedTo(GET(request("?code=abc&next=/auth/reset-password")));
-    expect(grantCookie()).toBeDefined();
+    expect(granted()).toEqual([]);
   });
 
   it("is NOT issued for a signup confirmation", async () => {
     await redirectedTo(GET(request("?token_hash=hash123&type=signup&next=/onboarding")));
-    expect(grantCookie()).toBeUndefined();
+    expect(granted()).toEqual([]);
   });
 
-  it("is NOT issued when the exchange itself fails", async () => {
-    exchangeCodeForSession.mockResolvedValue({ error: { message: "bad code" } });
-    verifyOtp.mockResolvedValue({ error: { message: "bad token" } });
-    await redirectedTo(GET(request("?code=abc&next=/auth/reset-password")));
-    expect(grantCookie()).toBeUndefined();
-  });
-
-  it("is HttpOnly and short-lived", async () => {
+  it("is NOT issued when the verification itself fails", async () => {
+    exchangeCodeForSession.mockResolvedValue({ data: { user: null }, error: { message: "bad code" } });
+    verifyOtp.mockResolvedValue({ data: { user: null }, error: { message: "bad token" } });
     await redirectedTo(GET(request("?token_hash=hash123&type=recovery&next=/auth/reset-password")));
-    const options = grantCookie()?.[2];
-    expect(options).toMatchObject({ httpOnly: true, secure: true });
-    expect(options?.maxAge).toBeLessThanOrEqual(15 * 60);
+    expect(granted()).toEqual([]);
+  });
+
+  it("is NOT issued when a recovery OTP verifies but names no user", async () => {
+    verifyOtp.mockResolvedValue({ data: { user: null }, error: null });
+    await redirectedTo(GET(request("?token_hash=hash123&type=recovery&next=/auth/reset-password")));
+    expect(granted()).toEqual([]);
   });
 });

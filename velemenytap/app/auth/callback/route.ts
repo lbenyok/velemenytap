@@ -35,28 +35,37 @@ export async function GET(request: NextRequest) {
   const next = safeRedirectTarget(params.get("next"));
 
   // The PKCE shape carries no `type`, so the destination is what identifies a
-  // recovery: `next=/auth/reset-password` is set by requestPasswordResetAction
-  // and by nothing else. The grant is issued only after the exchange has
-  // actually succeeded, which needs a code from the account owner's own inbox.
-  const isRecoveryDestination = next === "/auth/reset-password";
-
+  // Round-14 R14-01. A previous version granted the password-change
+  // permission here whenever `next` was `/auth/reset-password`, reasoning that
+  // only requestPasswordResetAction sets that destination. `next` is
+  // caller-controlled routing data, not evidence of how anyone authenticated:
+  // anyone can append it to a link. A PKCE `code` exchange proves a valid
+  // emailed code was presented but carries no type at all, so this route
+  // cannot establish that it was a RECOVERY link, and no longer pretends to.
+  //
+  // That is not a gap in the shipped flow: production's Reset-password
+  // template uses the `token_hash`/`type=recovery` shape aimed at
+  // /auth/confirm (LAUNCH_CHECKLIST.md § 1), which verifies the type. The
+  // branch below handles the same shape if it ever arrives here instead. A
+  // recovery link that somehow came through PKCE now lands on the form and
+  // asks for the current password -- worse UX for a shape this project does
+  // not use, and the correct failure direction.
   const code = params.get("code");
   if (code) {
     const client = await createClient();
     const { error } = await client.auth.exchangeCodeForSession(code);
-    if (!error) {
-      if (isRecoveryDestination) await grantRecoveryPasswordChange();
-      redirect(next);
-    }
+    if (!error) redirect(next);
   }
 
   const tokenHash = params.get("token_hash");
   const type = params.get("type") as EmailOtpType | null;
   if (tokenHash && type) {
     const client = await createClient();
-    const { error } = await client.auth.verifyOtp({ type, token_hash: tokenHash });
+    const { data: verified, error } = await client.auth.verifyOtp({ type, token_hash: tokenHash });
     if (!error) {
-      if (type === "recovery" || isRecoveryDestination) await grantRecoveryPasswordChange();
+      if (type === "recovery" && verified.user) {
+        await grantRecoveryPasswordChange(verified.user.id);
+      }
       redirect(next);
     }
   }

@@ -1,47 +1,74 @@
 import "server-only";
 
+import { createHash, randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 /**
- * The marker that says "this session arrived through a password-recovery email
- * a few minutes ago", and is therefore allowed to set a new password without
- * knowing the old one.
+ * Permission to set a new password without knowing the old one.
  *
- * Why this exists. `/auth/reset-password` used to gate on nothing but "is
- * there a session", and `updatePasswordAction` never asked for the current
- * password. Anyone sitting at an already-signed-in browser could set a new
- * password in two clicks — no email, no knowledge of the old one — which both
- * locks the owner out and keeps the attacker in. Reproduced end to end before
- * this was written (`e2e/password-change-session-riding.spec.ts`): the new
- * password worked and the owner's stopped working.
+ * **Round-14 R14-01 (P1).** The first version of this file was a cookie whose
+ * only check was that it existed. That is not a permission, it is a request
+ * header: `HttpOnly` restricts what scripts may READ from the browser's jar and
+ * says nothing about the authenticity of a Cookie line arriving at the server,
+ * and the request does not carry those attributes back as proof. The attacker
+ * the guard was written to stop -- someone in control of an already-signed-in
+ * browser -- is by definition someone who can send
+ * `pw_recovery_grant=anything`. So the check supplied no authorization at all
+ * against the only threat it named. My bug, found by the round-14 reviewer the
+ * day after I shipped it.
  *
- * The obvious fix — always demand the current password — breaks the one flow
- * that cannot supply it, which is the entire point of recovery. So the two
- * cases are distinguished instead of merged, and this is the distinction.
+ * What replaced it. The cookie now carries a random 32-byte token and is
+ * nothing but a lookup key; the authority is a row in
+ * `public.password_recovery_grants`, of which the server stores only the
+ * token's SHA-256. Consuming one requires the caller's own verified user id to
+ * match the row's, an unexpired `expires_at` judged by the database clock, and
+ * an unconsumed row -- and consumption is an atomic conditional UPDATE behind
+ * a row lock, so two concurrent replays of the same token cannot both win.
  *
- * Why a server-set cookie rather than reading the session's own claims: the
- * shape of Supabase's `amr`/`aal` claims for a recovery sign-in is not part of
- * any contract this project controls, and a guess there would be a security
- * decision resting on an undocumented field. This grant is issued by this
- * application, at exactly one moment it can prove (a recovery link whose OTP
- * or PKCE exchange just succeeded), and it cannot be forged from the browser:
- * it is HttpOnly, so no script sets it, and the only route that issues it
- * requires a token that arrived in the account owner's own inbox.
+ * What is deliberately NOT trusted:
+ *
+ *   * the cookie's value, beyond being a key to look up;
+ *   * `maxAge`, which is the browser's business -- expiry is checked server-side;
+ *   * the request's routing (`next=/auth/reset-password`), which is
+ *     caller-controlled data and not evidence of how anyone authenticated. A
+ *     grant is issued only where a recovery OTP has actually been verified.
  */
 const RECOVERY_GRANT_COOKIE = "pw_recovery_grant";
 
 /**
- * Short on purpose. It only has to survive the redirect from the email link to
- * the form and the time taken to type a password — not a session. A recovery
- * link left open in a tab overnight should ask for the current password like
- * any other stale session would.
+ * Short on purpose: it has to survive the redirect from the email link to the
+ * form and the time taken to type a password, not a session. A recovery link
+ * left open in a tab overnight should ask for the current password like any
+ * other stale session.
  */
 const RECOVERY_GRANT_SECONDS = 15 * 60;
 
-/** Issued only after a recovery link's own exchange has actually succeeded. */
-export async function grantRecoveryPasswordChange(): Promise<void> {
+function hashToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+/**
+ * Issued only where a recovery OTP has actually been verified against Supabase
+ * -- never on routing alone, and never on a code exchange whose type this
+ * application cannot establish.
+ */
+export async function grantRecoveryPasswordChange(userId: string): Promise<void> {
+  const token = randomBytes(32).toString("base64url");
+
+  // Recorded server-side BEFORE the cookie is set. A cookie whose row failed
+  // to write is simply a key that resolves to nothing, which fails closed; the
+  // reverse order would briefly leave a row a client could not present.
+  const admin = createAdminClient();
+  const { error } = await admin.rpc("issue_password_recovery_grant", {
+    p_user_id: userId,
+    p_token_hash: hashToken(token),
+    p_ttl_seconds: RECOVERY_GRANT_SECONDS,
+  });
+  if (error) throw new Error("Nem sikerült előkészíteni a jelszó-visszaállítást.");
+
   const store = await cookies();
-  store.set(RECOVERY_GRANT_COOKIE, "1", {
+  store.set(RECOVERY_GRANT_COOKIE, token, {
     httpOnly: true,
     secure: true,
     sameSite: "lax",
@@ -50,17 +77,68 @@ export async function grantRecoveryPasswordChange(): Promise<void> {
   });
 }
 
-export async function hasRecoveryPasswordGrant(): Promise<boolean> {
+/**
+ * Read-only, for deciding whether to RENDER the current-password field. A page
+ * load is not a password change, so this must not consume the grant -- a user
+ * who reloads the form before submitting would otherwise lose it.
+ *
+ * This is a rendering hint and never an authorization decision. The Server
+ * Action calls `consumeRecoveryPasswordGrant` and believes only that.
+ */
+export async function hasRecoveryPasswordGrant(userId: string): Promise<boolean> {
   const store = await cookies();
-  return store.get(RECOVERY_GRANT_COOKIE) !== undefined;
+  const token = store.get(RECOVERY_GRANT_COOKIE)?.value;
+  if (!token) return false;
+
+  const admin = createAdminClient();
+  const { data, error } = await admin.rpc("password_recovery_grant_is_valid", {
+    p_user_id: userId,
+    p_token_hash: hashToken(token),
+  });
+  return !error && data === true;
 }
 
 /**
- * One password change per recovery email. Clearing it on use means a recovery
- * link cannot be spent once and then left behind as a standing permission on
- * that browser for the rest of the window.
+ * The authorization decision, and the only one. Returns true at most once per
+ * grant: the database consumes the row inside the same locked statement that
+ * validates it, so a replayed cookie -- concurrent or not -- gets false.
  */
+export async function consumeRecoveryPasswordGrant(userId: string): Promise<boolean> {
+  const store = await cookies();
+  const token = store.get(RECOVERY_GRANT_COOKIE)?.value;
+  if (!token) return false;
+
+  const admin = createAdminClient();
+  const { data, error } = await admin.rpc("consume_password_recovery_grant", {
+    p_user_id: userId,
+    p_token_hash: hashToken(token),
+  });
+  const consumed = !error && data === true;
+
+  // The cookie is cleared either way. It is only ever a key, and once the row
+  // behind it is spent -- or was never valid -- keeping it around invites
+  // exactly the "is this cookie itself the permission?" confusion that caused
+  // R14-01.
+  await clearRecoveryPasswordGrant();
+  return consumed;
+}
+
 export async function clearRecoveryPasswordGrant(): Promise<void> {
   const store = await cookies();
-  store.set(RECOVERY_GRANT_COOKIE, "", { httpOnly: true, secure: true, sameSite: "lax", maxAge: 0, path: "/auth" });
+  store.set(RECOVERY_GRANT_COOKIE, "", {
+    httpOnly: true,
+    secure: true,
+    sameSite: "lax",
+    maxAge: 0,
+    path: "/auth",
+  });
+}
+
+/**
+ * Exported for the unit tests only: proves the stored value is a hash rather
+ * than the token itself, without the test reaching into node:crypto and
+ * re-implementing the thing under test.
+ */
+export function tokenHashForTest(token: string): string {
+  return hashToken(token);
 }

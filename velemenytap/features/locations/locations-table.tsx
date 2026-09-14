@@ -20,6 +20,7 @@ import { StatusToggleForm } from "@/components/status-toggle-form";
 import { setLocationStatusAction } from "./actions";
 import { LocationDialog } from "./location-dialog";
 import type { LocationFormValues } from "./location-form";
+import { safeGoogleReviewUrl } from "@/lib/google-review-url";
 
 export type LocationRow = LocationFormValues & {
   status: "active" | "inactive";
@@ -63,7 +64,18 @@ export function LocationsTable({ locations }: { locations: LocationRow[] }) {
               {location.address ?? "—"}
             </TableCell>
             <TableCell>
-              {location.google_review_url ? (
+              {/*
+                Round-14 R14-05. This used to be a raw truthiness check while
+                the public CTA used safeGoogleReviewUrl, so the two disagreed
+                on exactly one state: a stored value the guard REJECTS. That
+                state is reachable -- master's location action accepted any
+                HTTP(S) URL, the column has no Google-only constraint, and
+                nothing backfilled it -- and a legacy https://example.com
+                therefore read as "Beállítva" while every customer got no
+                button at all. One predicate now decides all three: the badge,
+                the banner and the CTA.
+              */}
+              {safeGoogleReviewUrl(location.google_review_url) ? (
                 <Badge variant="secondary">Beállítva</Badge>
               ) : (
                 // Not a muted "—" like the address column above it. A
@@ -75,7 +87,7 @@ export function LocationsTable({ locations }: { locations: LocationRow[] }) {
                 // so this does not depend on colour alone.
                 <Badge variant="destructive">
                   <TriangleAlert aria-hidden="true" />
-                  Nincs beállítva
+                  {location.google_review_url ? "Hibás link" : "Nincs beállítva"}
                 </Badge>
               )}
             </TableCell>

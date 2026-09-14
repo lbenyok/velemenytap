@@ -483,3 +483,33 @@ export async function signInOutcome(
   if (error.status === 400 || /invalid login credentials/i.test(error.message)) return "rejected";
   return "error";
 }
+
+/**
+ * Adds a second, pre-confirmed user to an EXISTING organization with a chosen
+ * role. There is no invite flow in the product, so this is the only way to
+ * produce the multi-member, mixed-role state that round-14 R14-04 turned out to
+ * mis-resolve -- and the reason that defect was unreachable rather than absent.
+ */
+export async function addOrgMember(
+  orgId: number,
+  namePrefix: string,
+  role: "owner" | "admin" | "manager" | "staff",
+): Promise<SeededPlainUser> {
+  const admin = adminClient();
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const email = `e2e-${namePrefix}-${unique}@example.com`;
+  const password = `E2e-Test-${unique}!`;
+
+  const { data, error } = await admin.auth.admin.createUser({ email, password, email_confirm: true });
+  if (error) throw error;
+
+  const { error: membershipError } = await retryOnClockSkew(() =>
+    admin.from("organization_memberships").insert({ organization_id: orgId, user_id: data.user.id, role }),
+  );
+  if (membershipError) {
+    await admin.auth.admin.deleteUser(data.user.id);
+    throw membershipError;
+  }
+
+  return { userId: data.user.id, email, password };
+}

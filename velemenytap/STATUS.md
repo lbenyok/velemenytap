@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-09-11. Round 12's four defects (two P1) are fixed and verified, and **production signup confirmation is now proven end to end** against the live site.
+Last updated: 2026-09-14. Round 14's five findings (one P1) are fixed and verified. The P1 was in the password-change fix shipped the day before: a cookie's existence had been treated as a permission. Production signup confirmation remains proven end to end against the live site.
 
 > **Production email, measured rather than assumed (2026-09-11).** Signup
 > confirmation: real mailbox, real click, lands on `/onboarding`, account
@@ -10,6 +10,117 @@ Last updated: 2026-09-11. Round 12's four defects (two P1) are fixed and verifie
 > `/auth/forgot-password`, so production has no way to request a reset either.
 > That is a feature awaiting deploy, not a regression. See
 > `LAUNCH_CHECKLIST.md` § 1.
+
+## Round 14: five findings, and the P1 was in the fix I shipped the day before (2026-09-14)
+
+An independent reviewer was given `REVIEW_REQUEST_ROUND14.md` and the branch at
+`a9bc2e0`, and returned **five findings — one P1 and four P2 — every one
+confirmed against the code and fixed.** Three forward migrations: `20260914100000`,
+`20260914110000`, `20260914120000`.
+
+Round 13 could not read the source. Round 14 could, and the difference is the
+whole entry.
+
+### R14-01 (P1) — a cookie's existence was treated as a permission
+
+The password-change guard I shipped on 13 September checked exactly one thing:
+that a cookie named `pw_recovery_grant` existed. **`HttpOnly` restricts what
+scripts may READ from the browser's jar; it says nothing about the authenticity
+of a `Cookie` header arriving at the server**, and the request does not carry
+those attributes back as proof. The attacker that guard was written for —
+someone in control of a signed-in browser — is by definition someone who can
+send `pw_recovery_grant=anything`.
+
+So the fix for an account-takeover defect supplied **no authorization at all
+against the only threat it named**, while reading, in its own comments and in my
+own report of it, as though it did. That is this project's signature failure
+mode — a comment stating a rule the code does not enforce — committed by me in
+the act of fixing a different instance of it.
+
+**Fixed** with server-side state: the cookie is now a random 32-byte token that
+is only a lookup key, the authority is a row storing its SHA-256, bound to a
+user id, expiring on the database clock, and consumed by an atomic conditional
+UPDATE behind a row lock so concurrent replays cannot both win. The routing-based
+PKCE grant is gone — `next=/auth/reset-password` is caller-controlled data, not
+evidence of how anyone authenticated.
+
+### R14-02 (P2) — the documented rollout ends with a different schema than a sorted replay
+
+Two migrations `create or replace` `confirm_notification_email_change`:
+`20260909110000` (in `--expand`) with the row lock taken before the clock is
+read, and `20260906090000` (held back to `--enforce` for a sound, unrelated
+reason) with the older `> now()` form. Enforce runs last, so **finalize
+reinstalled a bug an earlier round had fixed**.
+
+Every check this project owns replays in filename order, which is why 48 green
+harness checks never saw it. Reproduced directly against the isolated project:
+applying `20260906090000` flipped the installed function from
+`clock_timestamp()`+`for update` to `> now()` with no lock; applying the new
+`20260914120000` restored it. That migration is appended **last** in the enforce
+list, which is what makes the end state order-independent.
+
+### R14-03 (P2) — clock-before-lock, seventh instance, introduced by round 12's fix
+
+`mark_checkout_request_sent` was a single `UPDATE ... WHERE ... >
+clock_timestamp()`. The qualification is evaluated during the scan, before
+waiting for a lock; PostgreSQL re-checks after the wait only when the tuple was
+actually updated, so a holder taking a plain `SELECT ... FOR UPDATE` leaves the
+pre-wait clock reading standing. The application reads `true` from that function
+as authorization to create a Checkout Session at Stripe.
+
+**Fixed** by mirroring `mark_stripe_customer_key_sent`: lock, then read the
+clock, then evaluate ownership and expiry on the locked row, with a
+`p_required_seconds` margin.
+
+### R14-04 (P2) — the organization resolver read whatever the roster allowed
+
+`getCurrentOrganization` selected the earliest membership row it could **see**,
+with no user filter. The roster is readable by every member, so ordering it by
+`created_at` returned the OWNER's row to a staff member — and `canManageBilling`
+reads that role directly. Unreachable today (the only membership-creating path
+writes `owner`, and there is no invite flow), but unreachable for a reason
+unrelated to why it was wrong.
+
+### R14-05 (P2) — the finding I had already asked about and then got wrong
+
+The locations warning and badge checked raw truthiness while the public CTA
+checked `safeGoogleReviewUrl`, so a **stored but invalid** URL read as
+"Beállítva" to the owner while every customer got no button. `master` accepted
+any HTTP(S) URL and nothing backfilled it, so a legacy `https://example.com` is
+enough. I asked this exact question in the round-14 handoff (§ 4) and shipped
+the version that gets it wrong. One predicate now decides badge, banner and CTA,
+and "never set one" is told apart from "set the wrong kind".
+
+### Verification
+
+- `npm run test` — **606/606** across 25 files.
+- Isolated Playwright suite — **217/217**, zero skipped, production build, CI's
+  exact `workers: 1, retries: 1`.
+- `npm run typecheck` / `lint` / `build` — clean.
+- **Mutations, each caught by exactly the right test**: a forged cookie and a
+  replayed spent grant both catch R14-01 while the four legitimate password
+  paths stay green; removing the user filter catches R14-04; restoring raw
+  truthiness catches R14-05; reinstalling the single-statement marker catches
+  R14-03 while a live-lease control stays green.
+
+Two things this run caught that I had not:
+
+- The **first** full run failed 2/217 — both the RPC privilege matrix, which
+  noticed three new functions and a changed signature I had not added to it.
+  Third round running that this completeness check has earned its keep.
+- One of my own new tests was vacuous again: the replay test initially passed
+  because the cookie gets **cleared**, not because the server refuses a replay.
+  It now captures the cookie before use and re-presents it.
+
+**Not run, and not claimed:** `scripts/verify-local-database.mjs` gained a
+staged-order gate (replay `--expand` then `--enforce` from `DEPLOYMENT.md`'s own
+manifest and assert the FINAL definition), which is the check that would have
+caught R14-02 by itself. There is no longer a local PostgreSQL in this
+environment — no install, no `pg_ctl`, nothing listening on 55439 — so **it has
+never been executed.** The R14-02 evidence above is real but narrower than a
+clean staged replay from an empty database.
+
+---
 
 ## Round 12: two P1s in the Checkout lifecycle, one of them mine (2026-09-11)
 

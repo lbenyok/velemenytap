@@ -413,7 +413,7 @@ These were never reviewed against source. They are unchanged and still open:
   Is `no_payment_required` (a trial) handled on both branches? Is "paid Session
   with no subscription" reachable in a way that traps a legitimate customer?
 - **The rollout.** 48 migrations; production on 17; `DEPLOYMENT.md` § 7 splits
-  18→48 into **29 expand + 2 enforce**. The safety argument for the
+  18→51 into **31 expand + 3 enforce**. The safety argument for the
   signature-changing ones rests entirely on none of them having been deployed.
   Is the split right, and is there any ordering in which an intermediate state
   breaks the currently-deployed code?

@@ -13,11 +13,15 @@ export async function GET(request: NextRequest) {
 
   if (token_hash && type) {
     const supabase = await createClient();
-    const { error } = await supabase.auth.verifyOtp({ type, token_hash });
+    const { data: verified, error } = await supabase.auth.verifyOtp({ type, token_hash });
     if (!error) {
       // A recovery link is the one case allowed to set a password without
-      // knowing the old one -- see features/auth/recovery-grant.ts.
-      if (type === "recovery") await grantRecoveryPasswordChange();
+      // knowing the old one -- see features/auth/recovery-grant.ts. Bound to
+      // the user this OTP actually authenticated rather than to whoever holds
+      // the session afterwards (round-14 R14-01).
+      if (type === "recovery" && verified.user) {
+        await grantRecoveryPasswordChange(verified.user.id);
+      }
       redirect(next);
     }
   }

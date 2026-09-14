@@ -616,6 +616,29 @@ export interface Database {
           p_organization_id: number;
           p_attempt_id: string;
           p_owner_token: string;
+          p_required_seconds?: number;
+        };
+        Returns: boolean | null;
+      };
+      issue_password_recovery_grant: {
+        Args: {
+          p_user_id: string;
+          p_token_hash: string;
+          p_ttl_seconds?: number;
+        };
+        Returns: undefined;
+      };
+      consume_password_recovery_grant: {
+        Args: {
+          p_user_id: string;
+          p_token_hash: string;
+        };
+        Returns: boolean | null;
+      };
+      password_recovery_grant_is_valid: {
+        Args: {
+          p_user_id: string;
+          p_token_hash: string;
         };
         Returns: boolean | null;
       };

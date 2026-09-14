@@ -188,6 +188,67 @@ try {
   assert.equal(Number(legacy.billing_sync_completed), 0);
   pass(`upgrade from migrations 1-17 preserves existing organization data, grandfathering and the new generation defaults`);
 
+  // ------------------------------------------------- staged-order replay
+  // Round-14 R14-02. Every check above replays migrations in FILENAME order.
+  // The real rollout does not: DEPLOYMENT.md section 7 runs an --expand list,
+  // deploys, then runs an --enforce list, and the enforce list deliberately
+  // holds back migrations whose effects would break currently-deployed code.
+  //
+  // That reordering is not behaviour-preserving. Two migrations both
+  // `create or replace` confirm_notification_email_change: 20260909110000
+  // (expand) with the row lock taken before the clock is read, and
+  // 20260906090000 (enforce) with the older `> now()` form. Sorted replay ends
+  // with the fixed one; the documented rollout ended with the BUGGY one, so
+  // finalize silently reintroduced a defect an earlier round had fixed and 48
+  // green checks never noticed, because not one of them replayed the order
+  // that production will actually use.
+  //
+  // This check replays the documented order and asserts the END STATE, which
+  // is the only thing the rollout actually promises.
+  const manifest = await readFile(path.join(app, "DEPLOYMENT.md"), "utf8");
+  const phase = (flag) => {
+    const prefix = `--${flag} `;
+    const line = manifest
+      .split(String.fromCharCode(10))
+      .map((l) => l.replace(String.fromCharCode(13), "").trim())
+      .find((l) => l.startsWith(prefix));
+    if (!line) throw new Error(`DEPLOYMENT.md has no ${prefix}manifest line`);
+    return line
+      .slice(prefix.length)
+      .replace("\\", "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  };
+  const expand = phase("expand");
+  const enforce = phase("enforce");
+
+  // The manifest must still describe the same set of pending migrations as the
+  // directory, or the staged replay below proves something about a fiction.
+  const pending = files.slice(17);
+  const manifestSet = [...expand, ...enforce].sort();
+  assert.deepEqual(manifestSet, [...pending].sort(), "DEPLOYMENT.md's expand+enforce manifest no longer matches migrations 18+");
+
+  const staged = await newDatabase(admin, "staged");
+  await migrate(staged.client, files.slice(0, 17));
+  await migrate(staged.client, expand);
+  await migrate(staged.client, enforce);
+
+  const staledSource = (
+    await staged.client.query(
+      "select prosrc from pg_proc where proname = 'confirm_notification_email_change'",
+    )
+  ).rows[0].prosrc;
+  assert.ok(
+    staledSource.includes("clock_timestamp()"),
+    "after the documented expand/enforce rollout, confirm_notification_email_change reads now() instead of clock_timestamp() -- the staged order installed an older definition than a sorted replay does (round-14 R14-02)",
+  );
+  assert.ok(
+    staledSource.includes("for update"),
+    "after the documented expand/enforce rollout, confirm_notification_email_change takes no row lock before reading the clock (round-14 R14-02)",
+  );
+  pass(`the documented expand/enforce order ends with the same confirm_notification_email_change a sorted replay does (${expand.length} expand + ${enforce.length} enforce)`);
+
   const client = clean.client;
   const second = await connect(clean.name);
   const third = await connect(clean.name);

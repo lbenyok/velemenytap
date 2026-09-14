@@ -26,8 +26,13 @@ import { signInViaUi } from "./support/ui";
  *
  * The fix must keep genuine recovery working: someone who has forgotten their
  * password cannot be asked for it. So the two paths are distinguished rather
- * than merged — a recovery link grants a short-lived, server-set marker, and
- * any other session must prove it knows the current password.
+ * than merged — a recovery link grants a short-lived marker, and any other
+ * session must prove it knows the current password.
+ *
+ * Round 14 then found the FIRST version of that marker was a cookie whose only
+ * check was that it existed, which the holder of a browser can always satisfy.
+ * The last two tests here are that reproduction, kept permanently: the grant is
+ * now a random token naming a user-bound, expiring, single-use row.
  */
 
 let member: SeededOrgMember;
@@ -69,8 +74,6 @@ test("an ordinary signed-in session cannot change the password without the curre
   });
   await page.getByRole("button", { name: "Új jelszó mentése" }).click();
 
-  // Scoped to the form's own error node: Next.js ships a route announcer with
-  // role="alert" on every page, so getByRole("alert") is ambiguous here.
   // Exact, and scoped to the form's own error node. The page description
   // contains the same words ("A biztonság kedvéért add meg a jelenlegi
   // jelszavad is.") and Playwright's getByText is a case-insensitive substring
@@ -161,4 +164,106 @@ test("a genuine recovery link still sets a new password with no current password
   // a standing permission on this browser for the rest of the window.
   await page.goto("/auth/reset-password");
   await expect(page.getByLabel("Jelenlegi jelszó")).toBeVisible();
+});
+
+/**
+ * Round-14 R14-01, the reviewer's reproduction kept as a permanent test.
+ *
+ * The first version of this guard checked only that a cookie named
+ * `pw_recovery_grant` existed. `HttpOnly` governs what scripts may READ from
+ * the browser's jar; it says nothing about the authenticity of a Cookie header
+ * arriving at the server. Anyone who can use the signed-in browser can also
+ * send an arbitrary cookie — so the check offered no authorization at all
+ * against the exact attacker it was written for.
+ *
+ * The grant is now a random token whose SHA-256 names a row bound to a user
+ * id, with server-checked expiry and atomic single-use consumption.
+ */
+test("a forged recovery-grant cookie does not buy a password change", async ({ page, context }) => {
+  await signInViaUi(page, member.email, member.password);
+  await page.waitForURL("/dashboard");
+
+  // Exactly what an attacker at this browser can do: invent the cookie.
+  await context.addCookies([
+    {
+      name: "pw_recovery_grant",
+      value: "attacker-chosen-value",
+      domain: "localhost",
+      path: "/auth",
+      httpOnly: true,
+      secure: false,
+    },
+  ]);
+
+  await page.goto("/auth/reset-password");
+
+  // The page is a rendering hint, but it must not be fooled either: a forged
+  // token resolves to no row, so the current-password field is still required.
+  await expect(page.getByLabel("Jelenlegi jelszó")).toBeVisible();
+
+  const attackerPassword = `Forged-${Date.now()}!`;
+  await page.getByLabel("Új jelszó", { exact: true }).fill(attackerPassword);
+  await page.getByLabel("Új jelszó még egyszer").fill(attackerPassword);
+  await page.evaluate(() => {
+    document.querySelector<HTMLInputElement>("#current_password")?.removeAttribute("required");
+  });
+  await page.getByRole("button", { name: "Új jelszó mentése" }).click();
+
+  await expect(
+    page.getByText("Add meg a jelenlegi jelszavad is, vagy kérj jelszó-visszaállító e-mailt.", {
+      exact: true,
+    }),
+  ).toBeVisible({ timeout: 15_000 });
+
+  expect(
+    await signInOutcome(member.email, attackerPassword),
+    "a forged cookie changed the password",
+  ).toBe("rejected");
+  expect(await signInOutcome(member.email, member.password)).toBe("accepted");
+});
+
+/**
+ * Single use, enforced server-side. The old cookie-only version cleared itself
+ * after a successful change, which loses every race: two concurrent replays
+ * both read "present" before either deleted it.
+ */
+test("a recovery grant cannot be spent twice", async ({ page, context }) => {
+  const { tokenHash } = await generateRecoveryToken(member.email);
+  await page.goto(`/auth/confirm?token_hash=${tokenHash}&type=recovery&next=/auth/reset-password`);
+
+  // Captured BEFORE it is spent. Clearing the cookie after a successful change
+  // is housekeeping, not a guarantee -- anyone who kept a copy can put it back,
+  // and two concurrent submissions would both still hold it. Re-presenting it
+  // is what makes this a test of the server's single-use enforcement rather
+  // than of the browser having forgotten.
+  const spentCookie = (await context.cookies()).find((c) => c.name === "pw_recovery_grant");
+  expect(spentCookie, "no recovery-grant cookie was issued").toBeDefined();
+
+  const firstPassword = `First-${Date.now()}!`;
+  await page.getByLabel("Új jelszó", { exact: true }).fill(firstPassword);
+  await page.getByLabel("Új jelszó még egyszer").fill(firstPassword);
+  await page.getByRole("button", { name: "Új jelszó mentése" }).click();
+  await expect(page.getByText("Az új jelszavadat elmentettük.")).toBeVisible({ timeout: 15_000 });
+
+  // Put the spent token back, exactly as a replay would.
+  await context.addCookies([spentCookie!]);
+
+  const secondPassword = `Second-${Date.now()}!`;
+  await page.goto("/auth/reset-password");
+  await expect(page.getByLabel("Jelenlegi jelszó")).toBeVisible();
+  await page.getByLabel("Új jelszó", { exact: true }).fill(secondPassword);
+  await page.getByLabel("Új jelszó még egyszer").fill(secondPassword);
+  await page.evaluate(() => {
+    document.querySelector<HTMLInputElement>("#current_password")?.removeAttribute("required");
+  });
+  await page.getByRole("button", { name: "Új jelszó mentése" }).click();
+
+  await expect(
+    page.getByText("Add meg a jelenlegi jelszavad is, vagy kérj jelszó-visszaállító e-mailt.", {
+      exact: true,
+    }),
+  ).toBeVisible({ timeout: 15_000 });
+
+  expect(await signInOutcome(member.email, secondPassword)).toBe("rejected");
+  expect(await signInOutcome(member.email, firstPassword)).toBe("accepted");
 });

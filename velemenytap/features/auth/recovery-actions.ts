@@ -3,7 +3,7 @@
 import { z } from "zod";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
-import { hasRecoveryPasswordGrant, clearRecoveryPasswordGrant } from "./recovery-grant";
+import { consumeRecoveryPasswordGrant } from "./recovery-grant";
 
 export type RecoveryState = { error?: string; success?: boolean };
 const emailSchema = z.string().trim().toLowerCase().email();
@@ -74,14 +74,20 @@ export async function updatePasswordAction(_state: RecoveryState, form: FormData
   const { data, error: userError } = await client.auth.getUser();
   if (userError || !data.user) return { error: "A link lejárt. Kérj új jelszó-visszaállító e-mailt." };
 
-  // The gate this action used to be missing entirely. Having a session is not
-  // permission to replace the password on it: an unattended, signed-in browser
-  // is the normal case for this product's customers, and a password change is
-  // precisely the move that turns borrowed access into permanent access while
-  // locking the real owner out. Only a session that arrived through a recovery
-  // email in the last few minutes is excused from proving it knows the current
-  // password -- because that flow, by definition, cannot.
-  const fromRecoveryEmail = await hasRecoveryPasswordGrant();
+  // Having a session is not permission to replace the password on it. An
+  // unattended, signed-in browser is the normal case for this product's
+  // customers, and a password change is precisely the move that turns borrowed
+  // access into permanent access while locking the real owner out. Only a
+  // session that arrived through a recovery email minutes ago is excused from
+  // proving it knows the current password -- because that flow, by definition,
+  // cannot.
+  //
+  // Round-14 R14-01: that grant is CONSUMED here, not observed. The first
+  // version of this guard asked a cookie whether it existed, which a browser's
+  // holder can always make true; this asks the database to atomically spend a
+  // row bound to this user id, so a forged or replayed cookie gets false and a
+  // genuine one works exactly once.
+  const fromRecoveryEmail = await consumeRecoveryPasswordGrant(data.user.id);
   if (!fromRecoveryEmail) {
     const currentPassword = form.get("current_password");
     if (typeof currentPassword !== "string" || currentPassword === "") {
@@ -94,8 +100,5 @@ export async function updatePasswordAction(_state: RecoveryState, form: FormData
 
   const { error } = await client.auth.updateUser({ password: password.data });
   if (error) return { error: "Nem sikerült menteni a jelszót. Válassz másik jelszót, vagy kérj új visszaállító linket." };
-  // One password change per recovery email, so a spent link does not leave a
-  // standing permission behind on that browser.
-  if (fromRecoveryEmail) await clearRecoveryPasswordGrant();
   return { success: true };
 }

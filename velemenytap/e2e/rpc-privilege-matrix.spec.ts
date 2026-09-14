@@ -203,7 +203,32 @@ const EXPECTED: ExpectedGrant[] = [
     service_role: true,
   },
   {
-    signature: "public.mark_checkout_request_sent(bigint, text, text)",
+    // Gained a `p_required_seconds` margin in round-14 R14-03, when it was
+    // rewritten to lock before reading the clock.
+    signature: "public.mark_checkout_request_sent(bigint, text, text, integer)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  // Round-14 R14-01. The password-recovery grant is the authority behind a
+  // password change made without knowing the old password, so `anon` and
+  // `authenticated` having no execute on any of these three is the whole point:
+  // the only caller is this application's own server code, holding the secret
+  // key, after it has verified a recovery OTP.
+  {
+    signature: "public.issue_password_recovery_grant(uuid, text, integer)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  {
+    signature: "public.consume_password_recovery_grant(uuid, text)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  {
+    signature: "public.password_recovery_grant_is_valid(uuid, text)",
     anon: false,
     authenticated: false,
     service_role: true,

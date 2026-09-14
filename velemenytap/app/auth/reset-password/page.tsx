@@ -21,7 +21,7 @@ export default async function ResetPasswordPage() {
   // A session alone is not permission to replace the password on it -- see
   // features/auth/recovery-grant.ts. The action re-checks this independently;
   // this only decides whether to render the field.
-  const fromRecoveryEmail = await hasRecoveryPasswordGrant();
+  const fromRecoveryEmail = await hasRecoveryPasswordGrant(data.user.id);
   return (
     <AuthShell
       title="Adj meg új jelszót"

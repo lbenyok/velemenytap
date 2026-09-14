@@ -6,6 +6,7 @@ import { LocationsTable, type LocationRow } from "@/features/locations/locations
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { TriangleAlert } from "lucide-react";
+import { safeGoogleReviewUrl } from "@/lib/google-review-url";
 
 export const metadata: Metadata = { title: "Helyszínek — VéleményTap" };
 
@@ -31,9 +32,15 @@ export default async function LocationsPage() {
   // still fills up -- and not one customer is ever offered the Google review.
   // Inactive locations are excluded deliberately: they aren't collecting
   // anything, so there is nothing to warn about.
+  // Round-14 R14-05: the same predicate the public CTA uses, so a stored
+  // value the guard rejects can no longer look configured here while
+  // producing no button there.
   const missingReviewUrl = rows.filter(
-    (location) => location.status === "active" && !location.google_review_url,
+    (location) => location.status === "active" && !safeGoogleReviewUrl(location.google_review_url),
   );
+  // Worth telling apart in the message: "you never set one" and "the one you
+  // set is not a Google review link" need different actions from the owner.
+  const invalidReviewUrl = missingReviewUrl.filter((location) => location.google_review_url);
 
   return (
     <div className="space-y-6">
@@ -64,6 +71,14 @@ export default async function LocationsPage() {
             vendégek véleménye ide beérkezik, de a Google-értékelés gombot nem
             látják. Szerkeszd a helyszínt, és másold be a Google Cégprofil
             értékelési linkjét.
+            {invalidReviewUrl.length > 0 ? (
+              <>
+                {" "}
+                {invalidReviewUrl.map((location) => location.name).join(", ")} esetében
+                van mentett link, de nem Google-értékelési cím, ezért a rendszer nem
+                használja.
+              </>
+            ) : null}
           </AlertDescription>
         </Alert>
       ) : null}

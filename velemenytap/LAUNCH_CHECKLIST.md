@@ -195,7 +195,7 @@ is not rebuilding.
 All of `20260907150000` … `20260908120000` go in the **`--expand`** phase. The exact
 command and manifest are in `DEPLOYMENT.md` § 7; do not retype the list from memory.
 
-- [ ] **[you]** Confirm production is still on migration 17 (`supabase migration list`) — there are now **48** migrations, so 18→48 are the pending set — **29 expand + 2 enforce**, and re-derive both lists from `supabase migration list` immediately before the run rather than from any prose
+- [ ] **[you]** Confirm production is still on migration 17 (`supabase migration list`) — there are now **51** migrations, so 18→51 are the pending set — **31 expand + 3 enforce**, and the enforce list ENDS with `20260914120000_restore_locked_confirm_notification_email_change.sql` for a reason (round-14 R14-02: without it the staged order leaves an older definition of `confirm_notification_email_change` installed than a sorted replay does), and re-derive both lists from `supabase migration list` immediately before the run rather than from any prose
       before starting. **The safety argument depends on it.** Several of these
       migrations change function signatures, which is normally exactly what needs an
       expand/enforce split — it is safe here *only* because none of them has ever been

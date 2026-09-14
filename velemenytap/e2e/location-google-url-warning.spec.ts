@@ -132,3 +132,62 @@ test("an INACTIVE location with no Google review URL is deliberately not warned 
   // missing a URL" would pass every other test in this file.
   await expect(warningBanner(page)).toHaveCount(0);
 });
+
+/**
+ * Round-14 R14-05. The warning and the badge checked raw truthiness while the
+ * public CTA checked `safeGoogleReviewUrl`, so they disagreed on exactly one
+ * state: a stored value the guard REJECTS. That state is reachable without any
+ * exotic input -- `master`'s location action accepted any HTTP(S) URL, the
+ * column carries no Google-only constraint, and nothing backfilled it. A
+ * legacy `https://example.com` therefore read as "Beállítva" to the owner
+ * while every customer who tapped that location's card got no button at all:
+ * the precise failure F3 was written to end, surviving inside F3's own fix.
+ *
+ * I asked this exact question in the round-14 handoff (§ 4, "is a location
+ * with a Google URL that is stored but invalid possible?") and then shipped
+ * the version that gets it wrong. The predicate is now shared.
+ */
+test("a stored-but-invalid Google URL is warned about, not shown as configured", async ({ page }) => {
+  await seedLocation("E2E Kávézó Hibás", "https://example.com/not-google");
+  await openLocations(page);
+
+  const warning = warningBanner(page);
+  await expect(warning).toBeVisible();
+  await expect(warning).toContainText("E2E Kávézó Hibás");
+
+  // Told apart from "never set one": the owner has a value, and it is the
+  // wrong kind of value. Those need different actions from them.
+  const cell = page.getByRole("cell", { name: "Hibás link" });
+  await expect(cell).toBeVisible();
+  await expect(cell.locator("svg")).toBeVisible();
+  await expect(page.getByText("Beállítva", { exact: true })).toHaveCount(0);
+});
+
+test("the customer-facing CTA and the owner-facing badge never disagree", async ({ page, request }) => {
+  await seedLocation("E2E Kávézó Hibás", "https://example.com/not-google");
+  const admin = adminClient();
+  const { data: location } = await admin
+    .from("locations")
+    .select("id")
+    .eq("organization_id", member.orgId)
+    .single();
+  const { data: card } = await admin
+    .from("nfc_cards")
+    .insert({
+      organization_id: member.orgId,
+      location_id: location!.id,
+      display_name: "E2E Hibás Card",
+    })
+    .select("public_id")
+    .single();
+
+  // The public page: no CTA, because the guard rejects the stored value.
+  const publicPage = await request.get(`/r/${card!.public_id}`);
+  expect(publicPage.status()).toBe(200);
+  expect(await publicPage.text()).not.toContain("Google-értékelés írása");
+
+  // The dashboard must agree with that, which is the whole finding.
+  await openLocations(page);
+  await expect(page.getByText("Beállítva", { exact: true })).toHaveCount(0);
+  await expect(warningBanner(page)).toBeVisible();
+});

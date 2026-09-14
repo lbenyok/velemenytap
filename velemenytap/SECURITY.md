@@ -132,39 +132,61 @@ Found by reviewing this branch's own unreviewed code and **reproduced end to
 end before it was fixed**: `/auth/reset-password` gated on nothing but "is
 there a session", and `updatePasswordAction` never asked for the current
 password. Anyone at an already-signed-in browser could set a new password in
-two clicks — no email, no knowledge of the old one. The reproduction is
-unambiguous: the attacker's password worked afterwards and **the owner's
-stopped working**, so this is account takeover plus owner lockout, not a
-nuisance.
+two clicks. The reproduction was unambiguous: the attacker's password worked
+afterwards and **the owner's stopped working** — account takeover plus owner
+lockout, not a nuisance.
 
-For this product's customers that is an ordinary situation rather than an
-exotic one. The dashboard lives on a laptop behind the counter of a café,
-salon or clinic, with staff and strangers near it.
+For this product's customers that is an ordinary situation. The dashboard lives
+on a laptop behind the counter of a café, salon or clinic, with staff and
+strangers near it.
 
-Demanding the current password unconditionally would break the one flow that
-cannot supply it, so the two are distinguished:
+### The first fix was wrong, and the way it was wrong is the lesson
 
-- A **recovery link** — and only a link whose OTP or PKCE exchange has actually
-  succeeded — is issued a short-lived grant (`features/auth/recovery-grant.ts`):
-  HttpOnly so no script can set it, `path=/auth`, 15 minutes, and **spent on
-  use**, so one recovery email buys one password change rather than a standing
-  permission on that browser.
-- **Every other session** must supply the current password, verified through a
-  throwaway client with `persistSession: false` so the check cannot disturb
-  the caller's own session. Missing configuration fails closed.
+The guard shipped as a cookie whose only check was that it **existed**:
 
-Deliberately not read from the session's own `amr`/`aal` claims: their shape
-for a recovery sign-in is not a contract this project controls, and a security
-decision resting on an undocumented field is the kind of thing this repository
-has already been caught doing. The grant is issued by this application at one
-moment it can prove.
+    return store.get("pw_recovery_grant") !== undefined;
 
-Covered by `e2e/password-change-session-riding.spec.ts` (the attack, the
-current-password path, a wrong current password, and genuine recovery still
-working without one) plus the unit cases in
-`features/auth/recovery-actions.test.ts` and `app/auth/callback/route.test.ts`
-for when the grant is and is not issued. Reverting the guard fails exactly the
-two tests that should fail.
+The round-14 reviewer found that the next day. `HttpOnly` restricts what
+scripts may READ from the browser's own jar; it says nothing about the
+authenticity of a `Cookie` header arriving at the server, and the request does
+not carry those attributes back as proof. The attacker the guard was written
+for — someone in control of a signed-in browser — is by definition someone who
+can send `pw_recovery_grant=anything`. **The check supplied no authorization at
+all against the only threat it named**, while reading, in review and in its own
+comments, as though it did.
+
+### What a grant actually is now
+
+The cookie carries a random 32-byte token and is nothing but a lookup key. The
+authority is a row in `public.password_recovery_grants`
+(`20260914100000`), of which the server stores only the token's SHA-256:
+
+- **bound to a user** — consuming requires the caller's own verified user id to
+  match the row's, so another account's valid cookie is useless;
+- **expiring on the server's clock**, not on a `maxAge` the browser is free to
+  ignore;
+- **single-use**, by an atomic conditional UPDATE behind a row lock rather than
+  a delete-afterwards, so two concurrent replays cannot both win;
+- **issued only where a recovery OTP has actually been verified.** The earlier
+  version also granted on `next=/auth/reset-password`, treating
+  caller-controlled routing as evidence of how someone authenticated. A PKCE
+  `code` exchange proves a valid emailed code was presented and nothing about
+  which kind of link carried it, so that path no longer grants at all.
+
+Every other session must supply the current password, verified through a
+throwaway client with `persistSession: false` so the check cannot disturb the
+caller's own session; missing configuration fails closed.
+
+Deliberately not read from the session's `amr`/`aal` claims: their shape for a
+recovery sign-in is not a contract this project controls, and a security
+decision resting on an undocumented field is a mistake this repository has
+made in other forms.
+
+Covered by `e2e/password-change-session-riding.spec.ts` — the original attack,
+a **forged cookie**, a **replayed spent grant**, the current-password path, a
+wrong current password, and genuine recovery still working without one — plus
+the unit cases in `features/auth/recovery-actions.test.ts` and
+`app/auth/callback/route.test.ts` for when a grant is and is not issued.
 
 **One finding from verifying it, which matters beyond this file.** The first
 version of that spec passed against the unfixed code. Two independent
