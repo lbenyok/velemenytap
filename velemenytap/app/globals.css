@@ -180,6 +180,20 @@
      (e.g. a border or icon fill) where contrast against overlaid content
      doesn't apply. */
   --pf-accent-gradient-text: linear-gradient(135deg, #2154eb 0%, #0e7490 100%);
+  /* Rating stars. A dedicated pair rather than reusing --pf-accent-2: that
+     cyan is still the endpoint of --pf-accent-gradient, so repointing it would
+     quietly turn every gradient in the public flow blue-to-gold.
+
+     Two tokens because one cannot do both jobs. A gold bright enough to read
+     as a review star (#fbbf24) sits at only ~2:1 against --pf-bg, short of the
+     3:1 WCAG 1.4.11 asks of a meaningful non-text element; the darker stroke
+     carries the shape's edge at ~4.9:1 while the fill stays warm. The same
+     split reasoning as round-5 R5-08's gradient-text fix.
+
+     Filled-versus-outline, aria-checked and the per-star aria-label all still
+     carry the state, so the meaning never rests on colour alone. */
+  --pf-star: #fbbf24;
+  --pf-star-edge: #b45309;
   --pf-line: #e2e8f0;
 
   /* Round-5 R5-09: the pf-* tokens above only ever covered this scope's

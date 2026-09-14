@@ -40,7 +40,7 @@ export function StarPicker({
               className={cn(
                 "size-9 transition-colors",
                 filled
-                  ? "fill-[var(--pf-accent-2)] text-[var(--pf-accent-2)]"
+                  ? "fill-[var(--pf-star)] text-[var(--pf-star-edge)]"
                   : "fill-none text-[var(--pf-line)]",
               )}
               strokeWidth={1.5}

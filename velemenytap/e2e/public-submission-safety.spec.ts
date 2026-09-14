@@ -42,7 +42,7 @@ test("finding #6: deactivating a card between page load and submission is caught
     .eq("id", card.cardId);
   expect(deactivateError).toBeNull();
 
-  await page.getByRole("button", { name: "Vélemény küldése" }).click();
+  await page.getByRole("button", { name: "Csak elküldöm" }).click();
 
   // Not getByRole("alert") -- that also matches Next's own route-announcer
   // div (role="alert", always present, empty text), which makes a strict
@@ -75,7 +75,7 @@ test("finding #2: more than the per-card rate limit within the window is rejecte
   // message -- not "card inactive" and not a generic failure.
   await page.goto(`/r/${card.publicId}`);
   await page.getByRole("radio", { name: /^5 csillag —/ }).click();
-  await page.getByRole("button", { name: "Vélemény küldése" }).click();
+  await page.getByRole("button", { name: "Csak elküldöm" }).click();
 
   await expect(page.locator('p[role="alert"]')).toHaveText(
     "Túl sok vélemény érkezett erről a kártyáról. Kérjük, próbáld újra pár perc múlva.",

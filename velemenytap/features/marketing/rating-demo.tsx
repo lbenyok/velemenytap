@@ -56,7 +56,7 @@ export function RatingDemo() {
                 className={cn(
                   "size-7 transition-colors sm:size-8",
                   filled
-                    ? "fill-[var(--pf-accent-2)] text-[var(--pf-accent-2)]"
+                    ? "fill-[var(--pf-star)] text-[var(--pf-star-edge)]"
                     : "fill-none text-[var(--pf-line)]",
                 )}
                 strokeWidth={1.5}
