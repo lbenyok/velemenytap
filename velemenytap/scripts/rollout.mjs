@@ -150,7 +150,31 @@ const supabaseProjectDir = path.resolve(dirname, "..");
 const migrationsDir = path.resolve(supabaseProjectDir, "supabase/migrations");
 const configTomlPath = path.resolve(supabaseProjectDir, "supabase/config.toml");
 const environmentsPath = path.resolve(dirname, "rollout-environments.json");
-const NPX = process.platform === "win32" ? "npx.cmd" : "npx";
+/**
+ * The Supabase CLI is launched as `node <the supabase package's own bin>`
+ * rather than through npx.
+ *
+ * npx resolves to `npx.cmd` on Windows, and Node refuses to spawn a .cmd
+ * without a shell -- so every call here died with `spawnSync npx.cmd EINVAL`
+ * before it ever reached the database. The obvious fix, shell:true, is the
+ * one thing this script must not do: --db-url carries a password whose
+ * contents this script does not control, and round 5 removed shell:true
+ * precisely to close that injection surface. Resolving the bin and running
+ * it under the current node keeps shell:false intact and behaves identically
+ * on both platforms.
+ *
+ * It also pins the version. npx would happily fetch a DIFFERENT supabase CLI
+ * than the one in this project's lockfile, which is not something a
+ * production migration run should leave to chance.
+ */
+const SUPABASE_BIN = (() => {
+  const pkg = path.resolve(supabaseProjectDir, "node_modules/supabase/package.json");
+  const bin = JSON.parse(readFileSync(pkg, "utf-8")).bin;
+  const rel = typeof bin === "string" ? bin : bin?.supabase;
+  if (!rel) throw new Error("the supabase package declares no supabase bin -- run npm install");
+  return path.resolve(path.dirname(pkg), rel);
+})();
+const NODE = process.execPath;
 
 /**
  * Round-7 finding R7-04 (MEDIUM): allowedOrigin was stored but never
@@ -645,7 +669,7 @@ function listMigrationFiles() {
 }
 
 export function getPendingMigrations(dbUrl) {
-  const raw = sh(NPX, ["supabase", "migration", "list", "--db-url", dbUrl, "--output-format", "json"]);
+  const raw = sh(NODE, [SUPABASE_BIN, "migration", "list", "--db-url", dbUrl, "--output-format", "json"]);
   const jsonStart = raw.indexOf("{");
   if (jsonStart === -1) {
     // Found during this round's own independent self-review: sh() only
@@ -871,10 +895,10 @@ export function runPrepare(args) {
       // exactly what happened applying this project's own round-2/3 enforce
       // migrations in production (STATUS.md). Without it, `supabase db
       // push` refuses to apply an out-of-order migration at all.
-      const pushArgs = ["supabase", "db", "push", "--workdir", workDir, "--db-url", args.dbUrl, "--include-all"];
+      const pushArgs = [SUPABASE_BIN, "db", "push", "--workdir", workDir, "--db-url", args.dbUrl, "--include-all"];
       if (args.dryRun) pushArgs.push("--dry-run");
       else pushArgs.push("--yes");
-      sh(NPX, pushArgs);
+      sh(NODE, pushArgs);
     } finally {
       // Best-effort cleanup only -- unlike the previous design, this
       // `finally` not running (a hard crash) has no correctness
@@ -950,7 +974,7 @@ export async function runFinalize(args) {
       return;
     }
     console.log("\n--dry-run: previewing the enforce push without waiting for health or applying anything.");
-    sh(NPX, ["supabase", "db", "push", "--db-url", args.dbUrl, "--include-all", "--dry-run"]);
+    sh(NODE, [SUPABASE_BIN, "db", "push", "--db-url", args.dbUrl, "--include-all", "--dry-run"]);
     return;
   }
 
@@ -976,7 +1000,7 @@ export async function runFinalize(args) {
 
   console.log("\n=== Finalize, step 5: apply enforce migrations ===");
   console.log(`Applying ${remaining.length} migration(s): ${remaining.join(", ")}`);
-  sh(NPX, ["supabase", "db", "push", "--db-url", args.dbUrl, "--include-all", "--yes"]);
+  sh(NODE, [SUPABASE_BIN, "db", "push", "--db-url", args.dbUrl, "--include-all", "--yes"]);
 
   console.log("\n=== Finalize, step 6: final verification ===");
   const stillPending = getPendingMigrations(args.dbUrl);
