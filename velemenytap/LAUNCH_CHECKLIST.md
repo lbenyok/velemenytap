@@ -37,16 +37,22 @@ received in a real mailbox and clicked — signup confirmation → `/onboarding`
 
 - [x] **[me]** Isolated project: SMTP configured (Resend bridge) and templates
       switched to the `token_hash` form. Verified by receiving and clicking all three.
-- [ ] **[you]** Apply **both** fixes to production. SMTP settings:
+- [x] **[you]** Apply **both** fixes to production. **Done 2026-09-11** — proven by
+      the end-to-end verification recorded below: a real signup email arrived from
+      `no-reply@velemenytap.hu` (so SMTP is live) carrying the `token_hash` shape
+      (so the template was replaced). SMTP settings used:
 
       host smtp.resend.com · port 465 · user `resend` · pass = your Resend API key
       sender: an address on the verified `velemenytap.hu` domain
 
-- [ ] **[you]** Replace the production **Confirm signup** template link with:
+- [x] **[you]** Replace the production **Confirm signup** template link with — **done**,
+      verified by clicking a real one:
 
       {{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=signup&next=/onboarding
 
-- [ ] **[you]** Replace the production **Reset password** template link with:
+- [x] **[you]** Replace the production **Reset password** template link with — **done**;
+      the link authenticates correctly and then 404s only because the ROUTE ships
+      with this branch, which is itself the evidence the template was replaced:
 
       {{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=recovery&next=/auth/reset-password
 
@@ -70,7 +76,10 @@ received in a real mailbox and clicked — signup confirmation → `/onboarding`
       actually serves — it is currently `https://veleminytap.vercel.app`, which is
       correct today. `{{ .SiteURL }}` in the templates above resolves to exactly this,
       so if the Vercel project is ever renamed, both move together.
-- [ ] **[you]** Decide the customer-visible sender identity. The isolated project uses
+- [x] **[you]** Decide the customer-visible sender identity. **Settled in practice:**
+      production sends from `no-reply@velemenytap.hu`, observed in the verified
+      signup email. Change it if you prefer, but nothing is blocked on it.
+      Original note: The isolated project uses
       `alerts@velemenytap.hu` because it was already proven; an account-email address
       such as `no-reply@` may read better, and any local part on the verified domain
       works.
@@ -243,7 +252,7 @@ command and manifest are in `DEPLOYMENT.md` § 7; do not retype the list from me
 
 ## What needs you, condensed
 
-1. Apply **both** email fixes to production — SMTP *and* the two templates. Fixing only SMTP produces emails that arrive and links that still dead-end. **And enable "Require current password when changing password" on both projects** — without it the password guard is a UI-path defence only (round-15 R15-01, measured).
+1. **Enable "Require current password when changing password"** on production and the isolated project — without it the password guard is a UI-path defence only (round-15 R15-01, measured; run `node scripts/check-password-change-enforcement.mjs` to see the current answer). The two email fixes are **already applied and verified** (2026-09-11).
 2. Stripe live Product, Prices, webhook endpoint, and the env vars for them.
 3. Three sweep secrets/variables, set together.
 4. Changing Vercel's **Root Directory** to `velemenytap` in the same window as the merge — the repo subdirectory is renamed on this branch, and the build fails immediately if the two disagree.
