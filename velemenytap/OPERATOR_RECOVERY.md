@@ -1,6 +1,6 @@
 # Operator recovery
 
-Three billing states can stop making progress on their own, and one public-product
+Four billing states can stop making progress on their own, and one public-product
 incident needs a person too (§ 7 — a card flooded with fabricated feedback; it is
 the only procedure here that an ordinary customer-facing URL can trigger, and the
 only one that applies to what is deployed today). Each fails closed
@@ -499,6 +499,73 @@ next card. The only preventive controls that would — per-IP limits, a proof of
 presence, a CAPTCHA — all tax the legitimate customer standing at a counter,
 which this product's own rules put first. The current position is deliberate:
 make it bounded and cheap to recover from rather than harder to do.
+
+---
+
+## 8. A checkout stuck behind the Session-enumeration cap
+
+Round-14 review. `OPERATOR_RECOVERY.md` covered the Customer and Subscription
+caps and a *recorded* Session with no subscription, but not this one — and the
+code's own comment called it "one retry", which is wrong in exactly the case
+that needs a procedure.
+
+**The state.** An attempt whose `checkout_request_state` is `sent` may not be
+discarded on local state: Stripe may hold a real, open, payable Session whose id
+was never written down (§ R12-01's reasoning). The coordinator therefore asks
+Stripe by enumerating `checkout.sessions.list` for that customer. That
+enumeration is capped at 20 pages. A customer whose window genuinely holds more
+than 2,000 Sessions hits the cap, the outcome is `unknown`, and the checkout
+fails closed with "cannot establish whether an earlier checkout ... is still
+payable".
+
+**Why waiting does not help.** The next attempt enumerates the same history and
+stops at the same cap. Retrying is not a mitigation; the organization cannot
+start a checkout until someone acts.
+
+**Step 1 — confirm it is the cap and not a transient Stripe error.** The thrown
+message carries `probe.reason`. A cap hit says so; a network or rate-limit
+failure does not, and that one genuinely is "retry".
+
+**Step 2 — establish whether an obligation exists, by narrowing rather than
+paging.** The cap is on an unfiltered enumeration, not on Stripe's API. In the
+Stripe Dashboard (or via the API with a tighter `created` filter and
+`status=open`) list that customer's **open** Sessions only, over the window the
+stuck attempt could have created one in — its `checkout_attempt_expires_at`
+bounds that, and a Checkout Session lives 24 hours from its own creation:
+
+```
+stripe checkout sessions list --customer cus_XXX --limit 100   --created[gte] <attempt created, unix> --status open
+```
+
+**Step 3a — an open Session exists and belongs to this organization.** Check its
+`metadata`/`client_reference_id` against the organization before doing anything
+with it. If it is genuinely this organization's, give the customer its URL; the
+normal reconciliation path takes over from there. **Do not create a second one.**
+
+**Step 3b — no open Session in that window.** That is the sound negative the
+coordinator could not reach by itself. Only then is it safe to release the
+attempt, with a **checkout** claim's own token (not a customer-creation one —
+see § 1's correction), after recording why:
+
+```sql
+select public.record_billing_anomaly(
+  :organization_id, 'checkout_enumeration_cap_cleared',
+  jsonb_build_object('attempt_id', :attempt_id, 'window_start', :window_start, 'operator', :who));
+```
+
+Then release through `release_checkout_attempt` using a freshly claimed token,
+exactly as § 4 step 5 does. A direct SQL call with the wrong token returns no
+row rather than `false`.
+
+**What this procedure deliberately does not do.** It does not clear the attempt
+on the grounds that enumeration was inconvenient. The cap means "we do not
+know", and the entire point of the `sent` state is that not knowing is not
+permission to mint a second payable Session.
+
+**Unverified.** No Stripe credentials were available when this was written, so
+these commands are derived from the code path and Stripe's documented API rather
+than executed. Treat the exact flags as a starting point and confirm against the
+Dashboard before acting on a real customer.
 
 ---
 

@@ -99,6 +99,16 @@ export async function POST(request: NextRequest) {
   // applied_at null, Stripe redelivers, and the next delivery re-applies --
   // while making a duplicate of an event that already SUCCEEDED a genuine
   // no-op.
+  //
+  // The scope of that promise, stated narrowly because round 14 asked for it:
+  // this is NOT an exclusive claim over work still in progress, and this
+  // handler is NOT exactly-once. `claim_stripe_webhook_event` inserts `on
+  // conflict do nothing` and then reports whether `applied_at` is still null,
+  // so two CONCURRENT deliveries of the same event can both see null and both
+  // apply. Only a duplicate arriving after the first has committed is
+  // suppressed. The concurrent case is left to the mechanisms that were built
+  // for it -- the atomic activation latch, the reconciliation generations and
+  // the exclusive lease -- rather than claimed away here.
   const { data: shouldApply, error: claimError } = await admin.rpc("claim_stripe_webhook_event", {
     p_event_id: event.id,
   });

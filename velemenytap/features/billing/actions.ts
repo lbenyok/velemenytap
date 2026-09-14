@@ -1218,8 +1218,17 @@ async function claimAndCreateCheckoutSession(
         });
       }
       if (probe.outcome === "unknown") {
-        // Uncertainty is not permission. Keeping the attempt costs one retry;
-        // discarding it on a guess can cost the customer a second charge.
+        // Uncertainty is not permission: discarding the attempt on a guess can
+        // cost the customer a second charge, so this fails closed.
+        //
+        // Round-14 correction to this comment, which used to say "keeping the
+        // attempt costs one retry". That is only true when the uncertainty is
+        // transient. When the enumeration hits its 20-page cap -- a customer
+        // whose fixed window genuinely holds more than 2,000 Sessions -- the
+        // next attempt enumerates the same history and stops at the same cap,
+        // so retrying never clears it. That organization is stuck until an
+        // operator intervenes, which is a support state rather than a retry,
+        // and OPERATOR_RECOVERY.md § 8 is the procedure for it.
         throw new Error(
           `Cannot establish whether an earlier checkout for organization ${organizationId} already created a ` +
             `Checkout Session that is still payable, so a replacement was not created: ${probe.reason}`,
