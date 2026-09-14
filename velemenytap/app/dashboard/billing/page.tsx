@@ -14,12 +14,8 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Számlázás — VéleményTap" };
-
-const YEARLY_SAVINGS_HUF = PLAN_PRICING.monthly.amountHuf * 12 - PLAN_PRICING.yearly.amountHuf;
-const YEARLY_SAVINGS_MONTHS = Math.round(YEARLY_SAVINGS_HUF / PLAN_PRICING.monthly.amountHuf);
 
 const PLAN_FEATURES = [
   "Korlátlan helyszín és NFC kártya",
@@ -308,10 +304,16 @@ export default async function BillingPage({
               </form>
             </div>
           ) : (
-            <div className="grid gap-4 sm:grid-cols-2">
-              <PlanOption interval="monthly" />
-              <PlanOption interval="yearly" savingsMonths={YEARLY_SAVINGS_MONTHS} />
-            </div>
+            <form action={createCheckoutSessionAction} className="flex flex-col gap-4">
+              <fieldset className="grid gap-4 sm:grid-cols-2">
+                <legend className="sr-only">Fizetési gyakoriság</legend>
+                <PlanOption interval="monthly" defaultChecked />
+                <PlanOption interval="yearly" />
+              </fieldset>
+              <Button type="submit" className="w-full sm:w-auto">
+                Előfizetek
+              </Button>
+            </form>
           )}
 
           <p className="text-xs text-muted-foreground">Az árak az ÁFát tartalmazzák.</p>
@@ -321,40 +323,51 @@ export default async function BillingPage({
   );
 }
 
-function PlanOption({ interval, savingsMonths }: { interval: BillingInterval; savingsMonths?: number }) {
+/**
+ * The highlight follows whichever option is CHECKED.
+ *
+ * It used to be hardcoded -- `interval === "yearly" ? "border-primary" : ...`
+ * -- so the yearly card was outlined permanently and nothing moved when you
+ * picked the other one. Two cards, each with its own form and its own submit
+ * button, dressed to look like a chooser: it read as a selection state while
+ * being a static emphasis, which is exactly why it looked broken.
+ *
+ * Now there is one form, one submit button, and a real radio per option. The
+ * highlight is Tailwind's `peer-checked:`, not useState -- so this stays a
+ * Server Component, and the choice still submits correctly if JavaScript never
+ * loads. `sr-only` hides the radio visually without hiding it from assistive
+ * tech or the keyboard: arrow keys move between options and the focus ring is
+ * carried by the card.
+ */
+function PlanOption({
+  interval,
+  defaultChecked,
+}: {
+  interval: BillingInterval;
+  defaultChecked?: boolean;
+}) {
   const plan = PLAN_PRICING[interval];
   return (
-    <div
-      className={cn(
-        "flex flex-col gap-3 rounded-xl border p-4",
-        interval === "yearly" ? "border-primary" : "border-border",
-      )}
-    >
-      <div className="flex items-center justify-between gap-2">
+    <label className="cursor-pointer">
+      <input
+        type="radio"
+        name="interval"
+        value={interval}
+        defaultChecked={defaultChecked}
+        className="peer sr-only"
+      />
+      <div className="flex h-full flex-col gap-3 rounded-xl border border-border p-4 transition-colors peer-checked:border-primary peer-checked:bg-primary/5 peer-focus-visible:ring-2 peer-focus-visible:ring-ring">
         <span className="text-sm font-medium">{plan.label}</span>
-        {savingsMonths ? (
-          <Badge variant="secondary">kb. {savingsMonths} hónap ingyen</Badge>
-        ) : null}
+        <div className="flex items-baseline gap-1">
+          <span
+            className="text-2xl font-medium tracking-tight"
+            style={{ fontFamily: "var(--font-display)" }}
+          >
+            {plan.amountHuf.toLocaleString("hu-HU")} Ft
+          </span>
+          <span className="text-sm text-muted-foreground">/ {plan.cadence}</span>
+        </div>
       </div>
-      <div className="flex items-baseline gap-1">
-        <span
-          className="text-2xl font-medium tracking-tight"
-          style={{ fontFamily: "var(--font-display)" }}
-        >
-          {plan.amountHuf.toLocaleString("hu-HU")} Ft
-        </span>
-        <span className="text-sm text-muted-foreground">/ {plan.cadence}</span>
-      </div>
-      <form action={createCheckoutSessionAction}>
-        <input type="hidden" name="interval" value={interval} />
-        <Button
-          type="submit"
-          variant={interval === "yearly" ? "default" : "outline"}
-          className="w-full"
-        >
-          Előfizetek
-        </Button>
-      </form>
-    </div>
+    </label>
   );
 }
