@@ -72,9 +72,14 @@ received in a real mailbox and clicked — signup confirmation → `/onboarding`
       gate is measured rather than ticked.
 - [ ] **[you]** Raise the hourly email rate limit from 2 (it exists to protect the
       built-in mailer and is far too low once real SMTP is in place).
-- [ ] **[you]** Confirm production's Auth `site_url` still matches the address that
-      actually serves — it is currently `https://veleminytap.vercel.app`, which is
-      correct today. `{{ .SiteURL }}` in the templates above resolves to exactly this,
+- [ ] **[you]** **The Vercel project was renamed on 2026-09-14**, so Supabase Auth's
+      `site_url` almost certainly still points at the old `veleminytap.vercel.app`.
+      `{{ .SiteURL }}` in both email templates resolves to whatever that setting says,
+      so every confirmation and recovery link is being generated against the old host
+      until you change it. Set it to `https://velemenytap.vercel.app`, and add the
+      matching entry to the **redirect allowlist** (`https://velemenytap.vercel.app/auth/confirm**`)
+      while leaving the old entry in place during changeover. Then send yourself one real
+      signup email and click it. Original note: `{{ .SiteURL }}` in the templates above resolves to exactly this,
       so if the Vercel project is ever renamed, both move together.
 - [x] **[you]** Decide the customer-visible sender identity. **Settled in practice:**
       production sends from `no-reply@velemenytap.hu`, observed in the verified
@@ -202,14 +207,15 @@ is not rebuilding.
       before (a Preview build of the branch will fail until it is changed, and
       `master` will fail the moment it is).
 - [ ] **[you]** While you are there, confirm the Vercel **project name** and the
-      host it serves. `https://veleminytap.vercel.app` serves production today and
+      host it serves. `https://velemenytap.vercel.app` serves production today (the
+      rename happened on 2026-09-14; the old host now 307-redirects to it) and
       `https://velemenytap.vercel.app` returns 404 (measured 2026-09-12), so the
       project appears **not** to have been renamed — despite commit `08f765f`'s
       message saying it was. The two workflow fallbacks, `scripts/rollout-environments.json`
-      and `README.md` all point at `veleminytap.vercel.app` and are therefore
-      **correct as written**; do not "fix the spelling" in them without renaming the
-      project first, or CI's production verification and the billing sweep will both
-      point at a host that 404s.
+      and `README.md` now point at `velemenytap.vercel.app`, updated when the project
+      was renamed. The old host only 307-redirects, and `curl -fsS` does **not** follow
+      redirects — so leaving them on the old spelling would have failed CI's production
+      verification and the billing sweep.
 - [ ] **[you]** If you do rename the project, Auth's `site_url` and the two workflow
       fallbacks move with it — see § 1's `site_url` item.
 
