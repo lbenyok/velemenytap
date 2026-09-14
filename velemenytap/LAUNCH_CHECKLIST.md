@@ -201,11 +201,11 @@ moment rather than once, up front. Get it wrong and the build fails immediately
 with `Couldn't find any pages or app directory` — loud, but it means production
 is not rebuilding.
 
-- [ ] **[you]** Confirm the current value in Settings → General → Build and
-      Deployment. It should read `veleminytap` today.
-- [ ] **[you]** Change it to `velemenytap` **as part of merging this branch**, not
-      before (a Preview build of the branch will fail until it is changed, and
-      `master` will fail the moment it is).
+- [x] **[you]** ~~Confirm the current value in Settings → General → Build and
+      Deployment.~~ **Done 2026-09-14.**
+- [x] **[you]** Change it to `velemenytap` **as part of merging this branch**.
+      **Done 2026-09-14**, immediately before the push — the merge deletes the old
+      `veleminytap/` path, so leaving it would have failed the build outright.
 - [ ] **[you]** While you are there, confirm the Vercel **project name** and the
       host it serves. `https://velemenytap.vercel.app` serves production today (the
       rename happened on 2026-09-14; the old host now 307-redirects to it) and
@@ -224,21 +224,20 @@ is not rebuilding.
 All of `20260907150000` … `20260908120000` go in the **`--expand`** phase. The exact
 command and manifest are in `DEPLOYMENT.md` § 7; do not retype the list from memory.
 
-- [ ] **[you]** Confirm production is still on migration 17 (`supabase migration list`) — there are now **51** migrations, so 18→51 are the pending set — **31 expand + 3 enforce**, and the enforce list ENDS with `20260914120000_restore_locked_confirm_notification_email_change.sql` for a reason (round-14 R14-02: without it the staged order leaves an older definition of `confirm_notification_email_change` installed than a sorted replay does), and re-derive both lists from `supabase migration list` immediately before the run rather than from any prose
+- [x] **[you]** ~~Confirm production is still on migration 17~~ **Done 2026-09-14** — it was; all 51 are now applied. (`supabase migration list`) — there are now **51** migrations, so 18→51 are the pending set — **31 expand + 3 enforce**, and the enforce list ENDS with `20260914120000_restore_locked_confirm_notification_email_change.sql` for a reason (round-14 R14-02: without it the staged order leaves an older definition of `confirm_notification_email_change` installed than a sorted replay does), and re-derive both lists from `supabase migration list` immediately before the run rather than from any prose
       before starting. **The safety argument depends on it.** Several of these
       migrations change function signatures, which is normally exactly what needs an
       expand/enforce split — it is safe here *only* because none of them has ever been
       deployed, so there is no old caller to keep working. That reasoning expires the
       moment any one of them ships.
-- [ ] **[you]** Run `prepare` (`--expand`), deploy the application, let old instances
-      drain, then run `finalize` (`--enforce`). They are deliberately separate commands
-      run at different times.
-- [ ] **[me]** Re-verify the manifest against the migrations directory immediately
-      before the run — it goes stale the moment another migration lands.
+- [x] **[you]** Run `prepare` (`--expand`), deploy the application, let old instances
+      drain, then run `finalize` (`--enforce`). **Done 2026-09-14**, in that order.
+- [x] **[me]** Re-verify the manifest against the migrations directory immediately
+      before the run. **Done 2026-09-14** — 34 pending, manifest matched exactly.
 
 ## 6. Post-deployment checks
 
-- [ ] **[me]** `/api/health` reports the expected latest migration and commit. It is
+- [x] **[me]** `/api/health` reports the expected latest migration and commit. **Done 2026-09-14** — `200`, `ok:true`, `environment:production`, `c93d84f`. It is
       reachable unauthenticated only from this branch onward — on `master` it answers
       `307 -> /login`, which is why CI's `verify-production-deployment` job could not
       succeed. `e2e/public-route-reachability.spec.ts` is the regression guard.
@@ -251,8 +250,11 @@ command and manifest are in `DEPLOYMENT.md` § 7; do not retype the list from me
       on `/auth/reset-password`, **not** `/auth/auth-code-error`.
 - [ ] **[me]** Public feedback flow still works unauthenticated for all five ratings —
       the product's one non-negotiable invariant, and the thing most worth re-checking
-      after a billing deploy.
-- [ ] **[me]** Confirm the paywall gates only the dashboard and never `/r/{publicId}`.
+      after a billing deploy. **Still open on PRODUCTION specifically**: verified by
+      `e2e/review-gating.spec.ts` against the isolated project on identical code, and
+      `/r/{id}` is confirmed reachable unauthenticated in production — but no real
+      production card has been rated 1-5 by hand. Needs one real card to close.
+- [x] **[me]** Confirm the paywall gates only the dashboard and never `/r/{publicId}`. **Done 2026-09-14** — `/r/{id}` `200` unauthenticated, `/dashboard` `307` to `/login`.
 
 ---
 

@@ -1,15 +1,57 @@
 # Status
 
-Last updated: 2026-09-14. Round 14's five findings (one P1) are fixed and verified. The P1 was in the password-change fix shipped the day before: a cookie's existence had been treated as a permission. Production signup confirmation remains proven end to end against the live site.
+Last updated: 2026-09-14. **The branch is deployed. Production runs `master` at `c93d84f` with all 51 migrations applied.** Round 14's five findings (one P1) are fixed and verified. The P1 was in the password-change fix shipped the day before: a cookie's existence had been treated as a permission.
 
 > **Production email, measured rather than assumed (2026-09-11).** Signup
 > confirmation: real mailbox, real click, lands on `/onboarding`, account
 > confirmed in Auth — both faults closed for the flow every new customer hits.
-> Password reset: the email arrives and the link authenticates, then **404s**,
-> because `/auth/reset-password` exists only on this branch — as does
-> `/auth/forgot-password`, so production has no way to request a reset either.
-> That is a feature awaiting deploy, not a regression. See
-> `LAUNCH_CHECKLIST.md` § 1.
+> Password reset used to 404 here, because `/auth/reset-password` and
+> `/auth/forgot-password` existed only on this branch. **Both now serve 200 in
+> production as of the 2026-09-14 deploy** — the pages exist; clicking a real
+> reset email end to end is still unticked in `LAUNCH_CHECKLIST.md` § 6.
+
+## The deploy (2026-09-14)
+
+Production had been running `master` — migration 17, no password-reset flow, no
+billing, no reachable `/api/health` — while fifteen review rounds accumulated on
+an unmerged branch. That gap is closed.
+
+| | |
+|---|---|
+| commit | `c93d84fb55fcd850ded3e79ac6e1dcf464430cac` on `master` (fast-forward, so no squash SHA to chase) |
+| migrations | 51 applied, 0 pending |
+| `/api/health` | `200`, `ok:true`, `environment:production` |
+
+Sequence actually run: `prepare` (31 expand) → merge → Vercel deploy → `finalize`
+(3 enforce). Verified afterwards, read-only, against the live database:
+
+- `confirm_notification_email_change` is installed in the **locked** form
+  (`for update` + `clock_timestamp()`, no bare `now()`). That is the R14-02
+  check, and the reason `20260914120000` was appended last in the enforce list:
+  without it the staged order reinstalls an older definition than a sorted
+  replay produces. **The restore held.**
+- Every notification/feedback RPC resolves to exactly one overload —
+  `reserve_notification_email_change(bigint, text)`,
+  `confirm_notification_email_change(text)`,
+  `submit_feedback_atomic(uuid, smallint, text)`. No PGRST203 ambiguity.
+- `/r/{publicId}` serves `200` unauthenticated; `/dashboard` `307`s to `/login`.
+  The paywall gates the dashboard and never the public feedback page.
+
+Three things cost real time and are worth remembering:
+
+1. **`scripts/rollout.mjs` had never run on Windows.** `spawnSync npx.cmd EINVAL`,
+   four call sites, found with production already mid-rollout. Fixed in
+   `c93d84f` by resolving the Supabase CLI's own bin and running it under the
+   current node — which keeps `shell:false` (round 5 removed `shell:true`
+   because `--db-url` carries a password) and pins the CLI version.
+2. **`APP_ENV` took three attempts.** First it was a *shared* environment
+   variable, which Vercel treats as inert until explicitly linked to a project;
+   then it was added project-level with the key name pasted into the value box.
+   `/api/health` named both faults precisely, which is the whole reason it
+   returns a specific `error` string rather than a bare `ok:false`.
+3. **Vercel's Root Directory had to change at merge time**, `veleminytap` →
+   `velemenytap`, because the merge deletes the old path. Caught before the push
+   rather than after a red build.
 
 ## Round 14: five findings, and the P1 was in the fix I shipped the day before (2026-09-14)
 
