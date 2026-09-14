@@ -24,10 +24,18 @@ const MIGRATIONS_DIR = path.join(app, "supabase/migrations");
  * every function in the repository -- so instance eight has to get past a test
  * rather than past a reviewer's attention.
  *
- * It is deliberately a lint, not a proof. It cannot know whether a given wait
- * is reachable, and it will not catch a version that reads the clock into a
- * variable before locking. What it does catch is the exact textual shape all
- * seven instances had, which is worth more than nothing and costs no database.
+ * Two shapes are checked, because the class has appeared as both:
+ *
+ *   1. the clock in the WHERE of a statement that can wait (round-14 R14-03);
+ *   2. the clock read into a variable BEFORE a lock the function then waits on,
+ *      so every later comparison uses a moment that may be long past
+ *      (round-10 R10-06/R10-07).
+ *
+ * It is deliberately a lint, not a proof: it cannot know whether a given wait
+ * is reachable, it only reads the LAST definition of each function, and a
+ * sufficiently indirect version will slip past both patterns. What it does
+ * catch is the exact textual shape every instance so far has had, at no
+ * database cost -- which is what makes it run in CI, unlike the harness gate.
  */
 
 type FunctionDefinition = { name: string; file: string; body: string };
@@ -62,6 +70,26 @@ function timeQualifiedMutations(body: string): string[] {
   });
 }
 
+/**
+ * The second shape, and the one the WHERE-clause check above cannot see:
+ *
+ *     v_now := clock_timestamp();          -- read here
+ *     select ... from t where ... for update;  -- waits here
+ *     if v_now > ... then                  -- decided on a stale reading
+ *
+ * This is round-10 R10-06/R10-07. The clock is captured before a wait that can
+ * last arbitrarily long, so every decision after the lock is judged against a
+ * moment that may be long past. Nothing is in a WHERE, so shape one misses it
+ * entirely.
+ */
+function readsClockBeforeLocking(body: string): boolean {
+  const lower = body.toLowerCase();
+  const lockAt = lower.indexOf("for update");
+  if (lockAt < 0) return false;
+  const assignment = new RegExp(":=\\s*(clock_timestamp\\(\\)|now\\(\\))", "g");
+  return [...lower.matchAll(assignment)].some((m) => (m.index ?? 0) < lockAt);
+}
+
 function locksBeforeMutating(body: string): boolean {
   const lower = body.toLowerCase();
   const lockAt = lower.indexOf("for update");
@@ -79,6 +107,39 @@ describe("lock before clock", () => {
     // Naming the function and the migration matters: "some function is wrong"
     // sends the next person back through 51 files.
     expect(offenders).toEqual([]);
+  });
+
+  it("no live function reads the clock before taking the lock it then waits on", () => {
+    const offenders = currentFunctionDefinitions()
+      .filter((fn) => readsClockBeforeLocking(fn.body))
+      .map((fn) => `${fn.name} (${fn.file})`);
+
+    expect(offenders).toEqual([]);
+  });
+
+  it("catches the round-10 shape too -- on a SYNTHETIC fixture, not a real one", () => {
+    // Unlike shape one below, no pre-fix example of this survives in the
+    // repository: the migrations that had it were replaced, and their old
+    // bodies live only in comment headers, which are stripped before scanning.
+    // So this fixture is constructed rather than historical, and says so --
+    // it proves the predicate works, not that it ever fired on real code here.
+    const stale = `
+      declare v_now timestamptz;
+      begin
+        v_now := clock_timestamp();
+        select * from public.organization_billing where organization_id = p_id for update;
+        if v_now > something then return false; end if;
+      end;`;
+    expect(readsClockBeforeLocking(stale)).toBe(true);
+
+    const correct = `
+      declare v_now timestamptz;
+      begin
+        select * from public.organization_billing where organization_id = p_id for update;
+        v_now := clock_timestamp();
+        if v_now > something then return false; end if;
+      end;`;
+    expect(readsClockBeforeLocking(correct)).toBe(false);
   });
 
   it("catches the round-14 R14-03 shape -- the check is not vacuous", () => {

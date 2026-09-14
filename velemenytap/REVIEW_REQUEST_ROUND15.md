@@ -9,9 +9,10 @@ P1**. Please assume the same is true of this round's work.
 **Branch:** `feature/billing-subscriptions` — open PR #4, **not merged.**
 **Base:** `master` at `443ea98`. Production runs **migration 17**, with no
 Stripe environment variables and none of the billing code.
-**Review at:** `4f87e31` (plus whatever documentation commit carries this file).
-**New since round 14:** `a9bc2e0..4f87e31` — 30 files, three forward migrations
-(49–51). Total migrations **51**; `DEPLOYMENT.md` § 7 splits 18→51 into
+**Review at:** the head of the branch (this file's own commit or later).
+**New since round 14:** the five R14 fixes, then an audit pass that closed
+three things this document originally listed as unaudited. Three forward
+migrations (49–51). Total migrations **51**; `DEPLOYMENT.md` § 7 splits 18→51 into
 **31 expand + 3 enforce**.
 
 Read alongside `SECURITY.md`, `BILLING_INVARIANTS.md`, `OPERATOR_RECOVERY.md`,
@@ -30,7 +31,7 @@ the input to this one.
 | 12 | 4 (2 P1) | one P1 was introduced by round 11's fix |
 | 13 | 1 | source unreachable; its one finding was disputed and later withdrawn by round 14 |
 | 14 | 5 (1 P1) | **the P1 was in the fix shipped the day before**; two more were in that same day's work |
-| 15 | ? | the work under review is five fixes to five findings |
+| 15 | ? | five fixes to five findings, plus an audit pass on two classes and one behaviour change round 14 declined to escalate |
 
 Six rounds, and every round that could read the source found a defect in the
 previous round's work. The base rate for "this round's fixes are correct" is
@@ -60,23 +61,33 @@ exactly-once and that two concurrent deliveries can both apply.
 
 | Check | Result |
 |---|---|
-| `npm run test` | **606/606**, 25 files |
+| `npm run test` | **615/615**, 27 files |
 | Isolated Playwright suite | **220/220**, zero failed, **zero skipped** — production build, CI's exact `workers: 1, retries: 1` |
 | `npm run typecheck` / `lint` / `build` | clean |
-| Mutation tests (this round) | **5/5 caught**, each by exactly the right test |
+| Mutation tests (this round) | **6/6 caught**, each by exactly the right test |
 
-Four things to know before trusting any of it:
+Five things to know before trusting any of it:
 
 - **The first full run of this round failed 2/217**, both in the RPC privilege
   matrix, which noticed three new functions and a changed signature I had not
   registered. Third round running that this completeness check has caught
   something every other check missed.
-- **One of my own tests was vacuous again.** The replay regression initially
-  passed because the cookie gets *cleared* after use, not because the server
-  refuses a replay. It now captures the cookie before it is spent and
-  re-presents it. The previous round had the same shape twice over
-  (a case-insensitive substring match; a catch-all swallowing a rate limiter).
-  **Assume there are more.**
+- **Two more of my own tests were vacuous, making it three rounds running.**
+  The replay regression initially passed because the cookie gets *cleared*
+  after use, not because the server refuses a replay — it now captures the
+  cookie before it is spent and re-presents it. Then the foreign-Session test
+  passed by throwing on a missing mock before ever reaching the code under
+  test. The shapes so far, all greppable: a case-insensitive substring match
+  standing in for an exact one; a catch-all swallowing a rate limiter; an
+  exception arriving before the assertion does; and an assertion on
+  housekeeping rather than on the guarantee. **Assume there are more.**
+- **A predicate I wrote was inert, and only a non-vacuity case caught it.** The
+  second clock-before-lock shape's regex had its backslashes eaten by shell
+  escaping, so it matched nothing and the audit would have reported a clean
+  result for a check that could not fail. The synthetic fixture caught it
+  immediately. Every audit result in § 2 and § 3 rests on its non-vacuity case
+  being real — please check those first, and disbelieve the negatives if they
+  are not.
 - **Two `TEST_PLAN.md` lines described the PKCE grant this round removed**, and
   were corrected. Docs drifting behind a security change is this project's
   signature failure.
@@ -118,33 +129,64 @@ reauthentication, because their shape is not a contract this project controls.
 **Was that the right call, or have I rebuilt, worse, something the platform
 already offers?**
 
-### 2. R14-02's fix, and whether it generalises
+### 2. R14-02's fix, and whether it generalises — AUDITED SINCE; check my audit
 
-I fixed the *instance*: a restore migration appended last in `--enforce`.
+This section originally said "I did not audit for other pairs". That was not a
+reasonable thing to outsource, so it is done.
 
-**The general defect is that a migration doing `create or replace` on an object
-another migration also defines is not order-independent, and the manifest
-reorders them.** I did not audit for other pairs.
+**Audited:** every function, view, trigger and policy across all 51 migrations,
+for objects defined by migrations landing in different rollout phases.
+**Exactly one** — `confirm_notification_email_change`, which is R14-02 itself,
+now resolved by the restore migration running last.
 
-**Questions.** Is there any other object defined by two migrations that land in
-different phases? (`confirm_notification_email_change` is the one round 14
-found; grants, triggers and policies have the same property.) Is "append a
-restore migration last" the right pattern, or does it accumulate — a third
-migration touching that function would need a fourth? Should the rollout script
-itself refuse a manifest in which one object is defined in both phases?
+**Guarded:** `scripts/rollout-manifest.test.ts`, which needs **no database** and
+therefore actually runs, unlike the harness gate. It asserts the invariant
+rather than the symptom: *whichever migration defines an object LAST in the
+staged order must be the one that defines it last in a sorted replay*, plus a
+non-vacuity case that removes the restore migration and requires the divergence
+to be detected.
 
-### 3. Lock-before-clock, seventh instance
+**What that audit does NOT cover, stated plainly.** It extracts `create [or
+replace] function/view/trigger` and `create policy`. It does **not** model
+`grant`/`revoke`, `alter table`, indexes, constraints, column changes, or
+`enable row level security` — and a permission revoked in one phase and
+re-granted in another has exactly the same order-dependence. R14-02's own
+sibling migration (`20260906090000`) is in `--enforce` *precisely because it
+revokes a grant*, which is the category I have not modelled.
 
-Round 14 found number seven, in round 12's own fix. `20260910120000`'s header
-lists the earlier ones.
+**Questions.** Is "last definer must match" the right invariant, or too weak?
+Is the grant/revoke blind spot a real exposure in the current manifest — I have
+not checked, and I am telling you rather than implying coverage I do not have.
+And does "append a restore migration last" accumulate, with a third migration
+touching that function needing a fourth?
 
-**Questions.** Is there an eighth? Specifically: any function still evaluating
-`clock_timestamp()`/`now()` in a `WHERE` clause of a statement that can wait for
-a lock, rather than after an explicit `SELECT … FOR UPDATE`. And is the
-`p_required_seconds` margin actually load-bearing anywhere, or is it a comfort
-parameter defaulted to 0 at every call site?
+### 3. Lock-before-clock — AUDITED SINCE; is there a third shape?
 
-### 4. The unrecorded-Checkout enumeration, which round 14 declined to escalate
+Also originally "please check for an eighth". Also done.
+
+**Audited and guarded** by `scripts/lock-before-clock.test.ts`, over the current
+definition of all 40 live functions, in the two shapes this class has taken:
+
+1. the clock inside the `WHERE` of a statement that can wait (R14-03);
+2. the clock read into a variable **before** a lock the function then waits on,
+   so later comparisons use a moment that may be long past (R10-06/R10-07).
+
+**No eighth instance in either shape.**
+
+Both non-vacuity cases matter, and the second earned its keep immediately:
+shape one is checked against migration 47's real pre-fix body; shape two has no
+surviving real example, so its fixture is **synthetic and labelled as such** —
+and it caught my predicate being inert the moment I wrote it, because a shell
+escaping mistake had eaten the regex's backslashes.
+
+**Questions.** Is there a third shape? The lint reads only the last definition
+of each function, cannot tell whether a wait is reachable, and would miss a
+clock read indirectly. Is `p_required_seconds` load-bearing anywhere, or a
+comfort parameter defaulted to 0 at every call site? And does an advisory lock
+(`pg_advisory_xact_lock`) count as "locked first", or does the class apply
+there too?
+
+### 4. The unrecorded-Checkout enumeration — CHANGED SINCE; was I right to?
 
 Round 14 said the scanner "accepts the first open Session for the customer
 without establishing that it belongs to this application's subscription
@@ -152,12 +194,27 @@ attempt", and that an operator-created Session for the same customer is a real
 input it cannot distinguish — but did not turn that into a confirmed finding
 because no ordinary app-created reproducer was established.
 
-**I have not changed that behaviour.** I added § 8 to `OPERATOR_RECOVERY.md` for
-the 20-page-cap state and corrected the "one retry" comment, which are the parts
-that were plainly wrong. **Is the ownership question a real defect? What binding
-would be sound — `client_reference_id`, metadata, or something else — and does
-the absence of it endanger a customer in an ordinary flow rather than an
-operator-constructed one?**
+This document originally said "I have not changed that behaviour." I have now.
+
+The enumeration took `batch.data.find(s => s.status === "open")` — any open
+Session for that customer. A Stripe Customer is not this application's property:
+an operator can create a Session against it from the Dashboard, and so can any
+other integration on the account. Every Session this app creates already carried
+`client_reference_id` **and** `metadata.organization_id`; the binding was
+written and never read. It is now required, foreign open Sessions are counted
+and logged, and "none of ours" is treated as the sound negative it is.
+
+I also added `OPERATOR_RECOVERY.md` § 8 for the 20-page-cap state and corrected
+the "costs one retry" comment, which was wrong in exactly the case that needs a
+procedure.
+
+**Questions.** Does requiring the binding create a NEW failure — a Session this
+application genuinely created whose metadata is missing or stripped by some
+Stripe path? Is accepting `client_reference_id` **or** `metadata` too
+permissive; should it require both? And with foreign Sessions now ignored, a
+stuck organization's outcome becomes "absent" rather than "found", which
+releases the attempt and mints a new Session — **is that the right direction to
+fail, given the attempt was `sent`?**
 
 ### 5. Everything in the customer-facing product still unreviewed by anyone
 
