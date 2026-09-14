@@ -5,6 +5,7 @@ import { NfcCardDialog } from "@/features/nfc-cards/nfc-card-dialog";
 import { NfcCardsTable, type NfcCardRow } from "@/features/nfc-cards/nfc-cards-table";
 import type { LocationOption } from "@/features/nfc-cards/nfc-card-form";
 import { Button } from "@/components/ui/button";
+import { ExportCsvButton } from "@/features/nfc-cards/export-csv-button";
 
 export const metadata: Metadata = { title: "NFC kártyák — VéleményTap" };
 
@@ -63,10 +64,16 @@ export default async function NfcCardsPage() {
           </p>
         </div>
         {rows.length > 0 ? (
-          <NfcCardDialog
-            locations={locationOptions}
-            trigger={<Button>NFC kártya hozzáadása</Button>}
-          />
+          <div className="flex items-start gap-2">
+            {/* The spreadsheet an NFC writer gets driven from -- see
+                features/nfc-cards/card-csv.ts for why it is semicolon-delimited
+                and carries a BOM. */}
+            <ExportCsvButton cards={rows} siteUrl={siteUrl} />
+            <NfcCardDialog
+              locations={locationOptions}
+              trigger={<Button>NFC kártya hozzáadása</Button>}
+            />
+          </div>
         ) : null}
       </div>
       <NfcCardsTable cards={rows} locations={locationOptions} siteUrl={siteUrl} />
