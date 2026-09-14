@@ -10,7 +10,7 @@ was therefore reasoned from my own request document — which means **six of
 round 13's seven sections are still unanswered**, and they are repeated below
 rather than dropped.
 
-Everything through **`78f4b8e`** is now pushed to
+Everything through **`c04f71e`** is now pushed to
 `origin/feature/billing-subscriptions` (PR #4). If you cannot read a file, say
 so and stop rather than reasoning from this document — a report that agrees
 with my summary of my own work is worth nothing to me.
@@ -24,7 +24,7 @@ with my summary of my own work is worth nothing to me.
 | 11 | 4 (1 P1) | round 10's redesigns accepted; the P1 was pre-existing |
 | 12 | 4 (2 P1) | one P1 was introduced by round 11's fix |
 | 13 | 1 | source unreachable; the one finding is disputed — see § 6 |
-| 14 | ? | **the work under review is mostly my own, unprompted** |
+| 14 | ? | **the work under review is mostly my own, unprompted** — one P1 found and fixed, plus a test of mine that passed against the defect it targeted |
 
 Five rounds in a row found a defect in the previous round's work. Round 13 is
 not evidence that stopped; it is evidence that a reviewer without source
@@ -38,8 +38,8 @@ Read alongside `BILLING_INVARIANTS.md`, `OPERATOR_RECOVERY.md`, `STATUS.md`,
 **Branch:** `feature/billing-subscriptions` — open PR #4, **not merged.**
 **Base:** `master` at `443ea98`. Production runs **migration 17**, with no
 Stripe environment variables and none of the billing code.
-**New since round 13:** `609bc67..78f4b8e` — 2 commits, 9 files, +391/−48.
-**No new migrations.** Still 48; no SQL changed in either commit.
+**New since round 13:** `609bc67..c04f71e` — 4 commits, 28 files, +1708/−70.
+**No new migrations.** Still 48; no SQL changed in any of them.
 
 ---
 
@@ -47,14 +47,39 @@ Stripe environment variables and none of the billing code.
 
 Round 13 was asked to spend its time on the **customer-facing product**, which
 twelve rounds of billing review had never touched. It could not, so **I did it
-myself** — an adversarial pass over the public NFC feedback flow, with no
-report telling me where to look. That is the work under review.
+myself** — an adversarial pass over the public NFC feedback flow, the auth
+routes this branch adds, and the deploy guards, with no report telling me where
+to look. That is the work under review.
+
+It found one **P1 account-takeover defect**, two deploy guards that could not
+work, and — the part I would read first — **a test of mine that passed against
+the very defect it was written to catch**.
 
 Self-review is the weakest evidence in this project's history. Round 11 exists
 because my own audit method was structurally incapable of finding R11-01.
 Please treat this section as the likeliest place for a defect, not the least.
 
 ### What I found, and what I changed
+
+**P1 — a session was treated as permission to replace the password on it.**
+`/auth/reset-password` and `updatePasswordAction` ship with this branch and
+exist on neither `master` nor production. The page gated on nothing but "is
+there a session"; the action never asked for the current password. **Reproduced
+before a line of fix was written**: an ordinary signed-in session set a new
+password in two clicks, with no email and no knowledge of the old one — the
+attacker's password worked afterwards and *the owner's stopped working*. That
+is account takeover plus owner lockout.
+
+For this product's customers that is ordinary rather than exotic: the dashboard
+lives on a laptop behind the counter of a café, salon or clinic.
+
+Demanding the current password unconditionally would break the one flow that
+cannot supply it, so the two are distinguished. A recovery link — and only one
+whose OTP or PKCE exchange actually succeeded — is issued a grant
+(`features/auth/recovery-grant.ts`): HttpOnly, `path=/auth`, 15 minutes, spent
+on use. Every other session must supply the current password, verified through
+a throwaway client with `persistSession: false` so the check cannot disturb the
+caller's own session. Missing configuration fails closed.
 
 **The review-gating invariant itself holds.** All five ratings reach the same
 CTA through the same branch. The CTA is now a single extracted component that
@@ -101,14 +126,14 @@ fabricating a Google URL is forbidden.
 
 | Check | Result |
 |---|---|
-| `npm run test` | **590/590**, 25 files |
-| Isolated Playwright suite | **198/198**, zero failed, **zero skipped** — production build, CI's exact `workers: 1, retries: 1` |
+| `npm run test` | **603/603**, 25 files |
+| Isolated Playwright suite | **210/210**, zero failed, **zero skipped** — production build, CI's exact `workers: 1, retries: 1` |
 | `npm run typecheck` / `lint` / `build` | clean |
-| Mutation tests (this round) | **7/7 caught** — 4 for F1/F2, 3 for F3 |
+| Mutation tests (this round) | **11/11 caught** — 4 for F1/F2, 3 for F3, 1 for the health allowlist, 3 for the password guard |
 | `scripts/verify-local-database.mjs` | **48 checks**, real PostgreSQL 17 — last run at round 12; no SQL changed since |
 | Stripe test-mode lifecycle | **16/16 phases** — round 12; no billing code changed since |
 
-Three things about that run you should know before trusting any of it:
+Four things about that run you should know before trusting any of it:
 
 - **Two full-suite runs were discarded rather than reported.** A production
   build bakes `NEXT_PUBLIC_*` at build time, so a suite run against a build
@@ -121,6 +146,18 @@ Three things about that run you should know before trusting any of it:
   restoring the F1 defect failed both new assertions while **all five rating
   tests stayed green**. Had those gone red too, the new assertions would have
   been redundant with the old ones and proved nothing.
+- **A test of mine passed against the very defect it was written to catch, and
+  I nearly reported it as a pass.** The first version of
+  `e2e/password-change-session-riding.spec.ts` went green against the unfixed
+  code for two independent reasons. `getByText` is a case-insensitive
+  **substring** match, and matched the page's own description ("A biztonság
+  kedvéért add meg a jelenlegi jelszavad is."), which is on the page *before*
+  any submit. And `userClient(...).catch(() => null)` treats Supabase Auth's
+  **rate limiter** as "wrong password", so "the attacker was rejected" passed
+  whenever the suite happened to be busy. Both are now `signInOutcome()`,
+  returning `accepted | rejected | error` and refusing to conclude anything
+  from `error`. **Every other test in this repository that wraps a sign-in in a
+  catch-all has the same shape — that is a place to look.**
 - **One mutation caught a nearly-vacuous assertion.** Reverting the location
   badge to its old muted span was caught *only* by the icon assertion —
   asserting the wording would have passed against the original defect, because
@@ -129,10 +166,10 @@ Three things about that run you should know before trusting any of it:
 
 ---
 
-## Two things I found while writing this document, both unfixed
+## Two things found by fact-checking this document, now fixed
 
-Neither is in the commits above. I found them checking my own claims for this
-handoff, and they are the most concrete things in this round.
+Both came out of re-checking claims this handoff was making. They are in
+`d2a943f`, and the second one is a correction to a claim, not to code.
 
 ### A. Production's `/api/health` is behind auth, so the deploy guard cannot pass
 
@@ -157,15 +194,25 @@ On `master`, `proxy.ts`'s `PUBLIC_PATHS` does **not** include `/api/health`
   full 300-second deadline and then fails — on every push to `master`.
 
 That job exists because of a real incident in which deployments silently
-stopped being created. `TEST_PLAN.md` already lists as a known gap that it
+stopped being created. `TEST_PLAN.md` already listed as a known gap that it
 *"has not yet had a real failure to prove it actually catches the failure mode
-it's for"*. It appears the honest status is worse than that: it cannot succeed.
+it's for"*. The honest status was worse: it could not succeed.
 
-**Questions.** Is that reading of `curl -fsS` on a 307 right? Is exposing
-`/api/health` unauthenticated (what this branch does) correct, or does it leak
-something — it reports `commitSha` and `environment`? And is there any other
+**Fixed.** The allowlist entry was already on this branch; what was missing was
+any test of it — nothing covered the middleware, only the route handlers behind
+it, which is why every suite stayed green — and any way for the guard to report
+its own failure. `e2e/public-route-reachability.spec.ts` now tests the
+allowlist from outside with a protected-route control, and the CI job and
+`scripts/rollout.mjs` distinguish an auth redirect from an unreachable host.
+Verified by running the real CI script against live production (fails in about
+a second with the Location and the fix) and against a stub returning a valid
+response (still exits 0).
+
+**Questions.** Is exposing `/api/health` unauthenticated correct, or does it
+leak something — it reports `commitSha` and `environment`? Is there any other
 check in this repository that reports healthy while measuring something it
-cannot actually reach?
+cannot actually reach? And is the 15-minute recovery grant the same class of
+mistake in a different place — a marker that is easier to obtain than it looks?
 
 ### B. A rename that the repository claims happened, and the live site contradicts
 
@@ -189,16 +236,51 @@ immediately with `Couldn't find any pages or app directory`. `DEPLOYMENT.md`
 line 17 already says Root Directory should be `velemenytap` — but if it were
 set that way today, `master` could not build, and it does.
 
-**Questions.** Is the Root-Directory change actually in the launch checklist as
-a step, and does anything sequence it against the merge? Are the surviving
-`veleminytap` fallbacks in the two workflows and
-`scripts/rollout-environments.json` correct-because-current, or stale? And
-`scripts/rollout.test.ts` asserts the old spelling — is that a test encoding
-the environment, or a test agreeing with the implementation?
+**Resolved as a documentation correction, deliberately not as a rename.** The
+surviving `veleminytap` values are **load-bearing and correct**: rewriting them
+would point CI's production verification and the billing sweep at a host that
+404s. `README.md` and `DEPLOYMENT.md` now say what is true, and the merge-time
+coupling is a sequenced step in `LAUNCH_CHECKLIST.md` § 4 with an explicit
+warning not to "fix the spelling" without renaming the project first.
+
+**Questions.** Is that the right call, or should the project be renamed and
+every reference moved together? `scripts/rollout.test.ts` asserts the old
+spelling — is that a test encoding the environment, or a test agreeing with the
+implementation? And is there anything else in this repository whose correctness
+depends on a Vercel setting no test can see?
 
 ---
 
 ## Where to be most critical
+
+### 0. The recovery grant (the newest security decision here — start with it)
+
+A cookie now decides whether a password may be changed without knowing the old
+one. `features/auth/recovery-grant.ts`: HttpOnly, `secure`, `sameSite: lax`,
+`path=/auth`, 15 minutes, set only after an OTP or PKCE exchange has actually
+succeeded, cleared on use. The Server Action re-checks it independently of the
+page.
+
+**Questions, and please be unkind here.** Can that cookie be obtained without a
+real recovery email — any route that sets it on a link an attacker can cause to
+be issued or replayed? `/auth/callback` issues it for the PKCE shape based on
+`next === "/auth/reset-password"`, since PKCE carries no `type` at all: is that
+destination-based signal sound, or can `next` be steered? Is `path=/auth` right
+— too broad, too narrow? Does `sameSite: lax` leave a cross-site path to
+submitting that form? Is clearing on use enough, or should the grant be bound to
+the specific user id so a sign-out-and-in-as-someone-else inside the window
+cannot spend it?
+
+I deliberately did **not** read the session's own `amr`/`aal` claims, because
+their shape for a recovery sign-in is not a contract this project controls and I
+did not want a security decision resting on an undocumented field. **Is that the
+right trade, or is Supabase's own `secure_password_change` / reauthentication
+the thing I should have used instead?**
+
+Also: verifying the current password calls `signInWithPassword` on a throwaway
+client. Does that have side effects I have not accounted for — audit-log noise,
+session invalidation, rate-limit budget shared with `/login` such that a wrong
+guess here could lock the owner out of signing in at all?
 
 ### 1. The line I drew between failure paths (new, and the most arguable thing here)
 
@@ -263,11 +345,24 @@ writes do not), and would it show as "Beállítva" while customers get nothing?
 I reviewed the public feedback flow. I did not adversarially review:
 
 - **Signup and onboarding** — first-run experience, error states, an
-  onboarding abandoned halfway.
+  onboarding abandoned halfway. (I read the guards: auth → organization →
+  paywall, all server-side and protect-by-default. I did not attack them.)
 - **The dashboard** — anything that leaks across organizations, or that a
   `staff`/`manager` role can reach that it should not.
 - **Tenant isolation as an attacker sees it**, rather than as the RLS tests
-  assert it.
+  assert it. Since the last round, membership writes are pinned: a member
+  cannot promote themselves, join another organization, or delete a membership
+  (`e2e/tenant-isolation.spec.ts`). Worth knowing that boundary is held by the
+  **absence** of a policy on `organization_memberships`, not by a restrictive
+  one — a later migration could dissolve it silently.
+
+  Related, and reported as **no finding** rather than dressed up as one:
+  `canManageBilling` is the only role check in the entire application. Every
+  other tenant mutation — locations, cards, feedback status and notes,
+  organization settings — is open to any member regardless of role. It is not
+  reachable today because the only membership-creating path always writes
+  `owner` and there is no invite flow. **Do you agree it is unreachable, and is
+  leaving it unenforced the right MVP call?**
 - **The public submission endpoint under abuse** — validation, the
   20-per-card-per-5-minutes limit, what a malicious caller does with a guessed
   or harvested `public_id`.
@@ -359,7 +454,11 @@ These were never reviewed against source. They are unchanged and still open:
 4. Anything asserted in the docs, migration headers or code comments that the
    code does not support. That specific failure — a comment stating a rule the
    code does not enforce — has appeared in every round so far.
-5. The riskiest remaining thing before this takes real money.
+5. **Any test that would pass against the defect it names.** One did this round
+   and I nearly reported it as a pass; the two mechanisms were a
+   case-insensitive substring match and a catch-all that swallowed a rate
+   limiter. Those two shapes are worth grepping for across the suite.
+6. The riskiest remaining thing before this takes real money.
 
 If the honest answer to a section is "no finding", say so plainly — a
 manufactured finding costs more than a quiet section, and round 11's judgement
