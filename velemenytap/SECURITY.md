@@ -199,6 +199,29 @@ busy. `signInOutcome()` in `e2e/support/seed.ts` now returns
 Any other test in this repository that catches-all around a sign-in has the
 same shape.
 
+## A recovered Checkout Session must be ours, not merely the customer's
+
+Raised by the round-14 review, which declined to escalate it without an ordinary
+reproducer. Fixed anyway, because the binding costs nothing and the alternative
+is adopting a payment page on the strength of "same Stripe Customer".
+
+When a `sent` checkout attempt has no recorded Session, the coordinator asks
+Stripe whether one is still open rather than assuming none exists (R12-01). That
+enumeration used to accept **the first open Session for the customer**. A Stripe
+Customer is not this application's property: an operator can create a Checkout
+Session against it from the Dashboard, and so can any other integration on the
+account. "First open Session for this customer" is not the same claim as "the
+Session this attempt created".
+
+Every Session this application creates already carries both a
+`client_reference_id` and `metadata.organization_id`
+(`buildCheckoutRequest`) — the binding was written and simply not read. The
+enumeration now requires it, logs how many foreign open Sessions it ignored, and
+treats "none of ours" as the sound negative it is. Covered by
+`features/billing/actions.test.ts` (a foreign open Session is never adopted, and
+is not mistaken for grounds to skip the enumeration either); reverting the
+binding fails that test and nothing else.
+
 ## Negative-feedback alert abuse controls (round 2, R2-08)
 
 The round-1 alert cooldown was a plain column (`nfc_cards.last_negative_alert_at`) updated via a raw admin-client `UPDATE`, guarded only by RLS's row-level `nfc_cards_update` policy — RLS is row-level, not column-level (the same class of gap findings #3/#4 already fixed for other columns on `feedback`/`nfc_cards`), and this was confirmed empirically: a real authenticated org member's own session could reset `last_negative_alert_at` to `NULL` via a direct `UPDATE`. Combined with an unverified `notification_email` and a per-card limit that does nothing to bound total volume across an org's cards, this was a real spam-relay vector: a malicious tenant could point `notification_email` at an arbitrary third party, reset the cooldown at will, and fan qualifying submissions out across as many cards as they create to drive real emails through this app's verified sending domain at volume.

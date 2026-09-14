@@ -212,6 +212,7 @@ type OpenSessionProbe =
 async function findOpenCheckoutSession(
   stripe: Stripe,
   customerId: string,
+  organizationId: number,
   attemptCreatedAt: string | null,
 ): Promise<OpenSessionProbe> {
   if (!attemptCreatedAt) {
@@ -236,8 +237,38 @@ async function findOpenCheckoutSession(
     } catch (err) {
       return { outcome: "unknown", reason: `Stripe session list failed: ${err instanceof Error ? err.message : err}` };
     }
-    const open = batch.data.find((s) => s.status === "open");
+    // Round-14 raised this and declined to escalate it without an ordinary
+    // reproducer; it is fixed anyway, because the binding costs nothing and
+    // the alternative is adopting a Session on the strength of "same customer".
+    //
+    // A Stripe Customer is not this application's property. An operator can
+    // create a Checkout Session against it from the Dashboard, and any other
+    // integration on the account can too. "The first open Session for this
+    // customer" is therefore not the same claim as "the Session this attempt
+    // created", and the whole reason this enumeration exists is to decide
+    // whether THIS attempt has an outstanding obligation.
+    //
+    // Every Session this application creates carries both a
+    // `client_reference_id` and `metadata.organization_id` (see
+    // checkoutSessionParams), so the binding is already written -- it was
+    // simply not being read. A Session lacking it is somebody else's.
+    const organizationTag = organizationId.toString();
+    const open = batch.data.find(
+      (s) =>
+        s.status === "open" &&
+        (s.metadata?.organization_id === organizationTag || s.client_reference_id === organizationTag),
+    );
     if (open) return { outcome: "found", session: open };
+
+    // A foreign open Session is not an obligation, but it is worth saying so:
+    // it is also the shape an operator sees when they go looking by hand.
+    const foreign = batch.data.filter((s) => s.status === "open").length;
+    if (foreign > 0) {
+      console.warn(
+        `Ignoring ${foreign} open Checkout Session(s) for customer ${customerId} that are not bound to ` +
+          `organization ${organizationTag} -- they were not created by this application's checkout flow.`,
+      );
+    }
     if (!batch.has_more) return { outcome: "absent" };
     startingAfter = batch.data[batch.data.length - 1]?.id;
     if (!startingAfter) return { outcome: "absent" };
@@ -1183,7 +1214,7 @@ async function claimAndCreateCheckoutSession(
     // Stripe is asked directly whether this customer still has an open Session
     // (§ I5: only a completed enumeration is a sound negative).
     if (claim.requestState === "sent") {
-      const probe = await findOpenCheckoutSession(stripe, customerId, claim.attemptCreatedAt);
+      const probe = await findOpenCheckoutSession(stripe, customerId, organizationId, claim.attemptCreatedAt);
       if (probe.outcome === "found") {
         // There is a live payable Session this app had lost track of. Bind it
         // to the current attempt so the normal reconciliation path owns it

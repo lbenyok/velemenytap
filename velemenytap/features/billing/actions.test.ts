@@ -1050,6 +1050,49 @@ describe("createCheckoutSessionAction", () => {
      * The requirement: an attempt that was actually SENT is never discarded on
      * local state alone. Stripe is asked.
      */
+    it("an open Session that is NOT bound to this organization is never adopted", async () => {
+      // Round 14 raised this and declined to escalate it without an ordinary
+      // reproducer. A Stripe Customer is not this application's property: an
+      // operator can create a Checkout Session against it from the Dashboard,
+      // and so can any other integration on the account. "First open Session
+      // for this customer" is not the same claim as "the Session this attempt
+      // created", and adopting one would hand a customer somebody else's
+      // payment page.
+      queueRpc(
+        "claim_checkout_attempt",
+        claimResult({
+          is_new_attempt: false,
+          existing_session_id: null,
+          existing_price_id: YEARLY_PRICE,
+          retry_safe: false,
+          request_state: "sent",
+        }),
+      );
+      queue(CUSTOMER_EXISTS);
+      checkoutSessionsList.mockResolvedValue({
+        // Same customer, genuinely open, no binding to organization 42.
+        data: [{ id: "cs_someone_elses", status: "open", metadata: {} }],
+        has_more: false,
+      });
+      // A completed enumeration that finds none of OURS is a sound negative,
+      // so the attempt is correctly released and a real new Session minted.
+      // That is the right outcome -- the foreign Session was never this
+      // organization's obligation. What must not happen is adopting it.
+      queueRpc("release_checkout_attempt", RELEASE_OK);
+      queueRpc("claim_checkout_attempt", claimResult({ attempt_id: "attempt_fresh" }));
+      queueRpc("renew_checkout_attempt", RENEW_OK);
+      queueRpc("record_checkout_session", RECORD_OK);
+      checkoutSessionsCreate.mockResolvedValue({ id: "cs_mine", url: "https://checkout.stripe.com/mine" });
+
+      const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData("monthly")));
+
+      // The customer is sent to a Session created for THEM, never to the one
+      // that merely shared their Stripe Customer.
+      expect(target).toBe("https://checkout.stripe.com/mine");
+      expect(checkoutSessionsRetrieve).not.toHaveBeenCalledWith("cs_someone_elses", expect.anything());
+      expect(checkoutSessionsCreate).toHaveBeenCalled();
+    });
+
     it("R12-01: a sent attempt with no recorded Session reuses the open Session Stripe still has", async () => {
       queueRpc(
         "claim_checkout_attempt",
@@ -1065,7 +1108,10 @@ describe("createCheckoutSessionAction", () => {
       );
       queue(CUSTOMER_EXISTS);
       checkoutSessionsList.mockResolvedValue({
-        data: [{ id: "cs_lost", status: "open" }],
+        // Carries the binding buildCheckoutRequest() writes on every Session
+        // this application creates -- which is what makes it recoverable as
+        // THIS organization's, rather than merely this customer's.
+        data: [{ id: "cs_lost", status: "open", metadata: { organization_id: "42" } }],
         has_more: false,
       });
       checkoutSessionsRetrieve.mockResolvedValue({
