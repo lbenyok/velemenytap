@@ -123,6 +123,27 @@ export async function consumeRecoveryPasswordGrant(userId: string): Promise<bool
   return consumed;
 }
 
+/**
+ * Round-15 R15-02. A grant is consumed BEFORE the provider is called, because
+ * consumption is what makes it single-use under concurrency. But the provider
+ * can still refuse the new password on its own policy -- too weak, previously
+ * leaked -- and the error text invites the customer to pick a different one.
+ * With the grant already spent, that retry asked for the password they had
+ * forgotten, which is the whole reason they were in recovery.
+ *
+ * The repair is deliberately NOT "un-spend the old token": restoring
+ * `consumed_at` to null would make a token replayable after an update whose
+ * outcome we may not actually know. A brand-new grant is issued instead --
+ * fresh token, fresh row, the spent one still dead -- so the customer can
+ * retry in place while replay protection is untouched.
+ *
+ * Only for rejections where the provider has definitively NOT changed the
+ * password. An ambiguous failure must leave the grant spent.
+ */
+export async function reissueRecoveryPasswordGrant(userId: string): Promise<void> {
+  await grantRecoveryPasswordChange(userId);
+}
+
 export async function clearRecoveryPasswordGrant(): Promise<void> {
   const store = await cookies();
   store.set(RECOVERY_GRANT_COOKIE, "", {

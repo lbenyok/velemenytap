@@ -126,7 +126,38 @@ operator procedure rather than a product feature: **`OPERATOR_RECOVERY.md`
 click (deactivate the card — the status re-check is inside the insert's own
 transaction, so it takes effect on the very next submission).
 
-## Password change requires proof, not just a session
+## Password change: where the boundary actually is
+
+**Read this before trusting the section below.** Round-15 R15-01, measured
+against the isolated project on 2026-09-14 with
+`scripts/check-password-change-enforcement.mjs`: an ordinary signed-in session
+changed its own password through the Auth API directly — no current password, no
+grant, no Server Action. The new password worked and the old one stopped.
+
+So everything described below is a **UI-path defence**, not the security
+boundary it was previously written up as. It closes the route a person takes
+through the application. It does not close the route a person takes with the
+session token they already hold, because the authoritative password-change
+endpoint belongs to Supabase, not to this repository.
+
+**The boundary has to be the provider's**, and it is a project setting:
+*Authentication → Providers → Email → "Require current password when changing
+password"*. With it on, GoTrue checks `current_password` at the update endpoint
+itself, which a direct API call cannot skip. `updatePasswordAction` now
+forwards that field on the ordinary path (and not on recovery, which by
+definition cannot know it), so enabling the setting does not break legitimate
+changes — verifying locally and omitting it would.
+
+**"Secure password change" is a different option and is not sufficient.**
+Supabase documents it as exempting sessions created in the last 24 hours, and
+the unattended-browser session this threat model is about is exactly such a
+session.
+
+Status: **not yet enabled on either project.** `LAUNCH_CHECKLIST.md` § 1 carries
+it as a gate, and the probe script above reports pass/fail for any project in a
+few seconds, so it is checkable rather than assumed.
+
+## What the application-side guard still does
 
 Found by reviewing this branch's own unreviewed code and **reproduced end to
 end before it was fixed**: `/auth/reset-password` gated on nothing but "is

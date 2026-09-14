@@ -35,6 +35,13 @@
 -- gains that function's `p_required_seconds` margin -- "not expired yet" is
 -- too weak a promise immediately before a remote call that takes time.
 --
+-- ROUND-15 CORRECTION, so this header does not overstate what shipped: the
+-- application's call site does NOT pass that parameter, so its default of 0
+-- applies and the effective margin today is ZERO. The lease is still renewed
+-- immediately before the Stripe call, which is what actually reserves time;
+-- the parameter exists so a caller CAN demand a reserve, not because one is
+-- currently demanded. Do not read its presence as added protection.
+--
 -- The standing limitation is unchanged and still honest: no database lease can
 -- fence a process that passed its final check and was then paused before its
 -- remote request. That residual is detected rather than prevented (see

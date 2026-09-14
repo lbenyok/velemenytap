@@ -31,8 +31,17 @@ import { signInViaUi } from "./support/ui";
  *
  * Round 14 then found the FIRST version of that marker was a cookie whose only
  * check was that it existed, which the holder of a browser can always satisfy.
- * The last two tests here are that reproduction, kept permanently: the grant is
- * now a random token naming a user-bound, expiring, single-use row.
+ * Two tests here are that reproduction, kept permanently: the grant is now a
+ * random token naming a user-bound, expiring, single-use row.
+ *
+ * **What these tests do and do not prove (round-15 R15-01).** Every case below
+ * drives the application's own form and Server Action, and that is the whole
+ * of their scope. They do NOT prove an account cannot be taken over at an
+ * unattended browser: measured on 2026-09-14, the Auth API accepts
+ * `updateUser({ password })` from an ordinary session directly, bypassing all
+ * of this. Closing that needs a PROVIDER setting — see SECURITY.md and
+ * `scripts/check-password-change-enforcement.mjs`, which measures it. Do not
+ * read a green run of this file as the threat being closed.
  */
 
 let member: SeededOrgMember;

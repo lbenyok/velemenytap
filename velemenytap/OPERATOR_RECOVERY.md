@@ -538,14 +538,42 @@ stripe checkout sessions list --customer cus_XXX --limit 100   --created[gte] <a
 ```
 
 **Step 3a — an open Session exists and belongs to this organization.** Check its
-`metadata`/`client_reference_id` against the organization before doing anything
-with it. If it is genuinely this organization's, give the customer its URL; the
-normal reconciliation path takes over from there. **Do not create a second one.**
+`metadata`/`client_reference_id` against the organization first.
 
-**Step 3b — no open Session in that window.** That is the sound negative the
-coordinator could not reach by itself. Only then is it safe to release the
-attempt, with a **checkout** claim's own token (not a customer-creation one —
-see § 1's correction), after recording why:
+**Record it against the attempt BEFORE giving anyone the URL.** Round 15 found
+that the first version of this step told you to hand over the link without
+recording it — which manufactures the exact state the code cannot recover from:
+a customer paying through a Session the application has no pointer to. If that
+payment is made with a delayed-notification method, the Session goes
+`complete` while the money is still moving, and a later repair that looks only
+for OPEN Sessions concludes there is nothing outstanding.
+
+So: claim the checkout attempt, record the Session under that claim
+(`record_checkout_session`, with the claim's own owner token), confirm the row
+now carries the pointer, and only then give the customer the URL. The normal
+reconciliation path can take over from there because there is now something for
+it to reconcile. **Do not create a second Session.**
+
+**Step 3b — no open Session, AND no unresolved payment, in that window.** Two
+questions, not one. Round-15 R15-03: "nothing open" is not "nothing
+outstanding". Before releasing anything, list the organization's own Sessions in
+that window regardless of status and check each `complete` one's
+`payment_status`:
+
+```
+stripe checkout sessions list --customer cus_XXX --limit 100   --created[gte] <attempt created, unix>
+```
+
+A Session of ours that is `complete` with `payment_status` anything other than
+`paid` or `no_payment_required` is an **outstanding obligation**: the payment
+has not resolved and may still succeed. Do not release. Wait for it to settle
+(or expire) and re-check; the coordinator itself now refuses in this state
+rather than minting a replacement.
+
+Only when there is no open Session **and** no unresolved owned one is the
+negative sound. Then it is safe to release the attempt, with a **checkout**
+claim's own token (not a customer-creation one — see § 1's correction), after
+recording why:
 
 ```sql
 select public.record_billing_anomaly(
@@ -561,6 +589,13 @@ row rather than `false`.
 on the grounds that enumeration was inconvenient. The cap means "we do not
 know", and the entire point of the `sent` state is that not knowing is not
 permission to mint a second payable Session.
+
+**A limit this procedure must not overstate.** The attempt's lease deadline
+bounds when the application will stop *waiting*, not when Stripe may have
+created something: a worker paused after its final check can issue a remote
+request afterwards, which this repository records as a residual it detects
+rather than prevents (§ 1). Do not read "the lease expired" as "nothing can
+have been created since".
 
 **Unverified.** No Stripe credentials were available when this was written, so
 these commands are derived from the code path and Stripe's documented API rather

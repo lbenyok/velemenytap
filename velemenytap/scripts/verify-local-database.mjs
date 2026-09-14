@@ -234,17 +234,34 @@ try {
   await migrate(staged.client, expand);
   await migrate(staged.client, enforce);
 
-  const staledSource = (
+  const stagedSource = (
     await staged.client.query(
       "select prosrc from pg_proc where proname = 'confirm_notification_email_change'",
     )
   ).rows[0].prosrc;
+  // Round-15 correction. This used to assert that the staged source CONTAINS
+  // "clock_timestamp()" and "for update", and then label the result "the same
+  // ... a sorted replay does". Two substrings are not equality: a semantically
+  // different body containing both -- or containing them only in comments --
+  // would have passed while the label claimed something stronger. Compare the
+  // actual text against the sorted replay's, which is the property the rollout
+  // is supposed to guarantee.
+  const sortedSource = (
+    await clean.client.query(
+      "select prosrc from pg_proc where proname = 'confirm_notification_email_change'",
+    )
+  ).rows[0].prosrc;
+  assert.equal(
+    stagedSource,
+    sortedSource,
+    "after the documented expand/enforce rollout, confirm_notification_email_change differs from what a sorted replay installs (round-14 R14-02)",
+  );
   assert.ok(
-    staledSource.includes("clock_timestamp()"),
+    stagedSource.includes("clock_timestamp()"),
     "after the documented expand/enforce rollout, confirm_notification_email_change reads now() instead of clock_timestamp() -- the staged order installed an older definition than a sorted replay does (round-14 R14-02)",
   );
   assert.ok(
-    staledSource.includes("for update"),
+    stagedSource.includes("for update"),
     "after the documented expand/enforce rollout, confirm_notification_email_change takes no row lock before reading the clock (round-14 R14-02)",
   );
   pass(`the documented expand/enforce order ends with the same confirm_notification_email_change a sorted replay does (${expand.length} expand + ${enforce.length} enforce)`);

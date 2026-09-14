@@ -1150,7 +1150,22 @@ describe("createCheckoutSessionAction", () => {
         claimResult({ attempt_id: "attempt_after_probe" }),
       );
       queue(CUSTOMER_EXISTS);
-      checkoutSessionsList.mockResolvedValue({ data: [{ id: "cs_done", status: "complete" }], has_more: false });
+      // Ours, complete, and DEFINITIVELY settled. Round-15 R15-03: the old
+      // fixture was an untagged Session with no payment disposition at all,
+      // which made this test pass for a reason unrelated to what it claims --
+      // it was never "ours", so no obligation check applied to it. Stating the
+      // real precondition is what makes the assertion below mean something.
+      checkoutSessionsList.mockResolvedValue({
+        data: [
+          {
+            id: "cs_done",
+            status: "complete",
+            payment_status: "paid",
+            metadata: { organization_id: "42" },
+          },
+        ],
+        has_more: false,
+      });
       queueRpc("release_checkout_attempt", RELEASE_OK);
       queueRpc("renew_checkout_attempt", RENEW_OK);
       queueRpc("record_checkout_session", RECORD_OK);
@@ -1159,6 +1174,45 @@ describe("createCheckoutSessionAction", () => {
 
       expect(target).toBe("https://checkout.stripe.com/session");
       expect(checkoutSessionsCreate).toHaveBeenCalledTimes(1);
+    });
+
+    it("R15-03: an OWNED complete Session whose payment is unresolved blocks a replacement", async () => {
+      // Stripe documents a Session reaching `complete` while its payment is
+      // still processing; with a delayed-notification method that is an
+      // ordinary customer outcome. "Nothing open" is therefore not "nothing
+      // outstanding", and releasing the attempt here frees the idempotency key
+      // while money may still be on its way.
+      //
+      // Round 14 could not reach this state and said so. Round 15 pointed out
+      // that OPERATOR_RECOVERY.md § 8 had since created the path itself, by
+      // telling an operator to hand a recovered Session's URL to a customer
+      // without recording it first. That instruction is fixed too.
+      queueRpc(
+        "claim_checkout_attempt",
+        claimResult({ is_new_attempt: false, existing_session_id: null, retry_safe: false, request_state: "sent" }),
+      );
+      queue(CUSTOMER_EXISTS);
+      checkoutSessionsList.mockResolvedValue({
+        data: [
+          {
+            id: "cs_processing",
+            status: "complete",
+            payment_status: "unpaid",
+            metadata: { organization_id: "42" },
+          },
+        ],
+        has_more: false,
+      });
+
+      // The action converts an unrecoverable state into a redirect rather than
+      // surfacing a stack trace to a customer, so the failure is observed there.
+      const target = await redirectedTo(createCheckoutSessionAction(checkoutFormData("monthly")));
+      expect(target).toBe("/dashboard/billing?error=checkout_failed");
+
+      // The two things that actually matter: no second payable Session, and the
+      // attempt not surrendered on a false negative.
+      expect(checkoutSessionsCreate).not.toHaveBeenCalled();
+      expect(rpcCalls.some((c) => c.name === "release_checkout_attempt")).toBe(false);
     });
 
     it("R12-01: the key is marked sent BEFORE the Stripe call, not after", async () => {

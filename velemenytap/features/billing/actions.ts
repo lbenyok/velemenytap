@@ -253,12 +253,39 @@ async function findOpenCheckoutSession(
     // checkoutSessionParams), so the binding is already written -- it was
     // simply not being read. A Session lacking it is somebody else's.
     const organizationTag = organizationId.toString();
-    const open = batch.data.find(
-      (s) =>
-        s.status === "open" &&
-        (s.metadata?.organization_id === organizationTag || s.client_reference_id === organizationTag),
-    );
+    const ours = (s: Stripe.Checkout.Session) =>
+      s.metadata?.organization_id === organizationTag || s.client_reference_id === organizationTag;
+
+    const open = batch.data.find((s) => s.status === "open" && ours(s));
     if (open) return { outcome: "found", session: open };
+
+    // Round-15 R15-03. "No OPEN Session" is not "no outstanding obligation".
+    // Stripe documents a Session reaching `complete` while its payment is
+    // still processing -- that is the whole of R10-02 -- and a delayed
+    // notification method makes it an ordinary customer outcome rather than an
+    // exotic one. Releasing the attempt on the strength of nothing being open
+    // frees the idempotency key while money may still be on its way, which is
+    // the second-charge this enumeration exists to prevent.
+    //
+    // An owned Session whose payment is unresolved is therefore an obligation,
+    // and the honest answer is that we cannot authorize a replacement -- not
+    // that there is nothing here.
+    const unresolved = batch.data.find(
+      (s) =>
+        ours(s) &&
+        s.status === "complete" &&
+        s.payment_status !== "paid" &&
+        s.payment_status !== "no_payment_required",
+    );
+    if (unresolved) {
+      return {
+        outcome: "unknown",
+        reason:
+          `Checkout Session ${unresolved.id} for this organization is complete with payment_status ` +
+          `"${unresolved.payment_status}" -- the payment has not resolved, so this attempt still has an ` +
+          "outstanding obligation and must not be replaced (OPERATOR_RECOVERY.md § 8)",
+      };
+    }
 
     // A foreign open Session is not an obligation, but it is worth saying so:
     // it is also the shape an operator sees when they go looking by hand.

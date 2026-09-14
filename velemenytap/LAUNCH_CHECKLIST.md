@@ -50,6 +50,20 @@ received in a real mailbox and clicked — signup confirmation → `/onboarding`
 
       {{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=recovery&next=/auth/reset-password
 
+- [ ] **[you]** Enable **"Require current password when changing password"**
+      (Authentication → Providers → Email) on **production and the isolated test
+      project**. Round-15 R15-01: without it, an ordinary signed-in session can
+      change its own password through the Auth API directly, bypassing every
+      application-side guard — measured, not assumed, on 2026-09-14. The app
+      already forwards `current_password`, so enabling it does not break
+      ordinary changes, and recovery sessions are exempt by design.
+      **"Secure password change" is a DIFFERENT option and is not enough**: it
+      exempts sessions created in the last 24 hours, which is exactly the
+      unattended-browser session this is about.
+- [ ] **[me]** Re-run `node scripts/check-password-change-enforcement.mjs`
+      against each project after you enable it. It creates and deletes one
+      throwaway user and exits non-zero while the bypass still works, so this
+      gate is measured rather than ticked.
 - [ ] **[you]** Raise the hourly email rate limit from 2 (it exists to protect the
       built-in mailer and is far too low once real SMTP is in place).
 - [ ] **[you]** Confirm production's Auth `site_url` still matches the address that
@@ -229,7 +243,7 @@ command and manifest are in `DEPLOYMENT.md` § 7; do not retype the list from me
 
 ## What needs you, condensed
 
-1. Apply **both** email fixes to production — SMTP *and* the two templates. Fixing only SMTP produces emails that arrive and links that still dead-end.
+1. Apply **both** email fixes to production — SMTP *and* the two templates. Fixing only SMTP produces emails that arrive and links that still dead-end. **And enable "Require current password when changing password" on both projects** — without it the password guard is a UI-path defence only (round-15 R15-01, measured).
 2. Stripe live Product, Prices, webhook endpoint, and the env vars for them.
 3. Three sweep secrets/variables, set together.
 4. Changing Vercel's **Root Directory** to `velemenytap` in the same window as the merge — the repo subdirectory is renamed on this branch, and the build fails immediately if the two disagree.

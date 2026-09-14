@@ -31,11 +31,15 @@ const MIGRATIONS_DIR = path.join(app, "supabase/migrations");
  *      so every later comparison uses a moment that may be long past
  *      (round-10 R10-06/R10-07).
  *
- * It is deliberately a lint, not a proof: it cannot know whether a given wait
- * is reachable, it only reads the LAST definition of each function, and a
- * sufficiently indirect version will slip past both patterns. What it does
- * catch is the exact textual shape every instance so far has had, at no
- * database cost -- which is what makes it run in CI, unlike the harness gate.
+ * It is deliberately a lint, not a proof, and round 15 asked for its scope to
+ * be stated rather than implied. It reads only `public.` function definitions,
+ * only the LAST one per NAME (so overloads collapse and drops are not
+ * modelled), and it excludes `private.` trigger functions entirely. Seeing the
+ * first `FOR UPDATE` does not prove that every later mutation's target row is
+ * the one locked. Declaration-time defaults, indirect clock reads, foreign-key
+ * waits and advisory-lock waits all still need a human. What it does catch is
+ * the exact textual shape every instance so far has had, at no database cost --
+ * which is what makes it run in CI, unlike the harness gate.
  */
 
 type FunctionDefinition = { name: string; file: string; body: string };
