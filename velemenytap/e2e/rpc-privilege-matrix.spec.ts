@@ -31,6 +31,22 @@ const EXPECTED: ExpectedGrant[] = [
     authenticated: false,
     service_role: true,
   },
+  // The comment added after a one-tap rating (20260916100000). Both are
+  // server-only: a grant is issued by saveRatingAction and redeemed by
+  // attachCommentAction, and attach_feedback_comment is the only path that
+  // may write text onto an existing feedback row.
+  {
+    signature: "public.issue_feedback_comment_grant(bigint, text, int)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  {
+    signature: "public.attach_feedback_comment(text, text)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
   {
     signature: "public.create_organization_atomic(text)",
     anon: false,

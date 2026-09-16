@@ -216,6 +216,8 @@ try {
     return line
       .slice(prefix.length)
       .replace("\\", "")
+      .trim()
+      .replace(/^""$/, "")
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
@@ -225,12 +227,25 @@ try {
 
   // The manifest must still describe the same set of pending migrations as the
   // directory, or the staged replay below proves something about a fiction.
-  const pending = files.slice(17);
+  //
+  // Production's real history is: migrations 1-17, then the 2026-09-14
+  // rollout (18-51 with three held back to enforce), then the current
+  // manifest. Replaying exactly that keeps the R14-02 end-state check below
+  // meaningful after the live manifest has moved on.
+  const DEPLOYED_THROUGH = 51;
+  const HISTORICAL_ENFORCE = [
+    "20260906090000_fix_confirm_toctou_and_revoke_leaked_token_grant.sql",
+    "20260906100000_drop_ambiguous_request_notification_email_change_overload.sql",
+    "20260914120000_restore_locked_confirm_notification_email_change.sql"
+  ];
+  const pending = files.slice(DEPLOYED_THROUGH);
   const manifestSet = [...expand, ...enforce].sort();
-  assert.deepEqual(manifestSet, [...pending].sort(), "DEPLOYMENT.md's expand+enforce manifest no longer matches migrations 18+");
+  assert.deepEqual(manifestSet, [...pending].sort(), `DEPLOYMENT.md's expand+enforce manifest no longer matches migrations ${DEPLOYED_THROUGH + 1}+`);
 
   const staged = await newDatabase(admin, "staged");
   await migrate(staged.client, files.slice(0, 17));
+  await migrate(staged.client, files.slice(17, DEPLOYED_THROUGH).filter((f) => !HISTORICAL_ENFORCE.includes(f)));
+  await migrate(staged.client, HISTORICAL_ENFORCE);
   await migrate(staged.client, expand);
   await migrate(staged.client, enforce);
 

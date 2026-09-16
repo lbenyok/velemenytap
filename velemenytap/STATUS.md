@@ -10,6 +10,45 @@ Last updated: 2026-09-14. **The branch is deployed. Production runs `master` at 
 > production as of the 2026-09-14 deploy** — the pages exist; clicking a real
 > reset email end to end is still unticked in `LAUNCH_CHECKLIST.md` § 6.
 
+## One-tap rating (2026-09-16, not deployed)
+
+The public page now saves the rating on the star tap itself. What follows is
+identical for every rating: a confirmation, one "Értékelés a Google-on" link
+(same tab, same place, same styling), and an optional comment box whose prompt
+is worded for the rating ("Mondd el, min javíthatnánk!" for 1-3, "Mit
+szerettél a legjobban?" for 4-5).
+
+The request was for 4-5 stars to redirect straight to Google while 1-3 stars
+landed on a complaint form. That split was declined -- it is review gating,
+which `PRODUCT_SPEC.md` forbids and Google's review policy prohibits -- and the
+owner chose this rating-neutral version instead.
+`e2e/review-gating.spec.ts` compares the 1-star and 5-star screens directly.
+
+The comment arrives on a second request, which the schema had forbidden
+outright (`prevent_feedback_content_change`). Migration 52 adds a single-use,
+30-minute grant (`feedback_comment_grants`, only the token's SHA-256 stored)
+and `attach_feedback_comment()`, and widens the trigger by exactly one
+transition: text from NULL to a value, inside that function only.
+
+Behaviour worth knowing:
+
+- A save that fails or does not answer within 15 s is never shown as saved; the
+  customer gets a retry and, where the location's URL is valid, the Google link.
+  A retry of a save that did land is refused as a duplicate and says so.
+- The duplicate block is still 5 minutes (`fb_sent_` cookie); the comment
+  window is a separate 30-minute cookie (`fb_note_`).
+- Negative-feedback alerts still fire for ratings **1-2** (the existing
+  threshold, unchanged), from `after()`, at the moment the rating is saved --
+  so the email no longer contains the comment; it says one may follow and
+  links to the inbox.
+- Missing or invalid Google URLs: the customer keeps the confirmation and the
+  comment box, with no link and no mention of the misconfiguration; the
+  dashboard's existing warning flags it.
+
+Rollout: migration 52 is `--expand` and must be applied before this code
+deploys (`DEPLOYMENT.md` now lists it as the whole pending set). It is applied
+to the isolated test project only.
+
 ## The deploy (2026-09-14)
 
 Production had been running `master` — migration 17, no password-reset flow, no

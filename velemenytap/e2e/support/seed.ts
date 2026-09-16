@@ -151,13 +151,6 @@ export type SeededOrg = {
    * order is not fixed.
    */
   rateLimitCard: { publicId: string; cardId: number }
-  /**
-   * Another card of its own, for the test that actually SUBMITS through the
-   * primary "send and write a Google review" action. Same reason as
-   * rateLimitCard: it writes a feedback row, and no rating test should have to
-   * care whether it ran before or after that.
-   */
-  primaryActionCard: { publicId: string; cardId: number }
 }
 
 /**
@@ -233,19 +226,6 @@ export async function seedReviewGatingOrg(): Promise<SeededOrg> {
     )
   if (rateLimitCardError) throw rateLimitCardError
 
-  const { data: primaryActionCard, error: primaryActionCardError } =
-    await retryOnClockSkew(() =>
-      admin
-        .from("nfc_cards")
-        .insert({
-          organization_id: org.id,
-          location_id: location.id,
-          display_name: "E2E Card (primary action)",
-        })
-        .select("id, public_id")
-        .single()
-    )
-  if (primaryActionCardError) throw primaryActionCardError
 
   return {
     orgId: org.id,
@@ -254,10 +234,6 @@ export async function seedReviewGatingOrg(): Promise<SeededOrg> {
     rateLimitCard: {
       publicId: rateLimitCard.public_id,
       cardId: rateLimitCard.id,
-    },
-    primaryActionCard: {
-      publicId: primaryActionCard.public_id,
-      cardId: primaryActionCard.id,
     },
   }
 }

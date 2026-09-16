@@ -132,7 +132,10 @@ export async function sendNegativeFeedbackAlert(params: {
         ${
           params.feedbackText
             ? `<blockquote style="margin:0;padding-left:12px;border-left:3px solid #ddd;color:#333;">${escapeHtml(params.feedbackText)}</blockquote>`
-            : "<p>Nem érkezett írásos vélemény.</p>"
+            : // The rating is saved on the star tap and alerted immediately; a
+              // comment, if the guest writes one, arrives afterwards and lands
+              // in the inbox rather than in this email.
+              "<p>Írásos megjegyzés még nem érkezett. Ha a vendég ír, a vélemény-postaládában látod.</p>"
         }
         <p><a href="${dashboardUrl}">Megtekintés a vélemény-postaládában</a></p>
       `,

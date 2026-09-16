@@ -8,10 +8,9 @@ VéleményTap ("Opinion Tap") is a SaaS product for physical businesses — caf�
 
 1. Customer taps an NFC card (no app, no login).
 2. A fast, mobile-first page loads at `/r/{public_id}`, branded with the business name and location.
-3. Customer picks 1–5 stars.
-4. Customer may add a short written comment (optional).
-5. Customer submits. The submission is stored against the business's dashboard.
-6. Customer is shown a "Leave a Google review" link, **identically regardless of the rating they gave**.
+3. Customer taps 1–5 stars. **The tap is the submission**: the rating is stored against the business's dashboard immediately.
+4. Customer is shown an "Értékelés a Google-on" link, **identically regardless of the rating they gave**, and an optional comment box.
+5. Customer may add a short written comment, which is attached to the rating already saved.
 
 ## The one rule that overrides everything else
 

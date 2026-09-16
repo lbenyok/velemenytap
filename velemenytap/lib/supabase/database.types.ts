@@ -620,6 +620,21 @@ export interface Database {
         };
         Returns: boolean | null;
       };
+      issue_feedback_comment_grant: {
+        Args: {
+          p_feedback_id: number;
+          p_token_hash: string;
+          p_ttl_seconds?: number;
+        };
+        Returns: undefined;
+      };
+      attach_feedback_comment: {
+        Args: {
+          p_token_hash: string;
+          p_feedback_text: string;
+        };
+        Returns: string;
+      };
       issue_password_recovery_grant: {
         Args: {
           p_user_id: string;

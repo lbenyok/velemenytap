@@ -181,10 +181,13 @@ test("the customer-facing CTA and the owner-facing badge never disagree", async 
     .select("public_id")
     .single();
 
-  // The public page: no CTA, because the guard rejects the stored value.
+  // The public page: the guard rejects the stored value before it reaches
+  // the browser at all. (Checking for the CTA's label here would prove
+  // nothing -- the link only renders after a star is tapped, for any URL.
+  // e2e/public-flow-destinations.spec.ts taps and checks the rendered link.)
   const publicPage = await request.get(`/r/${card!.public_id}`);
   expect(publicPage.status()).toBe(200);
-  expect(await publicPage.text()).not.toContain("Google-értékelés írása");
+  expect(await publicPage.text()).not.toContain("example.com/not-google");
 
   // The dashboard must agree with that, which is the whole finding.
   await openLocations(page);

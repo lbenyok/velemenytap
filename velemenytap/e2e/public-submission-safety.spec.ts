@@ -30,11 +30,11 @@ test("finding #6: deactivating a card between page load and submission is caught
   page,
 }) => {
   await page.goto(`/r/${card.publicId}`);
-  await page.getByRole("radio", { name: /^4 csillag —/ }).click();
 
   // Deactivate the card server-side, simulating a manager clicking
   // "deactivate" in the dashboard in the window between page load and this
   // browser submitting -- the exact race the old lookup-then-insert had.
+  // The star tap IS the submission now, so the deactivation comes first.
   const admin = adminClient();
   const { error: deactivateError } = await admin
     .from("nfc_cards")
@@ -42,13 +42,13 @@ test("finding #6: deactivating a card between page load and submission is caught
     .eq("id", card.cardId);
   expect(deactivateError).toBeNull();
 
-  await page.getByRole("button", { name: "Csak elküldöm" }).click();
+  await page.getByRole("radio", { name: /^4 csillag —/ }).click();
 
   // Not getByRole("alert") -- that also matches Next's own route-announcer
   // div (role="alert", always present, empty text), which makes a strict
   // locator ambiguous. The submission error is specifically a <p
   // role="alert">.
-  await expect(page.locator('p[role="alert"]')).toHaveText("Ez a link már nem aktív.");
+  await expect(page.locator('p[role="alert"]')).toHaveText("Ez a kártya már nem aktív.");
 
   const { data: rows } = await admin.from("feedback").select("id").eq("nfc_card_id", card.cardId);
   expect(rows).toHaveLength(0);
@@ -75,10 +75,9 @@ test("finding #2: more than the per-card rate limit within the window is rejecte
   // message -- not "card inactive" and not a generic failure.
   await page.goto(`/r/${card.publicId}`);
   await page.getByRole("radio", { name: /^5 csillag —/ }).click();
-  await page.getByRole("button", { name: "Csak elküldöm" }).click();
 
   await expect(page.locator('p[role="alert"]')).toHaveText(
-    "Túl sok vélemény érkezett erről a kártyáról. Kérjük, próbáld újra pár perc múlva.",
+    "Túl sok értékelés érkezett erről a kártyáról. Kérjük, próbáld újra pár perc múlva.",
   );
 
   const { count } = await admin

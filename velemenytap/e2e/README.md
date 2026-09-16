@@ -34,7 +34,11 @@ Playwright starts `npm run dev` itself (`playwright.config.ts`'s `webServer`) an
 
 ## What's covered
 
-`review-gating.spec.ts` — the product skill's Review-Gating Regression Test, automated: for each rating 1–5, load the public feedback page, submit that rating, and assert the "Leave a Google review" CTA is visible with the correct `href`. Plus one test confirming a duplicate submission on the same card (same browser context) is rejected rather than silently creating a second row.
+`review-gating.spec.ts` — the product skill's Review-Gating Regression Test, automated, for the one-tap flow: for each rating 1–5 a single star tap saves the rating and shows the same "Értékelés a Google-on" link and comment box; a 1-star and a 5-star screen are compared directly (link, label, styling, tab behaviour, position); a low rating reaches Google without writing anything; plus duplicates, the rate limit, repeated taps (same frame and mid-save), a failed save, a save that never answers, and hover/focus never submitting.
+
+`public-flow-destinations.spec.ts` — the same flow with no Google URL, a stored-but-invalid one, the link coming from the card's own location, and a card switched off before or after the page loads.
+
+`feedback-comment-grants.spec.ts` — migration 52's database rules: a comment grant attaches once, concurrent replays cannot both win, unknown/empty/expired are refused, every other change to a saved rating is still blocked (even for service_role), and organization members can call neither function.
 
 `redirect-safety.spec.ts` — drives the real login and email-confirmation flows against the open-redirect fix (`lib/safe-redirect.ts`): a backslash-variant `next` param (`/\evil.example.com`, which a real browser's URL parser resolves the same as `//evil.example.com`) must never navigate away from the site, through either call site, plus round-2's dot-segment/double-slash-pathname payloads (R2-01).
 

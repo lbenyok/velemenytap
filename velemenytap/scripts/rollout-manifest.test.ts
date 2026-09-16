@@ -34,7 +34,24 @@ const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
  */
 
 const MIGRATIONS_DIR = path.join(app, "supabase/migrations");
-const DEPLOYED_THROUGH = 17; // production's current migration; 18+ are pending
+// Production's current migration count; everything after it is pending.
+// Was 17 until the 2026-09-14 rollout applied 18 through 51.
+const DEPLOYED_THROUGH = 51;
+
+/**
+ * That 2026-09-14 rollout, frozen: migrations 18-51, with exactly these three
+ * held back to --enforce. The non-vacuity check below replays it, so it keeps
+ * proving it could catch R14-02 now that the live manifest has moved on.
+ */
+const HISTORICAL_ROLLOUT = {
+  deployedBefore: 17,
+  deployedThrough: 51,
+  enforce: [
+    "20260906090000_fix_confirm_toctou_and_revoke_leaked_token_grant.sql",
+    "20260906100000_drop_ambiguous_request_notification_email_change_overload.sql",
+    "20260914120000_restore_locked_confirm_notification_email_change.sql"
+  ],
+};
 
 function migrationFiles(): string[] {
   return readdirSync(MIGRATIONS_DIR)
@@ -53,6 +70,9 @@ function manifestPhase(flag: "expand" | "enforce"): string[] {
   return line
     .slice(prefix.length)
     .replace("\\", "")
+    .trim()
+    // An empty phase is written `--enforce ""`, which rollout.mjs accepts.
+    .replace(/^""$/, "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
@@ -132,13 +152,19 @@ describe("the rollout manifest", () => {
   });
 
   it("would have caught R14-02 -- the check is not vacuous", () => {
-    // Proves the comparison above can actually fail, by running it against a
-    // manifest with the restore migration removed from enforce: that is the
-    // state the repository was in when the reviewer found it.
-    const withoutRestore = enforce.filter((f) => !f.includes("restore_locked_confirm_notification_email_change"));
-    expect(withoutRestore.length, "the restore migration is no longer in the enforce list").toBe(enforce.length - 1);
+    // Proves the comparison above can actually fail, by replaying the frozen
+    // 2026-09-14 rollout with the restore migration removed from enforce:
+    // that is the state the repository was in when the reviewer found it.
+    const { deployedBefore, deployedThrough, enforce: historicalEnforce } = HISTORICAL_ROLLOUT;
+    const upTo = files.slice(0, deployedThrough);
+    const historicalExpand = upTo.slice(deployedBefore).filter((f) => !historicalEnforce.includes(f));
+    const withoutRestore = historicalEnforce.filter(
+      (f) => !f.includes("restore_locked_confirm_notification_email_change"),
+    );
+    expect(withoutRestore.length, "the restore migration is no longer in the frozen enforce list").toBe(
+      historicalEnforce.length - 1,
+    );
 
-    const stagedOrder = [...files.slice(0, DEPLOYED_THROUGH), ...expand, ...withoutRestore];
     const lastDefiner = (order: string[]) => {
       const last = new Map<string, string>();
       for (const file of order) {
@@ -146,10 +172,15 @@ describe("the rollout manifest", () => {
       }
       return last;
     };
-    const staged = lastDefiner(stagedOrder);
-    const sorted = lastDefiner(files);
-
+    const sorted = lastDefiner(upTo);
     const target = "function public.confirm_notification_email_change";
-    expect(staged.get(target)).not.toBe(sorted.get(target));
+
+    // The rollout as actually run agrees with a sorted replay ...
+    const asRun = lastDefiner([...upTo.slice(0, deployedBefore), ...historicalExpand, ...historicalEnforce]);
+    expect(asRun.get(target)).toBe(sorted.get(target));
+
+    // ... and without the restore migration it would not have.
+    const broken = lastDefiner([...upTo.slice(0, deployedBefore), ...historicalExpand, ...withoutRestore]);
+    expect(broken.get(target)).not.toBe(sorted.get(target));
   });
 });

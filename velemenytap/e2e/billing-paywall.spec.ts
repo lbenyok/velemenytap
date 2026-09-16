@@ -99,12 +99,13 @@ test("public feedback submission keeps working even when the organization's subs
   // flow, exactly like review-gating.spec.ts and public-submission-safety.spec.ts.
   await page.goto(`/r/${card.publicId}`);
   await page.getByRole("radio", { name: /^5 csillag —/ }).click();
-  await page.getByRole("button", { name: "Csak elküldöm" }).click();
   // Playwright's click() resolves once the click is dispatched, not once
   // the Server Action it triggers has actually committed -- querying the
   // database immediately after is a race (see review-gating.spec.ts for
   // the same wait-for-confirmation pattern this borrows).
-  await expect(page.getByRole("heading", { name: "Köszönjük!" })).toBeVisible();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Köszönjük, az értékelésedet elmentettük." }),
+  ).toBeVisible();
 
   const { data: feedback, error } = await admin
     .from("feedback")
