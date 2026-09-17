@@ -1,7 +1,7 @@
-"use client";
+"use client"
 
-import { Star } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { Star } from "lucide-react"
+import { cn } from "@/lib/utils"
 
 const LABELS: Record<number, string> = {
   1: "Gyenge",
@@ -9,14 +9,14 @@ const LABELS: Record<number, string> = {
   3: "Jó",
   4: "Nagyszerű",
   5: "Kiváló",
-};
+}
 
 export function StarPicker({
   value,
   onChange,
 }: {
-  value: number | null;
-  onChange: (rating: number) => void;
+  value: number | null
+  onChange: (rating: number) => void
 }) {
   return (
     <div
@@ -25,7 +25,7 @@ export function StarPicker({
       aria-label="Értékeld a látogatást"
     >
       {[1, 2, 3, 4, 5].map((n) => {
-        const filled = value !== null && n <= value;
+        const filled = value !== null && n <= value
         return (
           <button
             key={n}
@@ -34,20 +34,18 @@ export function StarPicker({
             aria-checked={value === n}
             aria-label={`${n} csillag — ${LABELS[n]}`}
             onClick={() => onChange(n)}
-            className="flex size-14 shrink-0 items-center justify-center rounded-full outline-none transition-transform active:scale-90 focus-visible:ring-2 focus-visible:ring-[var(--pf-accent)]"
+            className="flex size-14 shrink-0 items-center justify-center rounded-full transition-transform outline-none focus-visible:ring-2 focus-visible:ring-[var(--pf-accent)] active:scale-90"
           >
             <Star
               className={cn(
                 "size-9 transition-colors",
-                filled
-                  ? "fill-[var(--pf-star)] text-[var(--pf-star-edge)]"
-                  : "fill-none text-[var(--pf-line)]",
+                filled ? "fill-[var(--pf-star)]" : "fill-[var(--pf-line)]"
               )}
-              strokeWidth={1.5}
+              strokeWidth={0}
             />
           </button>
-        );
+        )
       })}
     </div>
-  );
+  )
 }

@@ -98,8 +98,8 @@ test("public feedback submission keeps working even when the organization's subs
   // No login at all here -- this is the actual unauthenticated customer
   // flow, exactly like review-gating.spec.ts and public-submission-safety.spec.ts.
   await page.goto(`/r/${card.publicId}`);
-  await page.getByRole("radio", { name: /^5 csillag —/ }).click();
-  await page.getByRole("button", { name: "Csak elküldöm" }).click();
+  await page.getByRole("radio", { name: /^3 csillag —/ }).click();
+  await page.getByRole("button", { name: "Vélemény küldése" }).click();
   // Playwright's click() resolves once the click is dispatched, not once
   // the Server Action it triggers has actually committed -- querying the
   // database immediately after is a race (see review-gating.spec.ts for
@@ -112,5 +112,5 @@ test("public feedback submission keeps working even when the organization's subs
     .eq("nfc_card_id", card.cardId)
     .single();
   expect(error).toBeNull();
-  expect(feedback?.rating).toBe(5);
+  expect(feedback?.rating).toBe(3);
 });

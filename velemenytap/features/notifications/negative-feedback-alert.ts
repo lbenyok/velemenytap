@@ -3,7 +3,7 @@ import "server-only";
 import { Resend } from "resend";
 import { createAdminClient } from "@/lib/supabase/admin";
 
-const NEGATIVE_RATING_THRESHOLD = 2; // ratings 1-2 are treated as negative
+const NEGATIVE_RATING_THRESHOLD = 3; // alert for every rating below four stars
 const ALERT_ROLES = ["owner", "admin", "manager"] as const;
 
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
@@ -23,7 +23,7 @@ export function isNegativeRating(rating: number): boolean {
 
 /**
  * Emails the organization's owner/admin/manager members about a single
- * qualifying (rating <= 2) feedback submission. Never awaited by the
+ * qualifying (rating <= 3) feedback submission. Never awaited by the
  * caller's response path -- see the after() call at the submitFeedbackAction
  * call site. Never throws: a failed/unconfigured send must not affect the
  * customer-facing feedback submission it's reacting to.

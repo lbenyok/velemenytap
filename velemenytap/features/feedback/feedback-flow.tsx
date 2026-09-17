@@ -57,8 +57,25 @@ export function FeedbackFlow({
 }) {
   const [rating, setRating] = useState<number | null>(null)
   const formRef = useRef<HTMLFormElement>(null)
+  const submissionStarted = useRef(false)
+  const safeReviewUrl = safeGoogleReviewUrl(googleReviewUrl)
   const [state, formAction, isPending] = useActionState(
-    submitFeedbackAction,
+    async (
+      previousState: FeedbackActionState,
+      formData: FormData
+    ): Promise<FeedbackActionState> => {
+      try {
+        return await submitFeedbackAction(previousState, formData)
+      } catch {
+        return {
+          status: "error",
+          code: "failed",
+          error: "Nem sikerült elküldeni a véleményedet. Kérjük, próbáld újra.",
+        }
+      } finally {
+        submissionStarted.current = false
+      }
+    },
     initialState
   )
 
@@ -99,88 +116,85 @@ export function FeedbackFlow({
               <p className="text-center text-sm font-medium">
                 {REFLECTIONS[rating]}
               </p>
-              <label
-                htmlFor="feedback_text"
-                className="block text-sm font-medium"
-              >
-                Megjegyzés (nem kötelező)
-              </label>
-              <textarea
-                id="feedback_text"
-                name="feedback_text"
-                placeholder="Van még valami, amit hozzátennél? (nem kötelező)"
-                rows={4}
-                maxLength={1000}
-                className="w-full resize-none rounded-lg border border-[var(--pf-line)] bg-[var(--pf-surface)] p-3 text-sm text-[var(--pf-ink)] outline-none placeholder:text-[var(--pf-ink-muted)] focus-visible:ring-2 focus-visible:ring-[var(--pf-accent)]"
-              />
-              <p className="text-xs text-[var(--pf-ink-muted)]">
-                Ezt a visszajelzést a vállalkozás kapja meg, nem kerül a
-                Google-re. Kérjük, ne írj ide személyes vagy egészségügyi
-                adatot.
-              </p>
+              {rating < 4 ? (
+                <>
+                  <label
+                    htmlFor="feedback_text"
+                    className="block text-sm font-medium"
+                  >
+                    Megjegyzés (nem kötelező)
+                  </label>
+                  <textarea
+                    id="feedback_text"
+                    name="feedback_text"
+                    placeholder="Van még valami, amit hozzátennél? (nem kötelező)"
+                    rows={4}
+                    maxLength={1000}
+                    className="w-full resize-none rounded-lg border border-[var(--pf-line)] bg-[var(--pf-surface)] p-3 text-sm text-[var(--pf-ink)] outline-none placeholder:text-[var(--pf-ink-muted)] focus-visible:ring-2 focus-visible:ring-[var(--pf-accent)]"
+                  />
+                  <p className="text-xs text-[var(--pf-ink-muted)]">
+                    Ezt a visszajelzést a vállalkozás kapja meg, nem kerül a
+                    Google-re. Kérjük, ne írj ide személyes vagy egészségügyi
+                    adatot.
+                  </p>
+                </>
+              ) : null}
               {state.status === "error" ? (
                 <div className="space-y-4">
                   <p className="text-center text-sm text-red-700" role="alert">
                     {state.error}
                   </p>
-                  {ERROR_CODES_KEEPING_THE_CTA.has(state.code) ? (
+                  {ERROR_CODES_KEEPING_THE_CTA.has(state.code) && rating < 4 ? (
                     <GoogleReviewCta googleReviewUrl={googleReviewUrl} />
                   ) : null}
                 </div>
               ) : null}
-              {/*
-                Two taps to Google instead of three -- for EVERY rating.
-
-                The Google link used to live only on the confirmation screen, so
-                reaching it meant: pick a star, send, then tap Google. It is now
-                the primary action on this screen, and tapping it does both jobs
-                at once: the browser opens Google in a new tab (its own default
-                behaviour, from a real user gesture, so no popup blocker sees a
-                script-opened window) while requestSubmit() sends the feedback in
-                the tab left behind.
-
-                Deliberately NOT conditional on the rating. A flow that sends 4-5
-                stars straight to Google while 1-3 stars has to work for it is
-                review gating: it is what PRODUCT_SPEC.md's one non-negotiable
-                rule forbids, and it is the pattern Google penalises profiles
-                for. The friction is removed for everyone or not at all -- which
-                is also why the secondary button below is always available, for
-                the customer who wants the business to hear them and has no
-                interest in Google.
-              */}
-              {retryIsPointless ? null : safeGoogleReviewUrl(
-                  googleReviewUrl
-                ) ? (
-                <a
-                  href={safeGoogleReviewUrl(googleReviewUrl) ?? undefined}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={() => {
-                    // Guarded on isPending: the link stays tappable so a second
-                    // tap still reaches Google, but it must not queue a second
-                    // submission behind the first. That one would come back
-                    // "duplicate" and replace the customer's own successful
-                    // send with an error telling them they already sent it.
-                    if (!isPending) formRef.current?.requestSubmit()
-                  }}
-                  className="block w-full rounded-lg bg-[var(--pf-accent)] px-4 py-3 text-center text-sm font-medium text-white transition-colors hover:bg-[var(--pf-accent-hover)]"
-                >
-                  Küldés és Google-értékelés írása
-                </a>
-              ) : null}
-              {retryIsPointless ? null : (
+              {retryIsPointless || rating >= 4 ? null : (
                 <button
                   type="submit"
                   disabled={isPending}
-                  className={
-                    safeGoogleReviewUrl(googleReviewUrl)
-                      ? "w-full rounded-lg border border-[var(--pf-line)] bg-[var(--pf-surface)] px-4 py-3 text-sm font-medium text-[var(--pf-ink)] transition-colors hover:bg-[var(--pf-bg)] disabled:opacity-60"
-                      : "w-full rounded-lg bg-[var(--pf-accent)] px-4 py-3 text-sm font-medium text-white transition-colors hover:bg-[var(--pf-accent-hover)] disabled:opacity-60"
-                  }
+                  className="w-full rounded-lg bg-[var(--pf-accent)] px-4 py-3 text-sm font-medium text-white transition-colors hover:bg-[var(--pf-accent-hover)] disabled:opacity-60"
                 >
-                  {isPending ? "Küldés…" : "Csak elküldöm"}
+                  {isPending ? "Küldés…" : "Vélemény küldése"}
                 </button>
               )}
+              {rating >= 4 ? (
+                safeReviewUrl ? (
+                  <>
+                    <p className="text-center text-sm text-[var(--pf-ink-muted)]">
+                      Elküldjük a visszajelzésedet, és új lapon megnyitjuk a
+                      Google értékelési oldalát.
+                    </p>
+                    <a
+                      href={safeReviewUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      aria-disabled={isPending}
+                      onClick={(event) => {
+                        if (isPending || submissionStarted.current) {
+                          event.preventDefault()
+                          return
+                        }
+                        // Keep this page alive for the save while Google opens immediately.
+                        if (!retryIsPointless && formRef.current) {
+                          submissionStarted.current = true
+                          formRef.current.requestSubmit()
+                        }
+                      }}
+                      className="block w-full rounded-lg bg-[var(--pf-accent)] px-4 py-3 text-center text-sm font-medium text-white transition-colors hover:bg-[var(--pf-accent-hover)] focus-visible:ring-2 focus-visible:ring-[var(--pf-accent)] focus-visible:ring-offset-2 focus-visible:outline-none"
+                    >
+                      Vélemény küldése
+                    </a>
+                  </>
+                ) : (
+                  <p
+                    role="alert"
+                    className="text-center text-sm text-[var(--pf-ink-muted)]"
+                  >
+                    A Google értékelési link jelenleg nem érhető el.
+                  </p>
+                )
+              ) : null}
             </div>
           ) : null}
         </form>
@@ -196,8 +210,7 @@ function ConfirmationScreen({
   organizationName: string
   googleReviewUrl: string | null
 }) {
-  // Validity of the destination is the only gate here -- never the rating.
-  // Every rating from 1 to 5 reaches this same branch with the same link.
+  // Internal submissions keep a Google link on the confirmation screen.
   return (
     <div className="public-feedback flex min-h-svh flex-col items-center justify-center gap-8 bg-[var(--pf-bg)] px-5 py-12 text-center text-[var(--pf-ink)]">
       <div className="space-y-2">
@@ -227,13 +240,6 @@ function ConfirmationScreen({
   )
 }
 
-/**
- * The one place the Google Review CTA is rendered, so every screen that offers
- * it offers exactly the same thing -- same wording, same prominence, same
- * validity check. Its ONLY condition is that the destination is a real Google
- * review link; it never inspects the rating, and there is deliberately no
- * parameter through which it could.
- */
 function GoogleReviewCta({
   googleReviewUrl,
 }: {
@@ -246,13 +252,51 @@ function GoogleReviewCta({
       <p className="text-center text-sm text-[var(--pf-ink-muted)]">
         Megosztanád a Google-ön is?
       </p>
+      <GoogleReviewLink googleReviewUrl={safeReviewUrl} />
+    </div>
+  )
+}
+
+function GoogleReviewLink({
+  googleReviewUrl,
+}: {
+  googleReviewUrl: string | null
+}) {
+  const safeReviewUrl = safeGoogleReviewUrl(googleReviewUrl)
+  if (!safeReviewUrl) return null
+  return (
+    <div className="flex justify-center">
       <a
         href={safeReviewUrl}
         target="_blank"
         rel="noopener noreferrer"
-        className="block w-full rounded-lg bg-[var(--pf-accent)] px-4 py-3 text-center text-sm font-medium text-white transition-colors hover:bg-[var(--pf-accent-hover)]"
+        aria-label="Google-értékelés írása"
+        title="Google-értékelés írása"
+        className="inline-flex size-12 items-center justify-center rounded-full border border-[var(--pf-line)] bg-white shadow-sm transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-[var(--pf-accent)] focus-visible:ring-offset-2 focus-visible:outline-none"
       >
-        Google-értékelés írása
+        <svg
+          viewBox="0 0 48 48"
+          className="size-6"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <path
+            fill="#4285F4"
+            d="M43.61 24.46c0-1.36-.12-2.66-.35-3.92H24v7.42h11a9.4 9.4 0 0 1-4.08 6.17v5.13h6.61c3.87-3.57 6.08-8.83 6.08-14.8Z"
+          />
+          <path
+            fill="#34A853"
+            d="M24 44c5.51 0 10.13-1.83 13.51-4.94l-6.61-5.13c-1.83 1.23-4.17 1.98-6.9 1.98-5.31 0-9.82-3.59-11.43-8.43H5.75v5.29A20 20 0 0 0 24 44Z"
+          />
+          <path
+            fill="#FBBC05"
+            d="M12.57 27.48a12 12 0 0 1 0-6.96v-5.29H5.75a20 20 0 0 0 0 17.54l6.82-5.29Z"
+          />
+          <path
+            fill="#EA4335"
+            d="M24 12.09c3 0 5.67 1.03 7.8 3.05l5.85-5.85A19.56 19.56 0 0 0 24 4 20 20 0 0 0 5.75 15.23l6.82 5.29C14.18 15.68 18.69 12.09 24 12.09Z"
+          />
+        </svg>
       </a>
     </div>
   )

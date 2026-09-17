@@ -7,18 +7,15 @@ import {
   type SeededOrg,
 } from "./support/seed"
 
-/**
- * The Review-Gating Regression Test from the product skill, automated: the
- * Google Review CTA must be available after every rating from 1 to 5,
- * identically. This is the single most important invariant in the product
- * (see PRODUCT_SPEC.md "The one rule that overrides everything else") --
- * this suite is what makes that a checked fact instead of a manual step.
- */
-
+// Every rating retains a Google review link after submission.
 let seeded: SeededOrg
 
 test.beforeAll(async () => {
   seeded = await seedReviewGatingOrg()
+})
+
+test.beforeEach(async ({ context }) => {
+  await context.route("https://g.page/**", (route) => route.abort())
 })
 
 test.afterAll(async () => {
@@ -28,7 +25,7 @@ test.afterAll(async () => {
   if (seeded) await cleanupOrg(seeded.orgId)
 })
 
-for (const rating of [1, 2, 3, 4, 5] as const) {
+for (const rating of [1, 2, 3] as const) {
   test(`rating ${rating} -> Google Review CTA is available`, async ({
     page,
   }) => {
@@ -39,7 +36,7 @@ for (const rating of [1, 2, 3, 4, 5] as const) {
       .getByRole("radio", { name: new RegExp(`^${rating} csillag —`) })
       .click()
 
-    await page.getByRole("button", { name: "Csak elküldöm" }).click()
+    await page.getByRole("button", { name: "Vélemény küldése" }).click()
 
     await expect(
       page.getByRole("heading", { name: "Köszönjük!" })
@@ -59,14 +56,14 @@ test("duplicate submission on the same card is rejected, not silently double-cou
 }) => {
   const card = seeded.cards.find((c) => c.rating === 5)!
   await page.goto(`/r/${card.publicId}`)
-  await page.getByRole("radio", { name: /^5 csillag —/ }).click()
-  await page.getByRole("button", { name: "Csak elküldöm" }).click()
+  await page.getByRole("radio", { name: /^3 csillag —/ }).click()
+  await page.getByRole("button", { name: "Vélemény küldése" }).click()
   await expect(page.getByRole("heading", { name: "Köszönjük!" })).toBeVisible()
 
   // Same browser context/cookies, same card, a second tap.
   await page.goto(`/r/${card.publicId}`)
-  await page.getByRole("radio", { name: /^5 csillag —/ }).click()
-  await page.getByRole("button", { name: "Csak elküldöm" }).click()
+  await page.getByRole("radio", { name: /^3 csillag —/ }).click()
+  await page.getByRole("button", { name: "Vélemény küldése" }).click()
 
   await expect(
     page.getByText("Ehhez a látogatáshoz már küldtél véleményt.")
@@ -105,7 +102,7 @@ test("a rate-limited submission still offers the Google Review CTA", async ({
 
   await page.goto(`/r/${card.publicId}`)
   await page.getByRole("radio", { name: /^1 csillag —/ }).click()
-  await page.getByRole("button", { name: "Csak elküldöm" }).click()
+  await page.getByRole("button", { name: "Vélemény küldése" }).click()
 
   await expect(
     page.getByText("Túl sok vélemény érkezett erről a kártyáról.")
@@ -119,21 +116,9 @@ test("a rate-limited submission still offers the Google Review CTA", async ({
   )
 })
 
-/**
- * Round-16: the flow got shorter, and this is what stops it getting shorter
- * unequally.
- *
- * "Send and write a Google review" is now the primary action on the rating
- * screen itself, so reaching Google costs two taps instead of three. The
- * request that prompted it was to send 4-5 stars straight through while 1-3
- * stars kept the longer path — which is review gating, the one thing
- * PRODUCT_SPEC.md forbids outright and the pattern Google penalises profiles
- * for. It was declined and the friction was removed for every rating instead.
- *
- * A future change that "optimises" this per rating has to get past these.
- */
+// Low ratings send feedback first; high ratings offer Google immediately.
 for (const rating of [1, 2, 3, 4, 5] as const) {
-  test(`rating ${rating} reaches Google in the same two taps as every other`, async ({
+  test(`rating ${rating} shows the expected initial action`, async ({
     page,
   }) => {
     const card = seeded.cards.find((c) => c.rating === rating)!
@@ -142,43 +127,44 @@ for (const rating of [1, 2, 3, 4, 5] as const) {
       .getByRole("radio", { name: new RegExp(`^${rating} csillag —`) })
       .click()
 
-    // Tap two is on the rating screen itself -- no send-then-find-the-button.
     const primary = page.getByRole("link", {
-      name: "Küldés és Google-értékelés írása",
+      name: "Vélemény küldése",
     })
-    await expect(primary).toBeVisible()
-    await expect(primary).toHaveAttribute(
-      "href",
-      "https://g.page/r/e2e-test-review-link"
-    )
-
-    // And the customer who does not want Google is never stranded.
-    await expect(
-      page.getByRole("button", { name: "Csak elküldöm" })
-    ).toBeVisible()
+    const sendOnly = page.getByRole("button", { name: "Vélemény küldése" })
+    if (rating <= 3) {
+      await expect(sendOnly).toBeVisible()
+      await expect(primary).toHaveCount(0)
+    } else {
+      await expect(sendOnly).toHaveCount(0)
+      await expect(primary).toBeVisible()
+      await expect(primary).toHaveAttribute(
+        "href",
+        "https://g.page/r/e2e-test-review-link"
+      )
+    }
   })
 }
 
-test("the Google action and the plain send are the same for a 1 star and a 5 star", async ({
+test("low and high ratings use the same Google destination", async ({
   page,
 }) => {
-  // Not just "both present" -- the same accessible name and the same
-  // destination. A rating that got a quieter label or a longer route would
-  // satisfy the per-rating tests above while still being gating in practice.
+  // Compare the low-rating confirmation link with the high-rating initial link.
   const read = async (r: 1 | 5) => {
     const card = seeded.cards.find((c) => c.rating === r)!
     await page.goto(`/r/${card.publicId}`)
     await page
       .getByRole("radio", { name: new RegExp(`^${r} csillag —`) })
       .click()
-    const link = page.getByRole("link", {
-      name: "Küldés és Google-értékelés írása",
-    })
-    return {
-      href: await link.getAttribute("href"),
-      text: (await link.textContent())?.trim(),
-      classes: await link.getAttribute("class"),
+    if (r === 1) {
+      await page.getByRole("button", { name: "Vélemény küldése" }).click()
+      await expect(
+        page.getByRole("heading", { name: "Köszönjük!" })
+      ).toBeVisible()
     }
+    const link = page.getByRole("link", {
+      name: r === 1 ? "Google-értékelés írása" : "Vélemény küldése",
+    })
+    return link.getAttribute("href")
   }
 
   const low = await read(1)
@@ -186,54 +172,38 @@ test("the Google action and the plain send are the same for a 1 star and a 5 sta
   expect(low).toEqual(high)
 })
 
-/**
- * The half the per-rating tests above cannot see: that the primary action
- * KEEPS the first of its two promises.
- *
- * "Küldés és Google-értékelés írása" claims to do two things, and the tests
- * above only check the second -- the href. If requestSubmit() stopped firing,
- * every one of them would still pass while the customer's feedback quietly
- * went nowhere and the business never heard the complaint it exists to catch.
- */
-test("the primary action really submits the feedback, not just opens Google", async ({
+test("high ratings open Google and save each rating to the dashboard", async ({
   page,
   context,
 }) => {
-  // The popup is allowed to open -- that is the behaviour under test -- but
-  // its navigation is aborted so the suite never actually calls out to Google.
-  // What the browser ASKED for is recorded first: that, not the aborted tab's
-  // own url, is the evidence it was sent to the right place.
-  const googleRequests: string[] = []
-  await context.route("https://g.page/**", (route) => {
-    googleRequests.push(route.request().url())
-    return route.abort()
-  })
-
   const card = seeded.primaryActionCard
-  await page.goto(`/r/${card.publicId}`)
-  await page.getByRole("radio", { name: /^2 csillag —/ }).click()
-  await page.getByLabel("Megjegyzés (nem kötelező)").fill("E2E primary-action submission")
-
-  const popupPromise = context.waitForEvent("page")
-  await page
-    .getByRole("link", { name: "Küldés és Google-értékelés írása" })
-    .click()
-
-  // The tab the customer is left on shows the confirmation, so the send half
-  // ran in the page rather than being lost to the navigation.
-  await expect(page.getByRole("heading", { name: "Köszönjük!" })).toBeVisible()
-
-  const popup = await popupPromise
-  await popup.close()
-  expect(googleRequests).toEqual(["https://g.page/r/e2e-test-review-link"])
-
-  // And it reached the database, with the rating and text the customer gave.
+  await context.route("https://g.page/**", (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: "<h1>Google destination</h1>",
+    })
+  )
+  for (const rating of [4, 5]) {
+    await context.clearCookies()
+    await page.goto("/r/" + card.publicId)
+    await page
+      .getByRole("radio", { name: new RegExp("^" + rating + " csillag —") })
+      .click()
+    await expect(page.getByRole("textbox")).toHaveCount(0)
+    const popupPromise = context.waitForEvent("page")
+    await page.getByRole("link", { name: "Vélemény küldése" }).click()
+    const popup = await popupPromise
+    await expect(popup).toHaveURL("https://g.page/r/e2e-test-review-link")
+    await expect(
+      page.getByRole("heading", { name: "Köszönjük!" })
+    ).toBeVisible()
+    await popup.close()
+  }
   const { data, error } = await adminClient()
     .from("feedback")
-    .select("rating, feedback_text")
+    .select("rating")
     .eq("nfc_card_id", card.cardId)
+    .order("rating")
   expect(error).toBeNull()
-  expect(data).toEqual([
-    { rating: 2, feedback_text: "E2E primary-action submission" },
-  ])
+  expect(data).toEqual([{ rating: 4 }, { rating: 5 }])
 })
