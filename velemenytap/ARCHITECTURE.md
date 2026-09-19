@@ -1,5 +1,9 @@
 # Architecture
 
+## Remote card state — 2026-09-19
+
+Reuse nfc_cards.status (active / inactive), not a second boolean. setNfcCardStatusAction derives the organization from verified membership, validates the card ID and status, writes through the user-scoped Supabase client, checks the returned row, and refreshes the dashboard. /r/[publicId] calls Next.js connection() before lookup, explicitly rendering at request time. No shared cache is added. submit_feedback_atomic remains the authority at submission time, locking the card and location before checking their current status and inserting feedback. An already-open page need not disappear automatically: its next submission is rejected. A submission that acquired its locks first may complete before deactivation; once deactivation commits, subsequent submissions cannot succeed.
+
 ## Stack
 
 | Layer | Choice |

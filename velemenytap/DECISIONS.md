@@ -1,5 +1,9 @@
 # Decisions
 
+## Reuse existing remote card controls — 2026-09-19
+
+The requested NFC deactivation mechanism already existed across the dashboard, user-scoped action, RLS and atomic feedback RPC. Retain that architecture. Add explicit request-time rendering, a generic inactive message, clearer status presentation and regression tests instead of a duplicate status model or replacement SQL function. Reversible toggles retain the existing pending/error UI without an extra confirmation dialog. Card relocation remains forbidden by the existing database trigger. The approved public feedback design is maintained separately from card authorization.
+
 Assumptions and judgment calls made without a synchronous check-in, per the working-style agreement: proceed autonomously through reasonable implementation decisions, document them here, and only stop and ask when credentials, external account setup, a business/legal choice, or a fundamentally product-changing decision is genuinely required.
 
 ## Reconciliation completeness: generation counters answer "was every request satisfied," and staleness recovers what was never reported at all

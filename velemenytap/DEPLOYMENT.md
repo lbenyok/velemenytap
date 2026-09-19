@@ -32,7 +32,7 @@ These are Vercel Project Settings, set once by hand and periodically worth re-ve
 | `NEXT_PUBLIC_SUPABASE_URL` | production project | **isolated test project** | production project (or isolated, your choice) |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | production project | isolated test project | production project |
 | `SUPABASE_SECRET_KEY` | production project | isolated test project | production project |
-| `NEXT_PUBLIC_SITE_URL` | `https://velemenytap.vercel.app` | the Preview deployment's own URL | `http://localhost:3000` |
+| `NEXT_PUBLIC_SITE_URL` | `https://velemenytap.com` | the Preview deployment's own URL | `http://localhost:3000` |
 | `RESEND_API_KEY` | real key | **unset** | optional |
 | `RESEND_FROM_EMAIL` | real sender | **unset** | optional |
 | `NEXT_PUBLIC_SENTRY_DSN` | real DSN | **unset** | optional |

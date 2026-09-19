@@ -1,6 +1,27 @@
 # Status
 
-Last updated: 2026-09-14. **The branch is deployed. Production runs `master` at `c93d84f` with all 51 migrations applied.** Round 14's five findings (one P1) are fixed and verified. The P1 was in the password-change fix shipped the day before: a cookie's existence had been treated as a permission.
+## Release preparation — 2026-09-19
+
+Production was independently read at `https://velemenytap.com/api/health`: HTTP 200, production, master at `b8dd1fd`, expecting 51 migrations through `20260914120000`. This endpoint reports the build's expected schema, not an independent database migration audit. The older dated notes below remain historical evidence.
+
+This release combines the approved feedback preview (`807731d`) with remote NFC management refinements: request-time public rendering, a generic inactive screen, clear status badges and explanatory copy, plus tests proving dashboard deactivation, stale-page and direct-RPC rejection, cross-tenant/anonymous denial, retained history/public UUID and reactivation. Existing actions, RLS and atomic SQL already provided the core feature; no migration, new grant, or physical tag rewrite is needed. The approved rating-specific Google flow is preserved. Claude's alternative one-tap branch is not blindly merged over that flow; its uncommitted original tree remains untouched. The compatible marketing star-color correction is included.
+
+A production-build failure exposed unsupported named exports from the billing page. The two checkout verification helpers moved unchanged to `features/billing/checkout-success.ts`; existing tests now import that module. All 18 tests for those helpers pass.
+
+Verification run for this release:
+- `node node_modules/vitest/vitest.mjs run`: 651/651, 30 files.
+- `node node_modules/eslint/bin/eslint.js .`: passed; targeted lint also passed after the billing-helper move.
+- `node node_modules/typescript/bin/tsc --noEmit`: passed before build; build typechecking also passed after the helper move.
+- Playwright with the isolated test configuration and one worker: 37/37 across remote management, public submission safety, card/feedback integrity, tenant isolation, all-rating dashboard saves and approved Google navigation.
+- Production build: passed, all 24 pages generated; public card routes render dynamically. Loaded `.env.test.local` via `process.loadEnvFile()` in a parent process and spawned `next build --webpack` with APP_ENV=preview and emails disabled. Initial failures were the billing exports and a local Node --env-file worker incompatibility, corrected without disabling typechecking. Webpack emitted non-fatal local cache snapshot warnings.
+
+Domain configuration independently verified: Vercel reports valid .com and www configuration; .com serves production and www redirects to .com. Production NEXT_PUBLIC_SITE_URL changed to `https://velemenytap.com` (effective on next deployment). Supabase Site URL now matches, with confirmation/callback return paths added. No real emailed link has been clicked on this new domain during this release.
+
+**Selling subscriptions is not yet verified:** Vercel's production configuration has no Stripe variables; the local Stripe key is test-mode. Live payment keys, prices, webhook delivery and a real purchase lifecycle remain external launch work. The physical NFC scan remains untested because the owner has no card available. Test alerts were received previously, but that is not a new production delivery test. Do not read successful code checks as proof these launch steps are complete.
+
+## Historical status — 2026-09-14
+
+The branch was deployed with all 51 migrations applied according to that rollout's record. Round 14's five findings (one P1) were fixed and verified. The P1 was in the password-change fix shipped the day before: a cookie's existence had been treated as a permission.
 
 > **Production email, measured rather than assumed (2026-09-11).** Signup
 > confirmation: real mailbox, real click, lands on `/onboarding`, account

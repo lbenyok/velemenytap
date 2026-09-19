@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { connection } from "next/server";
 import { lookupPublicCard } from "@/features/feedback/card-lookup";
 import { FeedbackFlow } from "@/features/feedback/feedback-flow";
 import { PublicMessageScreen } from "@/features/feedback/public-message-screen";
@@ -10,6 +11,8 @@ export default async function PublicFeedbackPage({
 }: {
   params: Promise<{ publicId: string }>;
 }) {
+  // Card status is checked for each visit, never captured in a static page.
+  await connection();
   const { publicId } = await params;
   const card = await lookupPublicCard(publicId);
 
@@ -26,7 +29,7 @@ export default async function PublicFeedbackPage({
     return (
       <PublicMessageScreen
         title="Ez a kártya inaktív"
-        description={`${card.organizationName} jelenleg nem használja ezt a véleménykártyát.`}
+        description="Ez a VéleményTap kártya jelenleg nem aktív."
       />
     );
   }

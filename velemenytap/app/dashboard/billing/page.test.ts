@@ -30,7 +30,7 @@ vi.mock("@/features/billing/queries", () => ({ getOrganizationBilling: vi.fn() }
 vi.mock("@/features/billing/actions", () => ({ createCheckoutSessionAction: vi.fn(), createPortalSessionAction: vi.fn() }));
 vi.mock("@/features/billing/admin-actions", () => ({ resyncOrganizationBillingFormAction: vi.fn() }));
 
-import { orgIdentifiersAgree, resolveCheckoutSuccessState } from "./page";
+import { orgIdentifiersAgree, resolveCheckoutSuccessState } from "@/features/billing/checkout-success";
 
 function session(overrides: Record<string, unknown> = {}) {
   return {

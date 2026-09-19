@@ -1,5 +1,18 @@
 # Review Request
 
+## Current release review — 2026-09-19
+
+This section supersedes the historical branch/deployment claims below. The release is based on production master at b8dd1fd, plus the approved feedback changes in 807731d and the remote-card refinements in this commit. The GitHub default branch is master (there is no main). No new migration is required; the schema remains 51 migrations through 20260914120000.
+
+Review these files together:
+- features/nfc-cards/actions.ts and actions.test.ts: authenticated organization, input validation, no-row failure, user-scoped mutation.
+- features/nfc-cards/nfc-cards-table.tsx, components/status-toggle-form.tsx, app/dashboard/nfc-cards/page.tsx: reversible controls and returned status/errors.
+- app/r/[publicId]/page.tsx, features/feedback/card-lookup.ts: request-time status check and generic inactive screen.
+- Existing supabase/migrations/20260903150741_core_schema_and_rls.sql and 20260910120000_lock_before_clock_including_implicit_locks.sql: RLS and the authoritative submission transaction. Verify locks, status recheck, tenant derivation, grants and rating constraints; these SQL files were not changed.
+- e2e/nfc-remote-management.spec.ts: real dashboard toggle, stale-page rejection, direct RPC denial, cross-tenant/anonymous denial in both directions, preserved history/UUID and reactivation.
+
+The request's example .hu URL is not appropriate for this deployment: .hu hosts Shopify; the dashboard uses .com. No physical tag rewriting or raw tap analytics is claimed. The earlier approved rating-specific Google behavior is separate from this feature; this release does not claim the CTA is rating-independent. See STATUS.md for actual verification and outstanding launch checks, not historical green counts below.
+
 **Current, consolidated handoff — read this first.** This file previously went stale (it kept describing round 8's own handoff as current long after later work moved past it — an independent review caught this, since reviewers are always told to read this file first and it claimed to reflect "the current state"). Round 8's own detailed content is preserved, unmodified except for an archival note, at `REVIEW_REQUEST_ROUND8.md`. This document intentionally does not duplicate the detailed round-by-round narrative — that lives in `STATUS.md`, in date order, most recent first.
 
 **Arrived here from a `-- see REVIEW_REQUEST.md` comment in a migration file?** That comment predates this document's current content — see "Historical references from migration comments" below for exactly where the evidence it's pointing at actually lives now.

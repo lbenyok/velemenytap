@@ -1,14 +1,16 @@
 # Launch checklist
 
-One page, in order. Everything here is **external configuration** — none of it can be
-done from this repository, and none of it is done yet. `DEPLOYMENT.md` holds the full
-reasoning for each step; this file is the short version plus who has to do it.
+One page, in order. These checks concern external configuration. Some are complete;
+use the dated evidence in STATUS.md rather than assuming all are still pending.
+`DEPLOYMENT.md` holds the full reasoning for each step.
 
 Legend: **[you]** needs your account access or a decision only you can make ·
 **[me]** I can do it once the prerequisite exists · **[auto]** already automated.
 
-Production currently runs **migration 17 with no Stripe environment variables**. Nothing
-below has been applied to it.
+2026-09-19: production reports a build expecting all 51 migrations through
+20260914120000; the old migration-17 statement was obsolete. The .com domain and
+Supabase Site URL/return paths are configured. Live Stripe variables remain absent
+from Vercel, and a new-domain real email round trip and real purchase are still open.
 
 ---
 

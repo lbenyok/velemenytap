@@ -59,8 +59,8 @@ export default async function NfcCardsPage() {
             NFC kártyák
           </h1>
           <p className="text-sm text-muted-foreground">
-            Minden kártyához egyedi link tartozik, amelyre koppintva a
-            vásárlók véleményt hagyhatnak.
+            A kártyákat bármikor aktiválhatod vagy deaktiválhatod. A linkjük
+            és a korábbi vélemények megmaradnak, a kártyát nem kell újraírni.
           </p>
         </div>
         {rows.length > 0 ? (

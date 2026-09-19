@@ -1,5 +1,9 @@
 # Database Schema
 
+## Remote NFC management verification — 2026-09-19
+
+No schema migration or new grants are needed. Existing nfc_cards.status is the two-state source of truth; public_id is the permanent public UUID. Status updates preserve feedback rows and identifiers. Existing nfc_cards_update uses private.is_org_member(organization_id) in both USING and WITH CHECK; there is no anonymous update policy. The current submit_feedback_atomic definition is in 20260910120000_lock_before_clock_including_implicit_locks.sql: SECURITY INVOKER, empty search_path, server-derived tenant/location/card, FOR UPDATE OF c, l, VT002 for inactive card/location. Rating bounds remain table constraints. Public/authenticated roles cannot execute this service-only RPC or insert feedback directly. No existing migration is removed or rewritten by this feature.
+
 Postgres via Supabase. Imperative migrations in `supabase/migrations/`, applied in order:
 
 1. `20260903150741_core_schema_and_rls.sql` — organizations, memberships, locations, nfc_cards, feedback, RLS.

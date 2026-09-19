@@ -219,7 +219,7 @@ function ProofRow() {
                     className={cn(
                       "size-3.5",
                       i < n
-                        ? "fill-[var(--pf-star)] text-[var(--pf-star-edge)]"
+                        ? "fill-[var(--pf-star)] text-[var(--pf-star)]"
                         : "fill-none text-[var(--pf-line)]",
                     )}
                     strokeWidth={1.5}

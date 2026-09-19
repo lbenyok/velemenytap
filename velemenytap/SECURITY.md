@@ -1,5 +1,11 @@
 # Security
 
+## Remote deactivation boundary — 2026-09-19
+
+Card status changes use authenticated membership and RLS, never a browser-provided organization or an admin client. Zero-row updates fail safely. Deactivation is an UPDATE, not a DELETE. The public route returns a generic inactive message without organization names or internal IDs. The service-only, SECURITY INVOKER submission RPC independently locks and checks current card/location status, so an old page or direct application submission cannot bypass deactivation. Invalid public UUIDs and missing cards use the existing not-found screen. No raw scan tracking or new public read policy is introduced.
+
+Regression evidence is in features/nfc-cards/actions.test.ts, e2e/nfc-remote-management.spec.ts, e2e/public-submission-safety.spec.ts, and e2e/tenant-isolation.spec.ts. Mocked unit checks are not evidence for RLS; the browser/database suite runs against the isolated Supabase project.
+
 ## Tenant isolation
 
 This is a multi-tenant SaaS; cross-tenant data leakage is treated as critical severity. The tenant boundary is enforced at the database layer via Postgres RLS (`DATABASE_SCHEMA.md` § Row Level Security), not by application-level filtering — a query that "forgets" a `WHERE organization_id = ...` clause still cannot return another org's rows. Every RLS policy follows `private.is_org_member(organization_id)`, a single `SECURITY DEFINER` helper, so the tenant check is one auditable code path rather than duplicated per policy.
