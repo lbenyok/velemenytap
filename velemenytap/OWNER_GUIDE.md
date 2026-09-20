@@ -116,7 +116,7 @@ For each customer, confirm the saved rating appears under the correct location a
 
 ## 10. “Lock” and unlock a card remotely
 
-Go to **NFC kártyák**, find the card and click **Deaktiválás**. Wait for **Inaktív**. Refresh its public link and check that it says the card is not active. Existing feedback is retained.
+Card controls require dashboard access through an active trial, subscription or existing grace entitlement. On a phone, open the dashboard menu to find them. Go to **NFC kártyák**, find the card and click **Deaktiválás**. Wait for **Inaktív**. Refresh its public link and check that it says the card is not active. Existing feedback is retained.
 
 To restore it, select **Aktiválás**, wait for **Aktív**, then reopen the same link. You do not rewrite the NFC card for this operation. If an error appears, the change is not confirmed; resolve it before telling the customer the card is disabled.
 
@@ -126,7 +126,7 @@ If a card must move to another location, the current app requires a new card rec
 
 ## 11. Start the software subscription
 
-Have the customer open https://velemenytap.com/dashboard/billing (**Előfizetés**), choose monthly or yearly and continue to Stripe. The customer enters their own payment information and completes payment. Buying the hardware in Shopify does not count as this subscription payment.
+Have the customer open https://velemenytap.com/dashboard/billing (**Számlázás**), choose monthly or yearly and continue to Stripe. The customer enters their own payment information and completes payment. Buying the hardware in Shopify does not count as this subscription payment.
 
 Before completing the first live purchase, verify Stripe displays **4,990 Ft/month** or **49,900 Ft/year**, as selected. After payment, return to the application and verify the billing state and dashboard access. In Stripe, verify the real payment and webhook delivery succeeded. Merely arriving on a success URL is not evidence that payment was confirmed.
 
@@ -141,7 +141,7 @@ From the billing page, open the subscription-management portal and check that th
 - [ ] Both feedback paths checked; saved entries visible in the correct dashboard.
 - [ ] Notification address confirmed and one authorized alert received.
 - [ ] Deactivation and reactivation demonstrated without rewriting the tag.
-- [ ] Customer shown **Vélemények**, **Statisztikák**, **NFC kártyák**, **Beállítások** and **Előfizetés**.
+- [ ] Customer shown **Vélemények**, **Elemzés**, **NFC kártyák**, **Beállítások** and **Számlázás**.
 - [ ] Subscription choice, hardware charge, cancellation and support contact explained.
 - [ ] Order record marked ready only after these checks; unresolved items written down.
 
@@ -149,7 +149,7 @@ Give the customer their dashboard link, card inventory and your real support con
 
 ## 13. Daily operation and support
 
-Customers use **Vélemények** to filter feedback, add **Belső megjegyzés**, and move items through **Új → Folyamatban → Megoldva**. Internal notes and status changes do not reply to guests or post on Google. **Statisztikák** shows the internal feedback trends and breakdowns.
+Customers use **Vélemények** to filter feedback, add **Belső megjegyzés**, and move items through **Új → Folyamatban → Megoldva**. Internal notes and status changes do not reply to guests or post on Google. **Elemzés** shows the internal feedback trends and breakdowns.
 
 | Symptom | First checks |
 | --- | --- |
