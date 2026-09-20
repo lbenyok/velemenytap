@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 /**
- * Second independent review, Finding 6: the billing page hardcodes 5,990
- * Ft / 59,900 Ft while trusting whatever Price ID environment variables
+ * Second independent review, Finding 6: the billing page hardcodes 4,990
+ * Ft / 49,990 Ft while trusting whatever Price ID environment variables
  * happen to be set. These tests cover assertStripeConfigurationValid's own
  * validation logic directly, mocking Stripe's Price API -- see
  * features/billing/actions.test.ts for how this is invoked (and mocked
@@ -42,12 +42,12 @@ function price(overrides: Partial<{
     recurring: { interval: "month", interval_count: 1 },
     // In minor units (fillér) -- Stripe's own docs confirm HUF is a normal
     // two-decimal charging currency (only special-cased as zero-decimal
-    // for payouts), so a real 5 990 Ft Price reports 599000 here, not
-    // 5990. A prior version of this helper used 5990 directly, matching
+    // for payouts), so a real 4 990 Ft Price reports 499000 here, not
+    // 4990. A prior version of this helper used 4990 directly, matching
     // (and thereby masking) the exact same off-by-100 bug this file's own
     // stripe-config.ts once had -- found only by a real Stripe API call
     // during this round's live verification, never by these mocks.
-    unit_amount: 599000,
+    unit_amount: 499000,
     tax_behavior: "inclusive",
     product: "prod_shared",
     ...overrides,
@@ -55,10 +55,10 @@ function price(overrides: Partial<{
 }
 
 function monthlyOk() {
-  return price({ id: MONTHLY_PRICE_ID, recurring: { interval: "month", interval_count: 1 }, unit_amount: 599000 });
+  return price({ id: MONTHLY_PRICE_ID, recurring: { interval: "month", interval_count: 1 }, unit_amount: 499000 });
 }
 function yearlyOk() {
-  return price({ id: YEARLY_PRICE_ID, recurring: { interval: "year", interval_count: 1 }, unit_amount: 5990000 });
+  return price({ id: YEARLY_PRICE_ID, recurring: { interval: "year", interval_count: 1 }, unit_amount: 4999000 });
 }
 
 async function importFresh() {
@@ -231,22 +231,22 @@ describe("assertStripeConfigurationValid", () => {
     );
     const { assertStripeConfigurationValid } = await importFresh();
     await expect(assertStripeConfigurationValid()).rejects.toThrow(
-      /charges 498000 \(minor units\) but the billing page promises 5990 Ft \(599000 minor units\)/,
+      /charges 498000 \(minor units\) but the billing page promises 4990 Ft \(499000 minor units\)/,
     );
   });
 
   it("rejects a HUF amount that matches the promised price in whole Forints but not in Stripe's own minor units -- the exact live bug this round found", async () => {
-    // A Price genuinely misconfigured to charge 5990 *minor units* (59.90
-    // Ft) rather than 5990 Ft (599000 minor units) -- this is the mirror
+    // A Price genuinely misconfigured to charge 4990 *minor units* (49.90
+    // Ft) rather than 4990 Ft (499000 minor units) -- this is the mirror
     // case of the bug this file's own price() helper used to encode by
     // accident: unit_amount and amountHuf coincidentally equal, which is
     // wrong for a real HUF charge, not a passing case.
     pricesRetrieve.mockImplementation(async (id: string) =>
-      id === MONTHLY_PRICE_ID ? price({ ...monthlyOk(), unit_amount: 5990 }) : yearlyOk(),
+      id === MONTHLY_PRICE_ID ? price({ ...monthlyOk(), unit_amount: 4990 }) : yearlyOk(),
     );
     const { assertStripeConfigurationValid } = await importFresh();
     await expect(assertStripeConfigurationValid()).rejects.toThrow(
-      /charges 5990 \(minor units\) but the billing page promises 5990 Ft \(599000 minor units\)/,
+      /charges 4990 \(minor units\) but the billing page promises 4990 Ft \(499000 minor units\)/,
     );
   });
 

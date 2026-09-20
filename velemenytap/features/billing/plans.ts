@@ -18,8 +18,8 @@ export const PLAN_PRICING: Record<
   BillingInterval,
   { amountHuf: number; label: string; cadence: string; priceEnvVar: "STRIPE_PRICE_ID_MONTHLY" | "STRIPE_PRICE_ID_YEARLY" }
 > = {
-  monthly: { amountHuf: 5990, label: "Havi", cadence: "hó", priceEnvVar: "STRIPE_PRICE_ID_MONTHLY" },
-  yearly: { amountHuf: 59900, label: "Éves", cadence: "év", priceEnvVar: "STRIPE_PRICE_ID_YEARLY" },
+  monthly: { amountHuf: 4990, label: "Havi", cadence: "hó", priceEnvVar: "STRIPE_PRICE_ID_MONTHLY" },
+  yearly: { amountHuf: 49990, label: "Éves", cadence: "év", priceEnvVar: "STRIPE_PRICE_ID_YEARLY" },
 };
 
 export function stripePriceId(interval: BillingInterval): string {

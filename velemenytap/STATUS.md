@@ -1,5 +1,10 @@
 # Status
 
+## Subscription prices — 2026-09-20
+
+Owner confirmed 4,990 Ft/month and 49,990 Ft/year. Updated the shared pricing constants used by both the homepage and billing page, Stripe amount validation fixtures, plan-selector expectations and current setup documentation. Live IDs supplied by the owner: monthly price_1UCK9aI3T5kodmVLg4QgaMQM; yearly price_1UCK9aI3T5kodmVLviVNEMrm. These are references, not proof of the Stripe objects' currency, tax behavior or amounts; live API verification still awaits credentials. The Stripe guard remains enabled. Its 25 unit tests, changed-file lint and TypeScript pass. The existing isolated Stripe prices will also need matching test-mode replacements before the next real Stripe test checkout.
+
+
 ## Release preparation — 2026-09-19
 
 Production was independently read at `https://velemenytap.com/api/health`: HTTP 200, production, master at `b8dd1fd`, expecting 51 migrations through `20260914120000`. This endpoint reports the build's expected schema, not an independent database migration audit. The older dated notes below remain historical evidence.

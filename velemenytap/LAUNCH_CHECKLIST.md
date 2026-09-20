@@ -168,8 +168,8 @@ configuration either way.
       payment stays unresolved after Checkout completes.
 
 - [ ] **[you]** Create the live-mode Product and two Prices. They must be **HUF**,
-      `recurring`, `interval_count: 1`, and `unit_amount` in fillér — `599000` and
-      `5990000`. A mismatch fails closed rather than charging the wrong amount.
+      `recurring`, `interval_count: 1`, and `unit_amount` in fillér — `499000` and
+      `4999000`. A mismatch fails closed rather than charging the wrong amount.
 - [ ] **[you]** Set the live Vercel env vars: `STRIPE_SECRET_KEY`,
       `STRIPE_PRICE_ID_MONTHLY`, `STRIPE_PRICE_ID_YEARLY`.
 - [ ] **[you]** Add the production webhook endpoint in Stripe pointing at
