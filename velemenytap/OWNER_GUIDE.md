@@ -42,7 +42,7 @@ Keep a fulfilment record containing the Shopify order reference, business name, 
 
 Ask who should receive low-rating alerts. Do not ask for the customer's email password, Google password, Stripe credentials or banking credentials.
 
-There is currently **no platform-owner dashboard for all customers**, no organization switcher and no built-in staff invitation flow. Each customer should create and own their account. Help them while they are signed in, for example during a screen-sharing setup session. Do not put unrelated businesses inside your own organization: that mixes their data. Your ordinary login cannot manage another customer's cards.
+The platform-owner card panel is at **https://velemenytap.com/admin**, restricted to explicitly approved owner accounts. It lets you find a customer and lock/unlock their cards without their password; see [the platform-admin guide](PLATFORM_ADMIN.md). An ordinary business-owner login cannot manage other customers. There is still no customer organization switcher, staff invitation flow or impersonation feature. Each customer should create and own their account. Help them with initial setup while they are signed in, for example during screen sharing. Do not put unrelated businesses inside your own organization: that mixes their data.
 
 ## 4. Create the customer's account
 
@@ -115,6 +115,15 @@ The guest chooses a star rating and presses **Vélemény küldése**; choosing s
 For each customer, confirm the saved rating appears under the correct location and card at https://velemenytap.com/dashboard/feedback. Test both rating paths with clearly labelled setup feedback and the recipient's permission. Duplicate/rate limits can prevent repeated tests from the same browser; do not disable those safeguards to make a test pass. The homepage's star picker is explicitly a demonstration and saves nothing.
 
 ## 10. “Lock” and unlock a card remotely
+
+**For you as platform owner:** open https://velemenytap.com/admin, find the customer,
+open their card, enter a reason and choose **Kártya zárolása**. Only a platform
+admin can lift that lock, using **Zárolás feloldása**. The previous active/inactive
+state is restored and both operations are recorded in the internal audit log.
+This panel does not depend on your own software subscription.
+
+**For a customer managing their own cards:** the ordinary reversible activation
+controls below remain available unless you have applied a platform lock.
 
 Card controls require dashboard access through an active trial, subscription or existing grace entitlement. On a phone, open the dashboard menu to find them. Go to **NFC kártyák**, find the card and click **Deaktiválás**. Wait for **Inaktív**. Refresh its public link and check that it says the card is not active. Existing feedback is retained.
 

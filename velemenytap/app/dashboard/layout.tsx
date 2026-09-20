@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { DashboardNav } from "./dashboard-nav";
 import { TourProvider } from "@/features/onboarding-tour/tour-provider";
 import { ReopenTourButton } from "@/features/onboarding-tour/reopen-tour-button";
+import { getPlatformAdmin } from "@/features/platform-admin/access";
 
 // Same display face as the public marketing/feedback pages (app/page.tsx),
 // used just as restrainedly here: the wordmark and page titles only.
@@ -38,6 +39,8 @@ export default async function DashboardLayout({
   }
 
   const organization = await getCurrentOrganization();
+  // A missing/failed admin lookup must never grant access or break a customer's dashboard.
+  const platformAdmin = await getPlatformAdmin().catch(() => null);
   if (!organization) {
     redirect("/onboarding");
   }
@@ -69,6 +72,7 @@ export default async function DashboardLayout({
             in this row at every width are the wordmark, the tour's reopen
             button (icon-only precisely so it doesn't reopen that fight),
             and a reachable sign-out control. */}
+        {platformAdmin && <div className="border-b bg-muted px-4 py-2 text-sm"><Link href="/admin" className="font-medium underline">Tulajdonosi admin — összes ügyfél kártyái</Link></div>}
         <header className="flex h-14 items-center justify-between gap-2 border-b px-3 sm:px-6">
           <div className="flex min-w-0 items-center gap-2 sm:gap-6">
             <Link

@@ -25,6 +25,7 @@ import type { NfcCardFormValues, LocationOption } from "./nfc-card-form";
 export type NfcCardRow = NfcCardFormValues & {
   public_id: string;
   status: "active" | "inactive";
+  platform_locked?: boolean;
   location_name: string;
 };
 
@@ -117,7 +118,7 @@ export function NfcCardsTable({
                   variant={card.status === "active" ? "secondary" : "outline"}
                   className={card.status === "active" ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200" : "text-muted-foreground"}
                 >
-                  {card.status === "active" ? "Aktív" : "Inaktív"}
+                  {card.platform_locked ? "Szolgáltatói zárolás" : card.status === "active" ? "Aktív" : "Inaktív"}
                 </Badge>
               </TableCell>
               <TableCell className="flex justify-end gap-2">
@@ -130,11 +131,11 @@ export function NfcCardsTable({
                     </Button>
                   }
                 />
-                <StatusToggleForm
+                {card.platform_locked ? <span className="max-w-48 text-sm text-muted-foreground">A zárolást csak a szolgáltató oldhatja fel.</span> : <StatusToggleForm
                   id={card.id}
                   status={card.status}
                   action={setNfcCardStatusAction}
-                />
+                />}
               </TableCell>
             </TableRow>
           );

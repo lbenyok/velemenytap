@@ -22,7 +22,7 @@ export default async function NfcCardsPage() {
       .order("name", { ascending: true }),
     supabase
       .from("nfc_cards")
-      .select("id, display_name, location_id, status, public_id, locations(name)")
+      .select("id, display_name, location_id, status, public_id, platform_locked, locations(name)")
       .eq("organization_id", orgId)
       .order("created_at", { ascending: false }),
   ]);
@@ -45,6 +45,7 @@ export default async function NfcCardsPage() {
     display_name: c.display_name,
     location_id: c.location_id,
     status: c.status,
+    platform_locked: c.platform_locked,
     public_id: c.public_id,
     location_name: c.locations?.name ?? "—",
   }));

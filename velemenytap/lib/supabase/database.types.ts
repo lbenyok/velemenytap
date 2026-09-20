@@ -31,6 +31,18 @@ export type OnboardingTourStatus = "not_started" | "completed" | "skipped";
 export interface Database {
   public: {
     Tables: {
+      platform_admins: {
+        Row: { user_id: string; created_at: string };
+        Insert: { user_id: string; created_at?: string };
+        Update: { user_id?: string; created_at?: string };
+        Relationships: [];
+      };
+      platform_card_audit: {
+        Row: { id: number; actor_id: string; card_id: number; organization_id: number; locked: boolean; reason: string; previous_status: string; resulting_status: string; created_at: string };
+        Insert: { actor_id: string; card_id: number; organization_id: number; locked: boolean; reason: string; previous_status: string; resulting_status: string; created_at?: string };
+        Update: { reason?: string };
+        Relationships: [];
+      };
       organizations: {
         Row: {
           id: number;
@@ -321,6 +333,8 @@ export interface Database {
       };
       nfc_cards: {
         Row: {
+          platform_locked: boolean;
+          platform_previous_status: NfcCardStatus | null;
           id: number;
           organization_id: number;
           location_id: number;
@@ -435,6 +449,10 @@ export interface Database {
     };
     Views: Record<string, never>;
     Functions: {
+      set_platform_card_lock: {
+        Args: { p_actor_id: string; p_card_id: number; p_locked: boolean; p_expected_locked: boolean; p_reason: string };
+        Returns: undefined;
+      };
       submit_feedback_atomic: {
         Args: {
           p_public_id: string;
