@@ -1,15 +1,15 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Fraunces } from "next/font/google";
-import { Star, Nfc, Mail, Inbox, BarChart3, ArrowRight, Check } from "lucide-react";
+import { Nfc, Mail, Inbox, BarChart3, ArrowRight, Check } from "lucide-react";
 import { RatingDemo } from "@/features/marketing/rating-demo";
 import { cn } from "@/lib/utils";
 import { PLAN_PRICING } from "@/features/billing/plans";
 
 export const metadata: Metadata = {
-  title: "VéleményTap — minden csillag számít",
+  title: "VéleményTap — egy érintés, értékes visszajelzés",
   description:
-    "NFC-kártyát teszel ki a pultra. A vásárlóid pár másodperc alatt értékelnek, és utána mindenki ugyanazt a Google-értékelési linket kapja, a csillagok számától függetlenül.",
+    "Gyűjts vendégvéleményeket NFC-kártyával, kövesd őket egy átlátható irányítópulton, és kapj e-mailt az 1–3 csillagos visszajelzésekről. VéleményTap: 14 napos próba bankkártya nélkül.",
 };
 
 const fraunces = Fraunces({
@@ -31,36 +31,41 @@ const VERTICALS = [
 const STEPS = [
   {
     n: "01",
-    title: "Koppintás",
-    body: "A vásárló odaérinti a telefonját a kártyához. Nincs mit letölteni, nincs bejelentkezés, nem kell semmit beírnia.",
+    title: "Tedd kézközelbe a kártyát",
+    body: "A pulton, az asztalon vagy a recepción: a vendég NFC-képes telefonjával megnyitja az értékelőoldaladat. A visszajelzéshez nem kell alkalmazást telepítenie vagy fiókot létrehoznia.",
   },
   {
     n: "02",
-    title: "Értékelés",
-    body: "Egytől öt csillagig értékel, és ha akar, írhat is pár szót hozzá. Ennyi az egész, öt másodperc alatt.",
+    title: "Kérj visszajelzést, amíg friss az élmény",
+    body: "A vendég csillagokkal értékel, majd elküldi a véleményét. Alacsony értékelésnél szövegesen is elmondhatja, min javítana. A beállított Google-értékelési oldal is elérhető a folyamatból.",
   },
   {
     n: "03",
-    title: "Te mindent látsz",
-    body: "Azonnal megjelenik az irányítópultodon. Alacsony értékelésnél e-mailes értesítést is beállíthatsz, hogy időben léphess.",
+    title: "Lásd, mi működik, és mire figyelj",
+    body: "A beérkezett visszajelzéseket az irányítópulton követheted. Az 1–3 csillagos értékelésekről e-mailes jelzést kaphatsz, így könnyebb észrevenni, ha valami figyelmet igényel.",
   },
 ];
 
 const DASHBOARD_CARDS = [
   {
     icon: Inbox,
-    title: "Vélemény-postaláda",
-    body: "Az összes értékelés egy helyen van, szűrhetsz helyszín, kártya vagy státusz szerint. Semmi nem vész el egy olyan postafiókban, amit elfelejtesz megnézni.",
+    title: "Rend a visszajelzések között",
+    body: "A VéleményTapon beküldött értékeléseket helyszín, kártya és állapot szerint szűrheted. Belső jegyzettel és státusszal követheted, melyikkel foglalkoztál már.",
   },
   {
     icon: Mail,
-    title: "Értesítés a rossz értékelésekről",
-    body: "Az egy- és kétcsillagos véleményekhez e-mailes értesítést is beállíthatsz, hogy időben reagálhass.",
+    title: "Jelzés, amikor figyelned kell",
+    body: "Az 1–3 csillagos visszajelzésekről e-mailes értesítés segít tájékozódni. A vállalkozásodhoz külön, megerősített értesítési címet is megadhatsz.",
   },
   {
     icon: BarChart3,
-    title: "Trendek időben",
-    body: "Látod az átlagot, a mennyiséget, és hogy melyik helyszín vagy kártya marad el a többitől. Nem csak a mai napot, a trendet is.",
+    title: "Számok a benyomások mellé",
+    body: "Kövesd az értékelések számát, átlagát és időbeli alakulását. Hasonlítsd össze a helyszíneket és a kártyákat a nálad beérkezett visszajelzések alapján.",
+  },
+  {
+    icon: Nfc,
+    title: "Kártyák, amelyeket te kezelsz",
+    body: "Nevezd el a kártyáidat, rendeld őket helyszínhez, és szükség esetén deaktiváld őket az irányítópulton. Újraaktiváláskor a link és a korábbi visszajelzések megmaradnak.",
   },
 ];
 
@@ -84,6 +89,7 @@ export default function HomePage() {
         <BuiltFor />
         <DashboardPreview />
         <Pricing />
+        <Questions />
         <FinalCta />
       </main>
 
@@ -94,9 +100,9 @@ export default function HomePage() {
 
 function SiteNav() {
   return (
-    <header className="mx-auto flex max-w-6xl items-center justify-between px-5 py-5 sm:px-8">
+    <header className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-5 py-5 sm:px-8">
       <span
-        className="text-lg font-semibold tracking-tight"
+        className="shrink-0 text-lg font-semibold tracking-tight"
         style={{ fontFamily: "var(--font-display)" }}
       >
         Vélemény
@@ -124,7 +130,7 @@ function SiteNav() {
             FOCUS_RING,
           )}
         >
-          Regisztráció
+          Kipróbálom
         </Link>
       </nav>
     </header>
@@ -144,25 +150,24 @@ function Hero() {
     <section className="mx-auto max-w-6xl px-5 pt-8 pb-20 sm:px-8 sm:pt-14 sm:pb-28">
       <div className="grid items-center gap-12 lg:grid-cols-[1.05fr_0.95fr] lg:gap-10">
         <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-3 motion-safe:duration-700">
-          <Eyebrow>Visszajelzésből jobb kiszolgálás</Eyebrow>
+          <Eyebrow>NFC-kártya + saját irányítópult</Eyebrow>
           <h1
             className="mt-4 text-4xl leading-[1.08] font-medium text-balance sm:text-5xl lg:text-[3.4rem]"
             style={{ fontFamily: "var(--font-display)" }}
           >
-            Tudd meg, mit élnek át
+            Egy érintés a vendégednek.
             <br />
             <span
               className="bg-clip-text text-transparent italic"
               style={{ backgroundImage: "var(--pf-accent-gradient-text)" }}
             >
-              a vendégeid.
+              Értékes visszajelzés neked.
             </span>
           </h1>
           <p className="mt-5 max-w-lg text-base leading-relaxed text-[var(--pf-ink-muted)] sm:text-lg">
-            Egy érintés a kártyán, néhány szó a tapasztalatról. Te egy helyen
-            követheted a visszajelzéseket, és láthatod, hol érdemes javítani.
-            A vendégeid ezután külön, önkéntes Google-értékelést is írhatnak,
-            a csillagok számától függetlenül.
+            Ne hagyd, hogy a vendégeid véleménye elvesszen a napi pörgésben.
+            Tedd egyszerűvé a visszajelzést egy NFC-kártyával, kövesd a beérkezett
+            értékeléseket egy helyen, és vedd észre, hol teheted még jobbá a kiszolgálást.
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-4">
             <Link
@@ -182,7 +187,7 @@ function Hero() {
                 FOCUS_RING,
               )}
             >
-              Nézd meg, hogyan működik
+              Így működik a VéleményTap
             </a>
           </div>
         </div>
@@ -199,40 +204,26 @@ function ProofRow() {
   return (
     <section className="border-y border-[var(--pf-line)] bg-[var(--pf-surface)]">
       <div className="mx-auto max-w-6xl px-5 py-14 sm:px-8 sm:py-16">
-        <Eyebrow>Minden vélemény számít</Eyebrow>
+        <Eyebrow>Kevesebb keresgélés, több odafigyelés</Eyebrow>
         <h2
           className="mt-3 max-w-xl text-2xl font-medium sm:text-3xl"
           style={{ fontFamily: "var(--font-display)" }}
         >
-          A Google-értékelés lehetősége minden vendégnek jár.
+          A kártyától az átlátható visszajelzésekig.
         </h2>
-        <div className="mt-8 grid grid-cols-2 gap-3 sm:grid-cols-5 sm:gap-4">
-          {[1, 2, 3, 4, 5].map((n) => (
+        <div className="mt-8 grid gap-4 sm:grid-cols-3">
+          {[
+            { title: "Egyszerű a vendégnek", body: "Saját telefonján értékel, külön VéleményTap-fiók nélkül." },
+            { title: "Átlátható neked", body: "A beküldött visszajelzések egy helyen, helyszínhez és kártyához kapcsolva." },
+            { title: "Közvetlen út a Google-höz", body: "A saját Google-értékelési linkedet kapcsolhatod a vendégélményhez." },
+          ].map(({ title, body }) => (
             <div
-              key={n}
-              className="flex flex-col items-center gap-3 rounded-xl border border-[var(--pf-line)] bg-[var(--pf-bg)] px-3 py-5 text-center"
+              key={title}
+              className="rounded-xl border border-[var(--pf-line)] bg-[var(--pf-bg)] p-5"
             >
-              <div className="flex gap-0.5" aria-hidden="true">
-                {Array.from({ length: 5 }).map((_, i) => (
-                  <Star
-                    key={i}
-                    className={cn(
-                      "size-3.5",
-                      i < n
-                        ? "fill-[var(--pf-star)] text-[var(--pf-star)]"
-                        : "fill-none text-[var(--pf-line)]",
-                    )}
-                    strokeWidth={1.5}
-                  />
-                ))}
-              </div>
-              <span className="text-xs text-[var(--pf-ink-muted)]">
-                {n} csillag
-              </span>
-              <div className="flex items-center gap-1 rounded-full bg-[var(--pf-accent)]/10 px-2.5 py-1 text-[0.7rem] font-medium text-[var(--pf-accent)]">
-                <Check className="size-3" strokeWidth={2.5} />
-                Ugyanaz a link
-              </div>
+              <Check className="mb-3 size-5 text-[var(--pf-accent)]" aria-hidden="true" />
+              <h3 className="font-medium">{title}</h3>
+              <p className="mt-2 text-sm leading-relaxed text-[var(--pf-ink-muted)]">{body}</p>
             </div>
           ))}
         </div>
@@ -249,7 +240,7 @@ function HowItWorks() {
         className="mt-3 max-w-xl text-2xl font-medium sm:text-3xl"
         style={{ fontFamily: "var(--font-display)" }}
       >
-        Három lépés, alkalmazás nélkül.
+        Visszajelzés ott, ahol az élmény születik.
       </h2>
       <div className="mt-10 grid gap-8 sm:grid-cols-3 sm:gap-6">
         {STEPS.map((step) => (
@@ -275,12 +266,12 @@ function BuiltFor() {
   return (
     <section className="border-y border-[var(--pf-line)] bg-[var(--pf-surface)]">
       <div className="mx-auto max-w-6xl px-5 py-14 sm:px-8 sm:py-16">
-        <Eyebrow>A pultodhoz tervezve</Eyebrow>
+        <Eyebrow>A mindennapi találkozásokhoz</Eyebrow>
         <h2
           className="mt-3 max-w-xl text-2xl font-medium sm:text-3xl"
           style={{ fontFamily: "var(--font-display)" }}
         >
-          Bárhol, ahol ügyfelek betérnek.
+          Ahol számít, hogyan távozik a vendég.
         </h2>
         <div className="mt-7 flex flex-wrap gap-2.5">
           {VERTICALS.map((v) => (
@@ -300,14 +291,14 @@ function BuiltFor() {
 function DashboardPreview() {
   return (
     <section className="mx-auto max-w-6xl px-5 py-20 sm:px-8 sm:py-24">
-      <Eyebrow>Mit kapsz</Eyebrow>
+      <Eyebrow>A csillagok mögött ott a lehetőség</Eyebrow>
       <h2
         className="mt-3 max-w-xl text-2xl font-medium sm:text-3xl"
         style={{ fontFamily: "var(--font-display)" }}
       >
-        Minden visszajelzés egyetlen irányítópulton.
+        Tudd, mire építhetsz. Lásd, min javíthatsz.
       </h2>
-      <div className="mt-10 grid gap-5 sm:grid-cols-3">
+      <div className="mt-10 grid gap-5 sm:grid-cols-2">
         {DASHBOARD_CARDS.map(({ icon: Icon, title, body }) => (
           <div
             key={title}
@@ -335,10 +326,11 @@ function formatHuf(amount: number) {
 }
 
 const PLAN_FEATURES = [
-  "Korlátlan helyszín és NFC-kártya",
-  "Korlátlan vélemény, szűrhető postaláda",
-  "E-mailes értesítés a negatív értékelésekről",
-  "Google-értékelési link minden vendégnek, csillagszámtól függetlenül",
+  "Több helyszín és kártya kezelése egy vállalkozáson belül",
+  "Visszajelzések, belső jegyzetek és állapotkövetés",
+  "Értékelési statisztikák helyszínenként és kártyánként",
+  "E-mailes jelzés az 1–3 csillagos visszajelzésekről",
+  "Saját Google-értékelési link és távoli kártyadeaktiválás",
 ];
 
 function Pricing() {
@@ -351,16 +343,17 @@ function Pricing() {
   return (
     <section id="pricing" className="border-y border-[var(--pf-line)] bg-[var(--pf-surface)]">
       <div className="mx-auto max-w-6xl px-5 py-20 sm:px-8 sm:py-24">
-        <Eyebrow>Árazás</Eyebrow>
+        <Eyebrow>Egyszerű, átlátható előfizetés</Eyebrow>
         <h2
           className="mt-3 max-w-xl text-2xl font-medium sm:text-3xl"
           style={{ fontFamily: "var(--font-display)" }}
         >
-          Egy csomag, minden benne van.
+          Ugyanaz az irányítópult. Havi vagy éves díjjal.
         </h2>
         <p className="mt-3 max-w-lg text-sm leading-relaxed text-[var(--pf-ink-muted)]">
           14 napig ingyen kipróbálhatod, bankkártya megadása nélkül. Utána
-          választhatsz havi vagy éves fizetést, és bármikor lemondhatod.
+          választhatsz havi vagy éves fizetést. A megújulást a számlázási
+          felületen mondhatod le, az aktuális fizetett időszak végére.
         </p>
 
         <div className="mt-10 grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)] lg:items-start">
@@ -378,7 +371,7 @@ function Pricing() {
                 </span>
               </p>
               <p className="mt-2 text-sm text-[var(--pf-ink-muted)]">
-                Havonta fizetsz, bármikor lemondhatod.
+                Havi számlázás, automatikus megújulással.
               </p>
             </div>
 
@@ -395,13 +388,14 @@ function Pricing() {
                 </span>
               </p>
               <p className="mt-2 text-sm text-[var(--pf-accent)]">
-                Évente {formatHuf(yearlySaving)} megtakarítás.
+                Egy összegben évente. {formatHuf(yearlySaving)} megtakarítás
+                12 havi díjhoz képest.
               </p>
             </div>
           </div>
 
           <div className="rounded-xl border border-[var(--pf-line)] bg-[var(--pf-bg)] p-6 sm:p-8">
-            <h3 className="text-base font-medium">Mindkét fizetési módban</h3>
+            <h3 className="text-base font-medium">A vállalkozásod visszajelzéseihez</h3>
             <ul className="mt-4 flex flex-col gap-3">
               {PLAN_FEATURES.map((feature) => (
                 <li key={feature} className="flex gap-3 text-sm leading-relaxed">
@@ -425,12 +419,38 @@ function Pricing() {
               <ArrowRight className="size-4" strokeWidth={2} />
             </Link>
             <p className="mt-3 text-xs text-[var(--pf-ink-muted)]">
-              A feltüntetett árak bruttó árak. Az NFC-kártyát külön rendeled
-              meg, a szolgáltatás fizikai kártya nélkül, sima linkkel is
-              működik.
+              A feltüntetett árak bruttó előfizetési díjak. A fizikai NFC-kártya
+              külön vásárolható meg. A próba alatt a létrehozott értékelőlinket
+              kártya nélkül is használhatod. A Google-on közzétett értékelés
+              külön lépés: az irányítópult a VéleményTapra beküldött visszajelzéseket mutatja.
             </p>
           </div>
         </div>
+      </div>
+    </section>
+  );
+}
+
+function Questions() {
+  const questions = [
+    { question: "Az NFC-kártya is benne van az előfizetésben?", answer: "Az előfizetés az irányítópult használatát tartalmazza. A fizikai kártyát külön vásárolhatod meg; az értékelőlinket kártya nélkül is kipróbálhatod." },
+    { question: "Automatikusan megjelenik a vélemény a Google-on?", answer: "Nem. A VéleményTapra küldött visszajelzés a saját irányítópultodra kerül. A Google-értékelést a vendég külön, a Google felületén írja meg és teszi közzé. A Google-értékelések nem kerülnek automatikusan ebbe az irányítópultba." },
+    { question: "Minden alacsony értékelésről külön e-mail érkezik?", answer: "Az 1–3 csillagos visszajelzések indíthatnak értesítést. A küldés kártyánként legfeljebb 5 percenként, vállalkozásonként legfeljebb 30 alkalommal történhet óránként. A sikeresen mentett véleményeket akkor is láthatod az irányítópulton, ha külön e-mail nem érkezik róluk." },
+    { question: "Ki tudom kapcsolni a kártyámat?", answer: "Igen. Az NFC kártyák menüben deaktiválhatod, majd később újra aktiválhatod. A link és az előzmények megmaradnak. Az előfizetés lejárata önmagában nem kapcsolja ki a nyilvános értékelőoldalt." },
+  ];
+  return (
+    <section className="mx-auto max-w-6xl px-5 py-20 sm:px-8 sm:py-24">
+      <Eyebrow>Mielőtt belevágsz</Eyebrow>
+      <h2 className="mt-3 text-2xl font-medium sm:text-3xl" style={{ fontFamily: "var(--font-display)" }}>
+        Rövid válaszok a fontos kérdésekre.
+      </h2>
+      <div className="mt-8 grid gap-6 sm:grid-cols-2">
+        {questions.map(({ question, answer }) => (
+          <div key={question}>
+            <h3 className="font-medium">{question}</h3>
+            <p className="mt-2 text-sm leading-relaxed text-[var(--pf-ink-muted)]">{answer}</p>
+          </div>
+        ))}
       </div>
     </section>
   );
@@ -451,22 +471,23 @@ function FinalCta() {
       <div className="mx-auto max-w-6xl px-5 py-16 sm:px-8 sm:py-20">
         <Nfc className="mx-auto size-8 text-white" strokeWidth={1.5} />
         <p className="mt-4 font-mono text-xs font-medium tracking-[0.14em] text-white uppercase">
-          Minden csillag számít
+          Kezdd a következő vendégeddel
         </p>
         <h2
           className="mt-3 text-3xl font-medium text-white sm:text-4xl"
           style={{ fontFamily: "var(--font-display)" }}
         >
-          Tedd ki az első kártyát a pultra.
+          Adj helyet a vendégeid véleményének.
         </h2>
         <p className="mx-auto mt-3 max-w-md text-sm text-white/90 sm:text-base">
-          Ingyen kipróbálhatod, bankkártya és aláírás nélkül.
+          Hozd létre a vállalkozásod fiókját, állítsd be az első helyszínt,
+          és próbáld ki az értékelőlinkedet. 14 napig, bankkártya nélkül.
         </p>
         <Link
           href="/signup"
           className="mt-7 inline-flex items-center gap-2 rounded-lg bg-white px-5 py-3 text-sm font-medium text-[var(--pf-accent)] transition-colors hover:bg-white/90 focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--pf-accent)] focus-visible:outline-none"
         >
-          Fiók létrehozása
+          Elindítom az ingyenes próbát
           <ArrowRight className="size-4" strokeWidth={2} />
         </Link>
       </div>
@@ -483,7 +504,7 @@ function SiteFooter() {
           Bejelentkezés
         </Link>
         <Link href="/signup" className={cn("rounded-md transition-colors hover:text-[var(--pf-ink)]", FOCUS_RING)}>
-          Regisztráció
+          Ingyenes próba
         </Link>
       </nav>
       <span>&copy; {new Date().getFullYear()} VéleményTap</span>

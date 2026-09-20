@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 /**
  * Second independent review, Finding 6: the billing page hardcodes 4,990
- * Ft / 49,990 Ft while trusting whatever Price ID environment variables
+ * Ft / 49,900 Ft while trusting whatever Price ID environment variables
  * happen to be set. These tests cover assertStripeConfigurationValid's own
  * validation logic directly, mocking Stripe's Price API -- see
  * features/billing/actions.test.ts for how this is invoked (and mocked
@@ -58,7 +58,7 @@ function monthlyOk() {
   return price({ id: MONTHLY_PRICE_ID, recurring: { interval: "month", interval_count: 1 }, unit_amount: 499000 });
 }
 function yearlyOk() {
-  return price({ id: YEARLY_PRICE_ID, recurring: { interval: "year", interval_count: 1 }, unit_amount: 4999000 });
+  return price({ id: YEARLY_PRICE_ID, recurring: { interval: "year", interval_count: 1 }, unit_amount: 4990000 });
 }
 
 async function importFresh() {

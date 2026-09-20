@@ -92,5 +92,5 @@ test("one submit button for the whole chooser, and no free-months claim", async 
 
   // Both prices still have to be visible to choose between them.
   await expect(page.getByText("4990 Ft")).toBeVisible();
-  await expect(page.getByText("49 990 Ft")).toBeVisible();
+  await expect(page.getByText("49 900 Ft")).toBeVisible();
 });

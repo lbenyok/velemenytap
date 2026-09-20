@@ -1,5 +1,25 @@
 # Launch checklist
 
+## Current checkpoint — 20 September 2026
+
+Use `OWNER_GUIDE.md` for the current customer setup procedure and dated launch
+evidence. The older sections below contain historical observations, including
+obsolete statements about absent routes, environment variables and pending merges;
+they must not be read as a fresh production audit.
+
+- Live Stripe's annual Price is **49,900 Ft**, not the previously supplied 49,990 Ft.
+  The owner requested matching the website and validation to Stripe. Monthly remains 4,990 Ft.
+- The live webhook is active with the expected four events and API version. Both
+  Stripe secret variable names were present in Vercel Production, and the subsequent
+  deployment was Ready. Their presence alone does not prove a successful payment.
+- The latest three recorded billing-sweep runs succeeded. The newest inspected run,
+  `35509694064`, successfully called the sweep endpoint on 20 September at 12:06 UTC.
+- Still open: a real live purchase/activation/portal journey; signup and reset email
+  clicks on .com; an authorized production feedback-alert check; physical NFC testing;
+  current-password enforcement verification; and the decisions in `BUSINESS_DECISIONS.md`.
+
+## Earlier checklist and evidence
+
 One page, in order. These checks concern external configuration. Some are complete;
 use the dated evidence in STATUS.md rather than assuming all are still pending.
 `DEPLOYMENT.md` holds the full reasoning for each step.
@@ -169,7 +189,7 @@ configuration either way.
 
 - [ ] **[you]** Create the live-mode Product and two Prices. They must be **HUF**,
       `recurring`, `interval_count: 1`, and `unit_amount` in fillér — `499000` and
-      `4999000`. A mismatch fails closed rather than charging the wrong amount.
+      `4990000`. A mismatch fails closed rather than charging the wrong amount.
 - [ ] **[you]** Set the live Vercel env vars: `STRIPE_SECRET_KEY`,
       `STRIPE_PRICE_ID_MONTHLY`, `STRIPE_PRICE_ID_YEARLY`.
 - [ ] **[you]** Add the production webhook endpoint in Stripe pointing at

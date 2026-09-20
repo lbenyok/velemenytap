@@ -56,7 +56,7 @@ export async function sendNegativeFeedbackAlert(params: {
 
   try {
     // Atomic claim: caps this at one alert per card per 5-minute cooldown
-    // (finding #2, round 1) AND one alert per organization per hour
+    // (finding #2, round 1) AND 30 alerts per organization per hour
     // regardless of how many different cards it comes from (round-2
     // finding R2-08 -- the per-card cooldown alone doesn't bound total
     // email volume across an org's cards), serialized across concurrent
