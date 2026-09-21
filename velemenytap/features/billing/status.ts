@@ -95,7 +95,7 @@ export function hasLiveSubscription(billing: Pick<OrganizationBilling, "status" 
  *         trial_ends_at hasn't passed.
  *
  * Deliberately does NOT gate anything but the dashboard itself -- the
- * public NFC landing page and feedback submission never check this. See
+ * public card access has its own opt-in billing_card_controls hold. See
  * proxy.ts and app/dashboard/layout.tsx for where this is (and isn't)
  * enforced.
  */

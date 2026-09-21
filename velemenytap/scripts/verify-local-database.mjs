@@ -13,6 +13,7 @@
 //
 // Creates uniquely named databases; never drops or resets an existing one.
 import assert from "node:assert/strict";
+import { verifyBillingCardMonitor } from "./verify-billing-card-monitor.mjs";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1197,6 +1198,7 @@ try {
   await client.query("reset role");
   pass("an authenticated user sees only its own billing row and cannot grant itself a subscription");
 
+  await verifyBillingCardMonitor(client, second, pass);
   console.log(`SUCCESS ${checks} PostgreSQL checks; databases retained: ${clean.name}, ${upgrade.name}`);
 } finally {
   await Promise.allSettled(connections.map((c) => c.end()));

@@ -13,6 +13,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  */
 
 vi.mock("server-only", () => ({}));
+const { runBillingCardMonitor } = vi.hoisted(() => ({ runBillingCardMonitor: vi.fn() }));
+vi.mock("@/features/billing/card-monitor", () => ({ runBillingCardMonitor }));
 
 const { reconcileOrganizationBilling, rpc } = vi.hoisted(() => ({
   reconcileOrganizationBilling: vi.fn(),
@@ -34,6 +36,7 @@ let backlog: unknown[] = [];
 
 beforeEach(() => {
   vi.clearAllMocks();
+  runBillingCardMonitor.mockResolvedValue({ checked: 1, errors: 0, sent: 0 });
   process.env.RECONCILE_SWEEP_SECRET = SECRET;
   candidates = [{ organization_id: 42, stripe_customer_id: "cus_1" }];
   backlog = [];
@@ -48,6 +51,10 @@ beforeEach(() => {
 });
 
 describe("POST /api/admin/reconcile-billing-sweep", () => {
+  it("reports card-monitor or mail failures even if Stripe reconciliation succeeded", async () => {
+    runBillingCardMonitor.mockResolvedValue({ checked: 1, errors: 1, sent: 0 });
+    expect((await POST(request())).status).toBe(500);
+  });
   it("returns 200 when the sweep genuinely reconciled everything", async () => {
     const res = await POST(request());
     expect(res.status).toBe(200);

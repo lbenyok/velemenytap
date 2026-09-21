@@ -52,6 +52,10 @@ export async function lookupPublicCard(
     return null;
   }
 
+  const { data: control, error: controlError } = await admin.from("billing_card_controls")
+    .select("blocked").eq("organization_id", data.organization_id).single();
+  if (controlError || !control) throw new Error("A véleményoldal átmenetileg nem tölthető be. Próbáld újra.");
+
   return {
     cardId: data.id,
     organizationId: data.organization_id,
@@ -60,6 +64,6 @@ export async function lookupPublicCard(
     locationName: data.locations.name,
     cardName: data.display_name,
     googleReviewUrl: safeGoogleReviewUrl(data.locations.google_review_url),
-    isActive: data.status === "active" && data.locations.status === "active",
+    isActive: data.status === "active" && data.locations.status === "active" && !control.blocked,
   };
 }

@@ -1,3 +1,4 @@
+import { runBillingCardMonitor } from "@/features/billing/card-monitor";
 import { timingSafeEqual } from "node:crypto";
 import { type NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -119,7 +120,15 @@ export async function POST(request: NextRequest) {
   // the lease, which is normal contention and self-correcting. Only genuine
   // errors are escalated, so this cannot turn ordinary concurrency into a
   // page.
-  const errors = results.filter((r) => r.outcome === "error").length;
+  let errors = results.filter((r) => r.outcome === "error").length;
+  let cardMonitor;
+  try {
+    cardMonitor = await runBillingCardMonitor();
+    errors += cardMonitor.errors;
+  } catch {
+    errors++;
+    console.error("Billing card monitor failed; check migrations and email configuration.");
+  }
 
   // R10-08 (round-10 review): the paragraph above is right that `deferred` is
   // ordinary contention and self-correcting -- and wrong to conclude that
@@ -165,8 +174,8 @@ export async function POST(request: NextRequest) {
   }
 
   if (errors > 0 || stuck.length > 0) {
-    return NextResponse.json({ swept: results.length, errors, backlog: stuck, results }, { status: 500 });
+    return NextResponse.json({ swept: results.length, errors, backlog: stuck, results, cardMonitor }, { status: 500 });
   }
 
-  return NextResponse.json({ swept: results.length, errors: 0, backlog: [], results });
+  return NextResponse.json({ swept: results.length, errors: 0, backlog: [], results, cardMonitor });
 }

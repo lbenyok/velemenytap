@@ -31,6 +31,25 @@ export type OnboardingTourStatus = "not_started" | "completed" | "skipped";
 export interface Database {
   public: {
     Tables: {
+      billing_card_controls: {
+        Row: { organization_id: number; mode: string; grace_days: number; blocked: boolean; overdue_since: string | null; checked_at: string | null; state: string; last_notice_state: string | null; notice_sequence: number; revision: number };
+        Insert: Partial<{ organization_id: number; mode: string; grace_days: number; blocked: boolean; overdue_since: string | null; checked_at: string | null; state: string; last_notice_state: string | null; notice_sequence: number; revision: number }>;
+        Update: Partial<{ organization_id: number; mode: string; grace_days: number; blocked: boolean; overdue_since: string | null; checked_at: string | null; state: string; last_notice_state: string | null; notice_sequence: number; revision: number }>;
+        Relationships: [];
+      };
+      billing_owner_notices: {
+        Row: { id: number; organization_id: number; sequence: number; recipient: string; message: string; sender: string | null; created_at: string; first_attempt_at: string | null; lease_until: string | null; lease_owner: string | null; sent_at: string | null; provider_id: string | null; last_error: string | null; needs_review: boolean };
+        Insert: Partial<{ id: number; organization_id: number; sequence: number; recipient: string; message: string; sender: string | null; created_at: string; first_attempt_at: string | null; lease_until: string | null; lease_owner: string | null; sent_at: string | null; provider_id: string | null; last_error: string | null; needs_review: boolean }>;
+        Update: Partial<{ id: number; organization_id: number; sequence: number; recipient: string; message: string; sender: string | null; created_at: string; first_attempt_at: string | null; lease_until: string | null; lease_owner: string | null; sent_at: string | null; provider_id: string | null; last_error: string | null; needs_review: boolean }>;
+        Relationships: [];
+      };
+      billing_monitor_settings: {
+        Row: { id: boolean; enabled: boolean; recipient: string | null; updated_by: string | null; updated_at: string };
+        Insert: Partial<{ id: boolean; enabled: boolean; recipient: string | null; updated_by: string | null; updated_at: string }>;
+        Update: Partial<{ id: boolean; enabled: boolean; recipient: string | null; updated_by: string | null; updated_at: string }>;
+        Relationships: [];
+      };
+
       platform_admins: {
         Row: { user_id: string; created_at: string };
         Insert: { user_id: string; created_at?: string };
@@ -449,6 +468,10 @@ export interface Database {
     };
     Views: Record<string, never>;
     Functions: {
+      evaluate_billing_card_control: { Args: { p_organization_id: number }; Returns: undefined };
+      set_billing_card_mode: { Args: { p_actor_id: string; p_organization_id: number; p_mode: string; p_grace_days: number; p_expected_revision: number }; Returns: undefined };
+      claim_billing_owner_notice: { Args: { p_sender: string }; Returns: Database["public"]["Tables"]["billing_owner_notices"]["Row"][] };
+
       set_platform_card_lock: {
         Args: { p_actor_id: string; p_card_id: number; p_locked: boolean; p_expected_locked: boolean; p_reason: string };
         Returns: undefined;

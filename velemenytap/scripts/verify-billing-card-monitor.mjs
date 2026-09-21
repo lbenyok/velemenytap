@@ -1,0 +1,100 @@
+import assert from 'node:assert/strict';
+
+// Called by the disposable local PostgreSQL harness after every migration.
+export async function verifyBillingCardMonitor(client, second, pass) {
+  const actor = '73333333-3333-4333-8333-333333333333';
+  await client.query('insert into auth.users(id) values($1)', [actor]);
+  await client.query('insert into public.platform_admins(user_id) values($1)', [actor]);
+  const id = (await client.query("insert into public.organizations(name,slug) values('Monitor test','monitor-test') returning id")).rows[0].id;
+  const location = (await client.query("insert into public.locations(organization_id,name) values($1,'Monitor location') returning id",[id])).rows[0].id;
+  const card = (await client.query("insert into public.nfc_cards(organization_id,location_id) values($1,$2) returning id,public_id",[id,location])).rows[0];
+  const evaluate = () => client.query('select public.evaluate_billing_card_control($1)',[id]);
+  const control = async () => (await client.query('select * from public.billing_card_controls where organization_id=$1',[id])).rows[0];
+  const mode = async (value, days=3) => client.query('select public.set_billing_card_mode($1,$2,$3,$4,$5)',[actor,id,value,days,(await control()).revision]);
+  await client.query("update public.organization_billing set grandfathered_at=null, activated_at=null, trial_ends_at=clock_timestamp()+interval '1 day' where organization_id=$1",[id]);
+  await mode('automatic');
+  assert.equal((await control()).blocked,false);
+  assert.equal((await control()).state,'ok');
+  await client.query("update public.organization_billing set trial_ends_at=clock_timestamp()-interval '4 days' where organization_id=$1",[id]);
+  await evaluate();
+  assert.equal((await control()).state,'grace');
+  assert.ok(Date.now() - (await control()).overdue_since.getTime() < 5000, 'existing expiry must not be backdated');
+  pass('monitor preserves the trial and starts a fresh 3-day grace for old expiries');
+  await client.query("update public.billing_card_controls set overdue_since=clock_timestamp()-interval '4 days' where organization_id=$1",[id]);
+  await evaluate();
+  assert.equal((await control()).blocked,true);
+  await assert.rejects(client.query("select * from public.submit_feedback_atomic($1,5::smallint,'blocked')",[card.public_id]),e=>e.code==='VT002');
+  const newCard=(await client.query('insert into public.nfc_cards(organization_id,location_id) values($1,$2) returning public_id',[id,location])).rows[0];
+  await assert.rejects(client.query("select * from public.submit_feedback_atomic($1,5::smallint,'new blocked card')",[newCard.public_id]),e=>e.code==='VT002');
+  pass('automatic hold blocks stale forms and newly created cards in PostgreSQL');
+  await mode('manual');
+  assert.equal((await control()).blocked,false);
+  assert.equal((await client.query("select * from public.submit_feedback_atomic($1,5::smallint,'manual mode')",[card.public_id])).rowCount,1);
+  await mode('automatic');
+  await client.query('set role service_role');
+  await client.query('select public.set_platform_card_lock($1,$2,true,false,$3)',[actor,card.id,'Lost card']);
+  await client.query('reset role');
+  await client.query("update public.organization_billing set stripe_customer_id='cus_monitor',stripe_subscription_id='sub_monitor',status='active',activated_at=clock_timestamp(),last_synced_at=clock_timestamp(),needs_reconciliation=false,billing_sync_completed=billing_sync_requested where organization_id=$1",[id]);
+  await evaluate();
+  assert.equal((await control()).blocked,false);
+  assert.equal((await client.query('select platform_locked from public.nfc_cards where id=$1',[card.id])).rows[0].platform_locked,true);
+  await assert.rejects(client.query("select * from public.submit_feedback_atomic($1,5::smallint,'still manually blocked')",[card.public_id]),e=>e.code==='VT002');
+  pass('manual mode removes only payment holds; payment recovery preserves manual card locks');
+  await client.query("update public.organization_billing set status='past_due',last_synced_at=clock_timestamp()-interval '3 hours' where organization_id=$1",[id]);
+  await evaluate();
+  assert.equal((await control()).state,'unknown');
+  assert.equal((await control()).blocked,false);
+  await client.query("update public.organization_billing set last_synced_at=clock_timestamp(),needs_reconciliation=true where organization_id=$1",[id]);
+  await evaluate();
+  assert.equal((await control()).state,'unknown');
+  await client.query("update public.organization_billing set needs_reconciliation=false,status='active',cancel_at_period_end=true where organization_id=$1",[id]);
+  await evaluate();
+  assert.equal((await control()).state,'ok');
+  pass('stale/dirty Stripe snapshots never create a new hold; scheduled cancellation stays active');
+  await client.query("update public.billing_monitor_settings set enabled=true,recipient='owner@example.invalid' where id");
+  await client.query("update public.organization_billing set status='past_due',last_synced_at=clock_timestamp() where organization_id=$1",[id]);
+  await evaluate(); await evaluate();
+  const count = async () => Number((await client.query('select count(*) from public.billing_owner_notices where organization_id=$1',[id])).rows[0].count);
+  assert.equal(await count(),1);
+  await client.query("update public.billing_card_controls set overdue_since=clock_timestamp()-interval '4 days' where organization_id=$1",[id]);
+  await evaluate(); await evaluate();
+  assert.equal(await count(),2);
+  await client.query("update public.organization_billing set status='active' where organization_id=$1",[id]);
+  await evaluate(); await evaluate();
+  assert.equal(await count(),3);
+  pass('notice outbox sends one per state transition, including suspension and recovery');
+  const claim=(await client.query("select * from public.claim_billing_owner_notice('sender@example.invalid')")).rows[0];
+  const other=(await second.query("select * from public.claim_billing_owner_notice('sender@example.invalid')")).rows[0];
+  assert.notEqual(claim.id,other.id);
+  await client.query("update public.billing_owner_notices set lease_until=clock_timestamp()-interval '1 second' where id=$1",[claim.id]);
+  const retry=(await client.query("select * from public.claim_billing_owner_notice('changed@example.invalid')")).rows[0];
+  assert.equal(retry.id,claim.id);
+  assert.equal(retry.sender,claim.sender);
+  assert.equal(retry.message,claim.message);
+  assert.notEqual(retry.lease_owner,claim.lease_owner);
+  await client.query("update public.billing_owner_notices set lease_until=clock_timestamp()-interval '1 second',first_attempt_at=clock_timestamp()-interval '24 hours' where id=$1",[claim.id]);
+  await client.query("select * from public.claim_billing_owner_notice('sender@example.invalid')");
+  assert.equal((await client.query('select needs_review from public.billing_owner_notices where id=$1',[claim.id])).rows[0].needs_review,true);
+  pass('mail claims serialize, freeze replay payload, and stop before provider idempotency expires');
+  await mode('automatic',0);
+  await client.query('begin');
+  await client.query("update public.billing_card_controls set blocked=true where organization_id=$1",[id]);
+  const blocked = second.query("select * from public.submit_feedback_atomic($1,5::smallint,'concurrent hold')",[newCard.public_id]).then(()=>null,e=>e.code);
+  // The result must observe the committed hold, whether the query reached its
+  // shared lock before or after this commit.
+  await client.query('commit');
+  assert.equal(await blocked,'VT002');
+  pass('submission racing a payment hold rejects after the hold commits');
+  await client.query('set role authenticated');
+  for(const table of ['billing_card_controls','billing_monitor_settings','billing_owner_notices','billing_control_audit'])
+    await assert.rejects(client.query(`select * from public.${table}`),e=>e.code==='42501');
+  await client.query('reset role');
+  for(const fn of ['evaluate_billing_card_control','set_billing_card_mode','claim_billing_owner_notice']) {
+    const grant=(await client.query("select has_function_privilege('anon',oid,'execute') a,has_function_privilege('authenticated',oid,'execute') u,has_function_privilege('service_role',oid,'execute') s from pg_proc where proname=$1",[fn])).rows[0];
+    assert.deepEqual(grant,{a:false,u:false,s:true});
+  }
+  await assert.rejects(client.query('select public.set_billing_card_mode($1,$2,$3,3,0)',[actor,id,'manual']),e=>e.code==='55000');
+  await client.query('delete from public.platform_admins where user_id=$1',[actor]);
+  await assert.rejects(mode('manual'),e=>e.code==='42501');
+  pass('tenant reads/writes are denied, stale settings rejected and revoked admins cannot change mode');
+}

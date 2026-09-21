@@ -25,6 +25,9 @@ type ExpectedGrant = {
 };
 
 const EXPECTED: ExpectedGrant[] = [
+  { signature: "public.evaluate_billing_card_control(bigint)", anon: false, authenticated: false, service_role: true },
+  { signature: "public.set_billing_card_mode(uuid, bigint, text, integer, bigint)", anon: false, authenticated: false, service_role: true },
+  { signature: "public.claim_billing_owner_notice(text)", anon: false, authenticated: false, service_role: true },
   {
     signature: "public.set_platform_card_lock(uuid, bigint, boolean, boolean, text)",
     anon: false,
