@@ -127,49 +127,23 @@ for (const rating of [1, 2, 3, 4, 5] as const) {
       .getByRole("radio", { name: new RegExp(`^${rating} csillag —`) })
       .click()
 
-    const primary = page.getByRole("link", {
-      name: "Vélemény küldése",
-    })
-    const sendOnly = page.getByRole("button", { name: "Vélemény küldése" })
-    if (rating <= 3) {
-      await expect(sendOnly).toBeVisible()
-      await expect(primary).toHaveCount(0)
-    } else {
-      await expect(sendOnly).toHaveCount(0)
-      await expect(primary).toBeVisible()
-      await expect(primary).toHaveAttribute(
-        "href",
-        "https://g.page/r/e2e-test-review-link"
-      )
-    }
+    await expect(page.getByRole("button", { name: "Vélemény küldése" })).toBeVisible()
+    await expect(page.getByRole("link", { name: "Vélemény küldése" })).toHaveCount(0)
   })
 }
 
-test("low and high ratings use the same Google destination", async ({
-  page,
-}) => {
-  // Compare the low-rating confirmation link with the high-rating initial link.
-  const read = async (r: 1 | 5) => {
-    const card = seeded.cards.find((c) => c.rating === r)!
-    await page.goto(`/r/${card.publicId}`)
-    await page
-      .getByRole("radio", { name: new RegExp(`^${r} csillag —`) })
-      .click()
-    if (r === 1) {
-      await page.getByRole("button", { name: "Vélemény küldése" }).click()
-      await expect(
-        page.getByRole("heading", { name: "Köszönjük!" })
-      ).toBeVisible()
-    }
-    const link = page.getByRole("link", {
-      name: r === 1 ? "Google-értékelés írása" : "Vélemény küldése",
-    })
-    return link.getAttribute("href")
-  }
-
-  const low = await read(1)
-  const high = await read(5)
-  expect(low).toEqual(high)
+test("low and high ratings use the same Google destination", async ({ page, context }) => {
+  await context.route("https://g.page/**", route => route.fulfill({ contentType: "text/html", body: "Google destination" }))
+  const low = seeded.cards.find(c => c.rating === 1)!
+  await page.goto(`/r/${low.publicId}`)
+  await page.getByRole("radio", { name: /^1 csillag —/ }).click()
+  await page.getByRole("button", { name: "Vélemény küldése" }).click()
+  const destination = await page.getByRole("link", { name: "Google-értékelés írása" }).getAttribute("href")
+  const high = seeded.cards.find(c => c.rating === 5)!
+  await page.goto(`/r/${high.publicId}`)
+  await page.getByRole("radio", { name: /^5 csillag —/ }).click()
+  await page.getByRole("button", { name: "Vélemény küldése" }).click()
+  await expect(page).toHaveURL(destination!)
 })
 
 test("high ratings open Google and save each rating to the dashboard", async ({
@@ -190,14 +164,9 @@ test("high ratings open Google and save each rating to the dashboard", async ({
       .getByRole("radio", { name: new RegExp("^" + rating + " csillag —") })
       .click()
     await expect(page.getByRole("textbox")).toHaveCount(0)
-    const popupPromise = context.waitForEvent("page")
-    await page.getByRole("link", { name: "Vélemény küldése" }).click()
-    const popup = await popupPromise
-    await expect(popup).toHaveURL("https://g.page/r/e2e-test-review-link")
-    await expect(
-      page.getByRole("heading", { name: "Köszönjük!" })
-    ).toBeVisible()
-    await popup.close()
+    await page.getByRole("button", { name: "Vélemény küldése" }).click()
+    await expect(page).toHaveURL("https://g.page/r/e2e-test-review-link")
+    expect(context.pages()).toHaveLength(1)
   }
   const { data, error } = await adminClient()
     .from("feedback")

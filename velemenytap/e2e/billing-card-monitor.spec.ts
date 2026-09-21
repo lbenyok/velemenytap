@@ -9,7 +9,7 @@ test("owner can choose automatic grace, enforce all public links and return to m
   const admin = adminClient();
   const context = await browser.newContext();
   try {
-    expect((await admin.from("platform_admins").insert({ user_id: owner.userId })).error).toBeNull();
+    expect((await admin.from("platform_admins").insert({ user_id: owner.userId, role: "owner" })).error).toBeNull();
     const card = await seedActiveCard(customer.orgId, "monitor-card");
     expect((await admin.from("organization_billing").update({ stripe_customer_id: null, stripe_subscription_id: null, status: "canceled", activated_at: null, grandfathered_at: null, trial_ends_at: "2020-01-01T00:00:00Z" }).eq("organization_id", customer.orgId)).error).toBeNull();
     await signInViaUi(page, owner.email, owner.password, `/admin?org=${customer.orgId}`);
@@ -32,7 +32,7 @@ test("owner can choose automatic grace, enforce all public links and return to m
     expect((await admin.rpc("set_platform_card_lock", { p_actor_id: owner.userId, p_card_id: card.cardId, p_locked: true, p_expected_locked: false, p_reason: "Lost physical card" })).error).toBeNull();
     await page.getByLabel("Nemfizetés kezelése").selectOption("manual");
     await page.getByRole("button", { name: "Fizetési mód mentése", exact: true }).click();
-    await expect(page.getByText("Tulajdonos által zárolva", { exact: true })).toBeVisible();
+    await expect(page.getByText("Kézzel zárolva", { exact: true })).toBeVisible();
     await expect.poll(async () => (await admin.from("billing_card_controls").select("blocked").eq("organization_id", customer.orgId).single()).data?.blocked).toBe(false);
     await visitor.reload();
     await expect(visitor.getByRole("radiogroup")).toHaveCount(0);

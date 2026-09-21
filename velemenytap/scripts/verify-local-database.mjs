@@ -13,6 +13,7 @@
 //
 // Creates uniquely named databases; never drops or resets an existing one.
 import assert from "node:assert/strict";
+import { verifyPlatformRoles } from "./verify-platform-roles.mjs";
 import { verifyBillingCardMonitor } from "./verify-billing-card-monitor.mjs";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
@@ -50,7 +51,7 @@ const bootstrap = `
   create schema auth;
   create schema extensions;
   create extension pgcrypto with schema extensions;
-  create table auth.users(id uuid primary key, raw_user_meta_data jsonb not null default '{}');
+  create table auth.users(id uuid primary key, email text, email_confirmed_at timestamptz, raw_user_meta_data jsonb not null default '{}');
   create function auth.uid() returns uuid language sql stable as $$
     select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid;
   $$;
@@ -1199,6 +1200,7 @@ try {
   pass("an authenticated user sees only its own billing row and cannot grant itself a subscription");
 
   await verifyBillingCardMonitor(client, second, pass);
+  await verifyPlatformRoles(client, pass);
   console.log(`SUCCESS ${checks} PostgreSQL checks; databases retained: ${clean.name}, ${upgrade.name}`);
 } finally {
   await Promise.allSettled(connections.map((c) => c.end()));

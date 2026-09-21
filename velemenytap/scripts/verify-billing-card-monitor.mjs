@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 export async function verifyBillingCardMonitor(client, second, pass) {
   const actor = '73333333-3333-4333-8333-333333333333';
   await client.query('insert into auth.users(id) values($1)', [actor]);
-  await client.query('insert into public.platform_admins(user_id) values($1)', [actor]);
+  await client.query("insert into public.platform_admins(user_id,role) values($1,'owner')", [actor]);
   const id = (await client.query("insert into public.organizations(name,slug) values('Monitor test','monitor-test') returning id")).rows[0].id;
   const location = (await client.query("insert into public.locations(organization_id,name) values($1,'Monitor location') returning id",[id])).rows[0].id;
   const card = (await client.query("insert into public.nfc_cards(organization_id,location_id) values($1,$2) returning id,public_id",[id,location])).rows[0];
@@ -51,7 +51,7 @@ export async function verifyBillingCardMonitor(client, second, pass) {
   await evaluate();
   assert.equal((await control()).state,'ok');
   pass('stale/dirty Stripe snapshots never create a new hold; scheduled cancellation stays active');
-  await client.query("update public.billing_monitor_settings set enabled=true,recipient='owner@example.invalid' where id");
+  await client.query("update public.billing_monitor_settings set enabled=true,recipient='owner@example.invalid',updated_by=$1 where id",[actor]);
   await client.query("update public.organization_billing set status='past_due',last_synced_at=clock_timestamp() where organization_id=$1",[id]);
   await evaluate(); await evaluate();
   const count = async () => Number((await client.query('select count(*) from public.billing_owner_notices where organization_id=$1',[id])).rows[0].count);

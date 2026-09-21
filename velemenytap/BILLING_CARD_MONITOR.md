@@ -14,7 +14,7 @@ Az adminpanel vállalkozásonként kézi vagy automatikus módot kínál. Az ala
 
 ## Tulajdonosi értesítés
 
-A tulajdonos az adminpanel tetején mentheti saját megerősített e-mail-címét. A böngészőből megadott tetszőleges címzettet a művelet nem fogadja el. Az értesítési beállítás a platform egészére vonatkozik, nem az ügyfél szervezeti értesítési címére.
+A tulajdonos az adminpanel Értesítések menüjében mentheti saját megerősített e-mail-címét. A böngészőből megadott tetszőleges címzettet a művelet nem fogadja el. Az értesítési beállítás a platform egészére vonatkozik, nem az ügyfél szervezeti értesítési címére.
 
 Az adatbázis tranzakcióban rögzíti az állapotváltozásról szóló, változatlan tartalmú levelet. Az ismételt ellenőrzés ugyanarról az állapotról nem generál új üzenetet. Az első egészséges állapot nem küld levelet; egy korábban jelzett probléma rendeződése igen. A kézi/automatikus mód váltása egy fennálló problémáról új összefoglalót hozhat létre.
 
@@ -45,3 +45,5 @@ Kikapcsoláskor a küldés szünetel, a már sorba állított üzenetek megmarad
 A változás tesztjei valódi PostgreSQL-en ellenőrzik a próbaidőt, a tiltást, új kártyát, kézi módot, rendezett hozzáférést, a kézi zárolás megőrzését, a régi/piszkos állapotot, az értesítések ismétlésvédelmét, a jogosultságokat és a párhuzamos beküldést. A böngészős teszt a külön Supabase-tesztprojekten a tulajdonosi felületből kapcsol módot és ellenőrzi a publikus kártyaoldalt. A fizetési állapotot ezekben mesterségesen állítjuk: nem állítjuk, hogy valós bankkártyaterhelést vagy postaládás kézbesítést reprodukáltak.
 
 A Stripe `active` státusza jogosultsági jelzés, nem minden elképzelhető számlázási konfigurációban pénzbeérkezési bizonyíték; ezt a meglévő aktiválási logika továbbra is külön kezeli. [Stripe előfizetési állapotok](https://docs.stripe.com/billing/subscriptions/overview#subscription-statuses).
+
+A fizetési módot, türelmi időt és tulajdonosi értesítéseket csak platform-tulajdonos módosíthatja. A moderátor megtekintheti az állapotot, és kézzel kezelheti az egyes kártyák zárolását.

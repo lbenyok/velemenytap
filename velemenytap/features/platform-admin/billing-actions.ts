@@ -14,7 +14,7 @@ const schema = z.object({
 });
 export async function saveBillingCardModeAction(_: Result, form: FormData): Promise<Result> {
   const actor = await getPlatformAdmin();
-  if (!actor) return { error: "Nincs tulajdonosi jogosultságod." };
+  if (!actor || actor.platformRole !== "owner") return { error: "Nincs tulajdonosi jogosultságod." };
   const parsed = schema.safeParse(Object.fromEntries(form));
   if (!parsed.success) return { error: "Ellenőrizd a módot és a türelmi időt (0–30 nap)." };
   const v = parsed.data;
@@ -28,7 +28,7 @@ export async function saveBillingCardModeAction(_: Result, form: FormData): Prom
 }
 export async function saveBillingAlertSettingsAction(_: Result, form: FormData): Promise<Result> {
   const actor = await getPlatformAdmin();
-  if (!actor?.email) return { error: "Nincs megerősített tulajdonosi fiókod." };
+  if (!actor?.email || actor.platformRole !== "owner") return { error: "Nincs megerősített tulajdonosi fiókod." };
   const enabled = form.get("enabled") === "on";
   const { error } = await createAdminClient().from("billing_monitor_settings").update({
     enabled, recipient: actor.email, updated_by: actor.id, updated_at: new Date().toISOString(),
@@ -39,7 +39,7 @@ export async function saveBillingAlertSettingsAction(_: Result, form: FormData):
 }
 export async function checkBillingNowAction(_: Result, form: FormData): Promise<Result> {
   const actor = await getPlatformAdmin();
-  if (!actor) return { error: "Nincs tulajdonosi jogosultságod." };
+  if (!actor || actor.platformRole !== "owner") return { error: "Nincs tulajdonosi jogosultságod." };
   const id = z.coerce.number().int().positive().max(Number.MAX_SAFE_INTEGER).safeParse(form.get("organizationId"));
   if (!id.success) return { error: "Érvénytelen vállalkozás." };
   const admin = createAdminClient();

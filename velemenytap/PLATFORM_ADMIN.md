@@ -101,3 +101,7 @@ using a non-serialization error code for a business-state conflict.
 The additive migration was applied to production on 2026-09-20 (52 migrations).
 Owner access still requires the explicitly confirmed login; deployment alone
 does not make any existing business owner a platform administrator.
+
+## Owner and moderator roles (migration 54)
+
+Apply `20260921170000_platform_owner_and_moderators.sql` before deploying the new console. Existing explicitly provisioned platform admins become owners; new grants default to moderator. Owners can add/remove confirmed existing accounts through the team page. Moderators can read organizations/cards/subscription state and manually lock/unlock cards, but cannot manage team membership, billing mode or owner alerts. Database RPCs recheck privileges under membership locks. Owner provisioning remains an operator action; the team page cannot grant or remove owners. The payment view is subscription state, not a transaction ledger.

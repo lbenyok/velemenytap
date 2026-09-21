@@ -42,7 +42,7 @@ Vezess nyilvántartást a Shopify-rendelésszámról, a vállalkozás nevéről,
 
 Kérdezd meg, melyik címre érkezzenek az alacsony értékelések értesítései. Az ügyfél e-mailes vagy Google-jelszavára, Stripe-belépésére és banki belépési adataira nincs szükséged.
 
-A tulajdonosi kártyakezelő a **https://velemenytap.com/admin** címen található. Csak külön engedélyezett tulajdonosi fiókok érhetik el. Itt az ügyfél jelszava nélkül keresheted meg és zárolhatod vagy feloldhatod a kártyáit. Egy szokásos ügyfélfiók nem kezelheti más vállalkozások kártyáit.
+A tulajdonosi kártyakezelő a **https://velemenytap.com/admin** címen található. Csak külön engedélyezett tulajdonosi és moderátori fiókok érhetik el. Itt az ügyfél jelszava nélkül keresheted meg és zárolhatod vagy feloldhatod a kártyáit. Egy szokásos ügyfélfiók nem kezelheti más vállalkozások kártyáit.
 
 Jelenleg nincs ügyfélfiókok közötti váltás, munkatársi meghívás vagy ügyfélként történő belépés. Minden ügyfél hozza létre és birtokolja a saját fiókját. Segíthetsz bejelentkezett állapotban, például képernyőmegosztással. Külön ügyfeleket ne hozz létre a saját vállalkozásodon belüli helyszínekként, mert összekeverednének az adataik.
 
@@ -112,7 +112,7 @@ Az értesítési küszöb **1–3 csillag**. Kártyánként ötperces várakozá
 A vendég kiválasztja a csillagokat, majd megnyomja a **Vélemény küldése** gombot. A csillagok kiválasztása önmagában nem mentés.
 
 - **1–3 csillag:** megjegyzést is írhat. A küldés elmenti a belső visszajelzést. Érvényes Google-link esetén a visszaigazoló oldalon megjelenik a kis Google-gomb.
-- **4–5 csillag:** a küldés új lapon megnyitja a Google-értékelési oldalt, és az eredeti oldalon elindítja a pontszám mentését. A mentés eredménye az eredeti oldalon ellenőrizhető. A Google-véleményt a vendégnek még külön el kell készítenie és közzé kell tennie.
+- **4–5 csillag:** a küldés először elmenti a pontszámot a VéleményTapba, majd sikeres mentés után ugyanazon a lapon automatikusan megnyitja a Google-értékelési oldalt. Nem kell külön a Google-ikonra kattintani. Sikertelen mentéskor hibaüzenet jelenik meg, átirányítás nem történik. A Google-véleményt a vendégnek még külön el kell készítenie és közzé kell tennie.
 - **Nincs Google-link:** a belső visszajelzés minden csillagértéknél beküldhető, de Google-oldal nem nyitható meg.
 - **Inaktív kártya vagy helyszín:** az oldal nem fogad új visszajelzést. A letiltás előtt megnyitott űrlap későbbi beküldését is elutasítja.
 
@@ -348,7 +348,7 @@ Az automatikus fizetési tiltás külön működik a kézi kártyazárolástól.
 ### Bekapcsolás
 
 1. Lépj be a saját tulajdonosi fiókoddal a https://velemenytap.com/admin oldalra.
-2. A **Tulajdonosi fizetési értesítések** résznél kapcsold be az e-mailes értesítést, és mentsd el. A címzett a saját megerősített belépési e-mail-címed lesz. Ez közös tulajdonosi beállítás; másik platform-adminisztrátor mentése a saját címére változtatja.
+2. Az oldalsáv **Értesítések** menüjében, a **Tulajdonosi fizetési értesítések** résznél kapcsold be az e-mailes értesítést, és mentsd el. A címzett a saját megerősített belépési e-mail-címed lesz. Ez közös tulajdonosi beállítás; másik tulajdonos mentése a saját címére változtatja.
 3. Nyisd meg a kívánt vállalkozást. A **Fizetésfigyelő és automatikus zárolás** résznél válassz kézi vagy automatikus módot.
 4. Hagyd meg a jóváhagyott **3 napos türelmi időt**, majd kattints a **Fizetési mód mentése** gombra. A türelmi idő vállalkozásonként módosítható.
 5. A **Fizetés ellenőrzése most** gomb frissíti a Stripe-adatokat és kiértékeli a kártyák fizetési állapotát. Az e-mailt az ütemezett feldolgozó küldi el.
@@ -374,6 +374,32 @@ Az ellenőrzés a meglévő, célzottan 15 percenként induló ütemezés része
 A **Legutóbbi fizetési értesítések** listában látod a küldés állapotát. Az „E-mail-szolgáltató átvette” nem bizonyítja a beérkezést a postaládába. Sikertelen vagy bizonytalan küldésnél a rendszer ugyanazt az üzenetet próbálja újra. 23 órán túl bizonytalan eredmény esetén kézi ellenőrzést jelez, hogy ne küldjön korlátlanul ismétlődő leveleket. A szolgáltatói napló ellenőrzésében ilyenkor technikai segítség szükséges. Az értesítés kikapcsolása a várakozó levelek küldését is szünetelteti; visszakapcsolás után korábbi állapotjelentés is megérkezhet, ezért intézkedés előtt mindig az aktuális adminpanelt nézd.
 
 A kártyák leállításához nincs szükség a fizikai chip visszakérésére. A rendszer a saját adatbázisban őrzi a link és a vállalkozás kapcsolatát; a korábbi visszajelzések megmaradnak.
+
+## 21. Adminfelület és moderátorok hozzáadása
+
+Az [adminpanel](https://velemenytap.com/admin) külön kezelőközpontot kapott. Az **Ügyfelek és kártyák** menüben vállalkozást kereshetsz és kártyákat kezelhetsz. A **Fizetések** menü az előfizetések szinkronizált állapotát és időszakait mutatja; ez nem teljes számla- vagy banki tranzakciólista. A tényleges terheléseket és visszatérítéseket a Stripe-ban ellenőrizd.
+
+### Új moderátor felvétele
+
+1. A munkatárs regisztráljon saját e-mail-címmel a VéleményTapba, és erősítse meg az e-mail-címét.
+2. Saját tulajdonosi fiókoddal nyisd meg a **Csapat és jogosultságok** menüt.
+3. Add meg a munkatárs megerősített e-mail-címét, majd add hozzá moderátorként. Ez meglévő fiókot engedélyez; nem küld meghívólevelet, és nem hoz létre jelszót.
+4. A munkatárs a saját fiókjával lépjen be, majd nyissa meg a https://velemenytap.com/admin oldalt.
+
+| Lehetőség | Tulajdonos | Moderátor |
+| --- | --- | --- |
+| Vállalkozások, kártyák és előfizetési állapotok megtekintése | Igen | Igen |
+| Kártyák kézi zárolása és feloldása indoklással | Igen | Igen |
+| Automatikus zárolás és türelmi idő módosítása | Igen | Nem |
+| Tulajdonosi e-mail-értesítések beállítása | Igen | Nem |
+| Moderátor hozzáadása vagy eltávolítása | Igen | Nem |
+| Tulajdonosi jog kiosztása ezen a felületen | Nem | Nem |
+
+A moderátor az összes vállalkozás kártyáit és előfizetési állapotát láthatja, ezért csak megbízható munkatársat adj hozzá. A kézi kártyaműveletek és a jogosultságváltozások naplózva vannak.
+
+### Hozzáférés visszavonása
+
+A **Csapat és jogosultságok** listában távolítsd el a moderátort. A következő védett műveletnél a rendszer már elutasítja a hozzáférését, akkor is, ha korábban nyitva maradt az oldala. Ez nem törli a saját ügyfélfiókját és a korábbi naplóbejegyzéseket. A felületről a saját vagy másik tulajdonos jogosultsága nem vonható vissza.
 
 ---
 

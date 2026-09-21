@@ -18,26 +18,32 @@ it("denies all billing admin actions before privileged reads or writes", async (
     expect((await action({}, form())).error).toBeTruthy();
   expect(m.admin).not.toHaveBeenCalled();
 });
+it("denies a moderator every owner billing control before privileged access", async () => {
+  m.access.mockResolvedValue({ id: "mod", email: "mod@example.invalid", platformRole: "moderator" });
+  for (const action of [checkBillingNowAction, saveBillingAlertSettingsAction, saveBillingCardModeAction])
+    expect((await action({}, form())).error).toBeTruthy();
+  expect(m.admin).not.toHaveBeenCalled();
+});
 it("uses the verified actor and passes a revision for stale-form protection", async () => {
-  m.access.mockResolvedValue({ id: "real-owner" }); m.rpc.mockResolvedValue({ error: null });
+  m.access.mockResolvedValue({ id: "real-owner", platformRole: "owner" }); m.rpc.mockResolvedValue({ error: null });
   expect((await saveBillingCardModeAction({}, form())).success).toBeTruthy();
   expect(m.rpc).toHaveBeenCalledWith("set_billing_card_mode", { p_actor_id: "real-owner", p_organization_id: 42, p_mode: "automatic", p_grace_days: 3, p_expected_revision: 0 });
 });
 it("rejects invalid mode, organization, grace period and revision", async () => {
-  m.access.mockResolvedValue({ id: "real-owner" });
+  m.access.mockResolvedValue({ id: "real-owner", platformRole: "owner" });
   for (const values of ([{ mode: "auto" }, { graceDays: "-1" }, { graceDays: "31" }, { organizationId: "-1" }, { revision: "-1" }] as Record<string, string>[]))
     expect((await saveBillingCardModeAction({}, form(values))).error).toBeTruthy();
   expect(m.admin).not.toHaveBeenCalled();
 });
 it("cannot direct financial alerts to an address supplied by the browser", async () => {
-  m.access.mockResolvedValue({ id: "owner", email: "verified@example.invalid" });
+  m.access.mockResolvedValue({ id: "owner", platformRole: "owner", email: "verified@example.invalid" });
   const eq = vi.fn().mockResolvedValue({ error: null }); const update = vi.fn(() => ({ eq }));
   m.admin.mockReturnValue({ from: () => ({ update }) });
   expect((await saveBillingAlertSettingsAction({}, form({ enabled: "on", email: "attacker@example.invalid" }))).success).toBeTruthy();
   expect(update).toHaveBeenCalledWith(expect.objectContaining({ recipient: "verified@example.invalid", updated_by: "owner", enabled: true }));
 });
 it("does not evaluate stale billing when Stripe refresh failed or was deferred", async () => {
-  m.access.mockResolvedValue({ id: "owner" });
+  m.access.mockResolvedValue({ id: "owner", platformRole: "owner" });
   const query = { select: () => query, eq: () => query, single: async () => ({ data: { stripe_customer_id: "cus_1" }, error: null }) };
   m.admin.mockReturnValue({ from: () => query, rpc: m.rpc });
   for (const outcome of ["error", "deferred"]) {

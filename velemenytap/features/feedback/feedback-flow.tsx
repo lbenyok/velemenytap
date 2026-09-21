@@ -1,6 +1,6 @@
 "use client"
 
-import { useActionState, useRef, useState } from "react"
+import { useActionState, useState } from "react"
 import { submitFeedbackAction, type FeedbackActionState } from "./actions"
 import { StarPicker } from "./star-picker"
 import { safeGoogleReviewUrl } from "@/lib/google-review-url"
@@ -56,24 +56,26 @@ export function FeedbackFlow({
   googleReviewUrl: string | null
 }) {
   const [rating, setRating] = useState<number | null>(null)
-  const formRef = useRef<HTMLFormElement>(null)
-  const submissionStarted = useRef(false)
-  const safeReviewUrl = safeGoogleReviewUrl(googleReviewUrl)
   const [state, formAction, isPending] = useActionState(
     async (
       previousState: FeedbackActionState,
       formData: FormData
     ): Promise<FeedbackActionState> => {
       try {
-        return await submitFeedbackAction(previousState, formData)
+        const result = await submitFeedbackAction(previousState, formData)
+        const destination = result.status === "success" ? safeGoogleReviewUrl(result.googleReviewUrl) : null
+        if (result.status === "success" && Number(formData.get("rating")) >= 4 && destination) {
+          // Navigate this tab only AFTER the database confirms the save. No
+          // popup permission, pre-save stale URL or second Google click needed.
+          window.location.assign(destination)
+        }
+        return result
       } catch {
         return {
           status: "error",
           code: "failed",
           error: "Nem sikerült elküldeni a véleményedet. Kérjük, próbáld újra.",
         }
-      } finally {
-        submissionStarted.current = false
       }
     },
     initialState
@@ -105,7 +107,7 @@ export function FeedbackFlow({
           <p className="text-sm text-[var(--pf-ink-muted)]">{locationName}</p>
         </div>
 
-        <form ref={formRef} action={formAction} className="space-y-6">
+        <form action={formAction} className="space-y-6">
           <input type="hidden" name="public_id" value={publicId} />
           <input type="hidden" name="rating" value={rating ?? ""} />
 
@@ -144,57 +146,21 @@ export function FeedbackFlow({
                   <p className="text-center text-sm text-red-700" role="alert">
                     {state.error}
                   </p>
-                  {ERROR_CODES_KEEPING_THE_CTA.has(state.code) && rating < 4 ? (
+                  {ERROR_CODES_KEEPING_THE_CTA.has(state.code) ? (
                     <GoogleReviewCta googleReviewUrl={googleReviewUrl} />
                   ) : null}
                 </div>
               ) : null}
-              {retryIsPointless || (rating >= 4 && safeReviewUrl) ? null : (
-                <button
-                  type="submit"
-                  disabled={isPending}
-                  className="w-full rounded-lg bg-[var(--pf-accent)] px-4 py-3 text-sm font-medium text-white transition-colors hover:bg-[var(--pf-accent-hover)] disabled:opacity-60"
-                >
+              {retryIsPointless ? null : (
+                <button type="submit" disabled={isPending}
+                  className="w-full rounded-lg bg-[var(--pf-accent)] px-4 py-3 text-sm font-medium text-white transition-colors hover:bg-[var(--pf-accent-hover)] disabled:opacity-60">
                   {isPending ? "Küldés…" : "Vélemény küldése"}
                 </button>
               )}
-              {rating >= 4 && !(state.status === "error" && state.code === "inactive") ? (
-                safeReviewUrl ? (
-                  <>
-                    <p className="text-center text-sm text-[var(--pf-ink-muted)]">
-                      Elküldjük a visszajelzésedet, és új lapon megnyitjuk a
-                      Google értékelési oldalát.
-                    </p>
-                    <a
-                      href={safeReviewUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      aria-disabled={isPending}
-                      onClick={(event) => {
-                        if (isPending || submissionStarted.current) {
-                          event.preventDefault()
-                          return
-                        }
-                        // Keep this page alive for the save while Google opens immediately.
-                        if (!retryIsPointless && formRef.current) {
-                          submissionStarted.current = true
-                          formRef.current.requestSubmit()
-                        }
-                      }}
-                      className="block w-full rounded-lg bg-[var(--pf-accent)] px-4 py-3 text-center text-sm font-medium text-white transition-colors hover:bg-[var(--pf-accent-hover)] focus-visible:ring-2 focus-visible:ring-[var(--pf-accent)] focus-visible:ring-offset-2 focus-visible:outline-none"
-                    >
-                      Vélemény küldése
-                    </a>
-                  </>
-                ) : (
-                  <p
-                    role="alert"
-                    className="text-center text-sm text-[var(--pf-ink-muted)]"
-                  >
-                    A Google értékelési link jelenleg nem érhető el.
-                  </p>
-                )
-              ) : null}
+              {rating >= 4 && !retryIsPointless && <p className="text-center text-sm text-[var(--pf-ink-muted)]">
+                {safeGoogleReviewUrl(googleReviewUrl) ? "A mentés után automatikusan megnyitjuk a Google értékelési oldalát." : "A Google értékelési link jelenleg nem érhető el. A visszajelzésedet így is elküldheted."}
+              </p>}
+
             </div>
           ) : null}
         </form>

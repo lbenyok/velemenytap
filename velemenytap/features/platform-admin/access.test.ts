@@ -26,8 +26,8 @@ describe("platform administrator identity", () => {
   it("accepts only the server-managed membership and fails closed on database failure", async () => {
     const user = { id: "platform-owner", email_confirmed_at: "today" };
     mocks.getUser.mockResolvedValue({ data: { user }, error: null });
-    mocks.maybeSingle.mockResolvedValue({ data: { user_id: user.id }, error: null });
-    expect(await getPlatformAdmin()).toEqual(user);
+    mocks.maybeSingle.mockResolvedValue({ data: { user_id: user.id, role: "owner" }, error: null });
+    expect(await getPlatformAdmin()).toEqual({ ...user, platformRole: "owner" });
     mocks.maybeSingle.mockResolvedValue({ data: null, error: new Error("offline") });
     await expect(getPlatformAdmin()).rejects.toThrow();
   });

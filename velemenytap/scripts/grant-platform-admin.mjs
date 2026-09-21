@@ -25,7 +25,7 @@ const before=await admin.from('platform_admins').select('user_id').eq('user_id',
 if(before.error) throw Error('Platform admin migration must be applied first');
 console.log(JSON.stringify({project:expectedRef,confirmedAccount:true,userId:target.id,alreadyAdmin:!!before.data,grant:flag==='--grant'}));
 if(flag==='--grant' && !before.data) {
-  const result=await admin.from('platform_admins').insert({user_id:target.id});
+  const result=await admin.from('platform_admins').insert({user_id:target.id,role:'owner'});
   if(result.error) throw Error('Admin grant failed');
   const verified=await admin.from('platform_admins').select('user_id').eq('user_id',target.id).single();
   if(verified.error || !verified.data) throw Error('Admin grant could not be verified');

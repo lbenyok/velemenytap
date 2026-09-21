@@ -31,18 +31,14 @@ test("all five public ratings appear in the business dashboard", async ({
       await page
         .getByRole("radio", { name: new RegExp("^" + rating + " csillag —") })
         .click()
-      if (rating < 4) {
-        await page.getByRole("button", { name: "Vélemény küldése" }).click()
+      await page.getByRole("button", { name: "Vélemény küldése" }).click()
+      if (rating >= 4) {
+        await expect(page).toHaveURL("https://g.page/r/test/review")
+        expect(context.pages()).toHaveLength(1)
       } else {
-        const popupPromise = context.waitForEvent("page")
-        await page.getByRole("link", { name: "Vélemény küldése" }).click()
-        const popup = await popupPromise
-        await expect(popup).toHaveURL("https://g.page/r/test/review")
-        await popup.close()
+        await expect(page.getByRole("heading", { name: "Köszönjük!" })).toBeVisible()
+        await expect(page.getByRole("link", { name: "Google-értékelés írása" })).toBeVisible()
       }
-      await expect(
-        page.getByRole("heading", { name: "Köszönjük!" })
-      ).toBeVisible()
     }
     await signInViaUi(
       page,

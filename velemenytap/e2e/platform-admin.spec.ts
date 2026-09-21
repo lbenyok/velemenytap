@@ -11,7 +11,7 @@ test("platform owner locks another business's card; tenant and stale form cannot
   const visitorContext = await browser.newContext();
   const tenantContext = await browser.newContext();
   try {
-    expect((await admin.from("platform_admins").insert({ user_id: owner.userId })).error).toBeNull();
+    expect((await admin.from("platform_admins").insert({ user_id: owner.userId, role: "owner" })).error).toBeNull();
     // The admin panel is independent of the platform owner's own subscription.
     expect((await admin.from("organization_billing").update({ status: "canceled", trial_ends_at: null, grandfathered_at: null }).eq("organization_id", owner.orgId)).error).toBeNull();
     const card = await seedActiveCard(customer.orgId, "platform-lock");
@@ -24,7 +24,7 @@ test("platform owner locks another business's card; tenant and stale form cannot
     const item = page.locator("article").filter({ hasText: "E2E Card" });
     await item.getByRole("textbox", { name: "Indoklás" }).fill("Lost card — verification");
     await item.getByRole("button", { name: "Kártya zárolása", exact: true }).click();
-    await expect(item.getByText("Tulajdonos által zárolva", { exact: true })).toBeVisible();
+    await expect(item.getByText("Kézzel zárolva", { exact: true })).toBeVisible();
     await visitor.getByRole("button", { name: "Vélemény küldése" }).click();
     await expect(visitor.locator('p[role="alert"]')).toHaveText("Ez a link már nem aktív.");
     expect((await admin.rpc("submit_feedback_atomic", { p_public_id: card.publicId, p_rating: 5, p_feedback_text: null })).error?.code).toBe("VT002");
@@ -75,7 +75,7 @@ test("database rejects self-grants, forged roles and RPC calls; restores inactiv
     const input = { p_actor_id: owner.userId, p_card_id: card.cardId, p_locked: true, p_expected_locked: false, p_reason: "Verification lock" };
     expect((await tenant.rpc("set_platform_card_lock", input)).error).not.toBeNull();
     expect((await admin.rpc("set_platform_card_lock", input)).error?.code).toBe("42501");
-    expect((await admin.from("platform_admins").insert({ user_id: owner.userId })).error).toBeNull();
+    expect((await admin.from("platform_admins").insert({ user_id: owner.userId, role: "owner" })).error).toBeNull();
     expect((await tenant.from("nfc_cards").update({ status: "inactive" }).eq("id", card.cardId)).error).toBeNull();
     expect((await admin.rpc("set_platform_card_lock", input)).error).toBeNull();
     expect((await tenant.from("platform_card_audit").select("id")).error).not.toBeNull();
