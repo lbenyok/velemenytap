@@ -20,6 +20,11 @@ const card = (overrides: Partial<CardCsvRow> = {}): CardCsvRow => ({
 const SITE = "https://app.velemenytap.hu";
 
 describe("the NFC card CSV", () => {
+  it.each(["=1+1", "+SUM(1)", "-1+1", "@SUM(1)", "  =1+1", "\t=1+1"])("exports formula-like names as text: %s", (name) => {
+    const csv = buildCardCsv([card({ display_name: name, location_name: name })], SITE);
+    expect(csv).toContain(`'${name};'${name};`);
+    expect(csv).toContain(`${SITE}/r/7259eef2-b773-49bc-92b5-072ad336a230`);
+  });
   it("builds the full public URL for each card", () => {
     const csv = buildCardCsv([card()], SITE);
     expect(csv).toContain("https://app.velemenytap.hu/r/7259eef2-b773-49bc-92b5-072ad336a230");

@@ -1,6 +1,6 @@
 # VéleményTap owner guide
 
-Customer setup, NFC programming, handover and daily operation. Prepared 20 September 2026 from the current implementation. Hungarian button names below match the application. This is an operating guide, not a statement that every production launch check has passed.
+Customer setup, NFC programming, handover and daily operation. Updated 21 September 2026 from the current implementation. Hungarian button names below match the application. This is an operating guide, not a statement that every production launch check has passed.
 
 ## 1. What you are selling
 
@@ -30,7 +30,7 @@ The software is deployed, but use this checklist to distinguish configuration fr
 | Account emails on .com | Confirm a real signup and password-reset email both arrive and their links work on the .com domain. Previous checks on another host do not establish this. |
 | Feedback alert | Test an authorized recipient on the actual production customer journey. A previously received test alert is useful evidence, but does not prove every production recipient. |
 | Billing recovery schedule | The three latest recorded runs were successful when checked on 20 September; the newest started at 12:06 UTC / 14:06 Budapest, after the live configuration. [Run evidence](https://github.com/lbenyok/velemenytap/actions/runs/35509694064). This establishes successful execution, not a guarantee of an exact 15-minute cadence or a completed payment lifecycle. |
-| Password protection | Verify Supabase's “Require current password when changing password” setting and the existing enforcement check; older launch notes leave this open. |
+| Password protection | Production setting observed enabled on 21 September. The isolated-project direct-API enforcement test passed; a separate fresh production attack simulation was not performed. |
 | Physical NFC tap | Pending until a real card is available. A working browser link alone is not an NFC hardware test. |
 | Business setup | Finalize your support contact, business identity, customer terms/privacy information, refund handling and invoicing arrangement. The repo's BUSINESS_DECISIONS.md records these as open; this guide does not assume they are resolved. |
 
@@ -171,3 +171,126 @@ Customers use **Vélemények** to filter feedback, add **Belső megjegyzés**, a
 | Customer forgot password | Use the login page's password-reset flow. Never send a shared password. |
 
 As the platform owner, monitor failed Vercel requests, failed Stripe webhook deliveries, the scheduled billing workflow and email delivery failures. Keep an up-to-date fulfilment record and a tested backup/recovery procedure. A green deployment means the app built; it does not replace these operating checks.
+
+## 14. Connect the shop, subscription and card — the actual workflow
+
+There is no automatic Shopify-to-VéleményTap provisioning integration in this release. You can sell the combined offer now through a **manual, assisted setup process**, once the launch checks in section 2 are completed. Do not tell customers that a Shopify purchase has already activated their subscription.
+
+| Part | Where it happens | What connects it |
+| --- | --- | --- |
+| Card purchase and shipping | velemenytap.hu / Shopify | Your order and fulfilment record |
+| Customer account and business | velemenytap.com | The customer's verified login and organization |
+| Subscription | The customer's Számlázás page → Stripe | The application creates Checkout with that organization's identity |
+| Physical card | NFC Tools | The exact `/r/<public-id>` URL written to its chip |
+| Feedback and Google destination | The location and card in VéleményTap | The card's existing business/location assignment |
+| Your remote lock | velemenytap.com/admin | The specific digital card record; all physical copies of that URL follow its state |
+
+**The shortest safe order of operations:** card order → customer signs up → create location → create digital card → copy its link → program physical card → test feedback and email → customer chooses software billing → hand over and ship. The customer can choose billing during the trial; you do not need their bank-card details. Their trial starts at business creation, so avoid creating their business weeks before fulfilment.
+
+Do not create an unrelated Stripe Payment Link or manually assign a Stripe subscription as your normal sales process. The current application Checkout establishes the organization/customer/subscription mapping and duplicate-checkout protections. A payment collected elsewhere is not automatically matched just because the email looks the same.
+
+### Configure the Shopify offer
+
+1. In your existing Shopify admin, use a **physical product** for the NFC card, with inventory and shipping appropriate to the stock you actually hold.
+2. Keep the confirmed hardware price and shipping charge in Shopify. The hardware price is still an owner decision in this tutorial; no number has been invented.
+3. State explicitly on the product page: the physical card is a one-time purchase; the dashboard is a separate recurring subscription at 4,990 Ft/month or 49,900 Ft/year, with the current 14-day no-card software trial.
+4. Explain that the card will open a VéleményTap feedback page and that Google reviews are completed separately on Google. Do not advertise automatic posting or Google-review import.
+5. Add a clearly labelled link to `https://velemenytap.com/signup` for account creation and `https://velemenytap.com/login` for existing customers. The subscription itself starts inside their account, under **Számlázás**.
+6. Use manual fulfilment for cards you program and ship yourself. Review payment status, program/test the correct card, then mark the actual items fulfilled and provide real tracking when available. Do not mark an unprogrammed card shipped merely because a payment was received.
+7. Reconcile the Shopify order with the customer's organization and card URLs in your private order record. Do not store passwords there.
+
+Shopify's official [manual fulfilment instructions](https://help.shopify.com/en/manual/fulfillment/fulfilling-orders/single-fulfillment) describe fulfilling individual orders. These instructions are a setup plan; this review has not modified your Shopify store, inventory, theme, shipping prices or products.
+
+### Example: one café buys two cards
+
+- The café orders two physical cards on the .hu shop.
+- Its owner signs up on .com and creates the café business.
+- Together you create the location and verify that its Google link opens that café.
+- Create two digital records: `Pult 01` and `Terasz 01`. Copy their two different public links.
+- Write one link to each physical card, then label the packaging so they cannot be swapped.
+- Confirm ratings from each appear under the correct card; confirm the alert recipient receives the authorized setup test.
+- The café owner purchases the software inside their own billing page. One organization subscription covers its current supported locations/cards; it is not a separate subscription per physical card.
+- Record order → organization → location → card name → public URL → tap tested → handed over. Keep payment status and setup status as separate fields.
+
+## 15. Sell what the product actually does
+
+The practical offer is **an easy way for guests to send feedback, plus a dashboard that helps the business notice and handle it**. Lead with a working demonstration, not promised review counts or guaranteed sales.
+
+A short Hungarian explanation you can use:
+
+> A VéleményTap kártyát a vendég a telefonjához érinti, és megnyílik a vállalkozás visszajelzési oldala. A beküldött értékeléseket egy saját irányítópulton látod, helyszín és kártya szerint. Az alacsony értékelésekről e-mailes értesítést állíthatsz be, és követheted, melyik visszajelzéssel foglalkoztál már. A Google-értékelési oldaladat is elérik a vendégek; a Google-on a véleményt ők teszik közzé. A kártya külön vásárolható meg, a szoftver 4 990 Ft havonta vagy 49 900 Ft évente, és 14 napig bankkártya nélkül kipróbálható.
+
+Do not promise that every alert is instant or guaranteed: cooldowns and email delivery apply. Do not describe private feedback as a verified Google review. Do not promise removal or prevention of negative Google reviews, permanent free dashboard access, automatic Shopify provisioning, guest reply messaging, or automatic cancellation-based card locks.
+
+### A five-minute demonstration
+
+1. Show the public URL on your phone. Until you have a real card, say that you are demonstrating the browser experience, not the physical tap.
+2. Submit a labelled setup rating on a dedicated demo card. Show it appear in the dashboard.
+3. Show feedback status and an internal note, then the analytics page. Explain that notes are internal and do not message the guest.
+4. Show the correct Google destination without publishing a fake review.
+5. Demonstrate a card lock and unlock on the demo card, never on a real customer's active card just for a sales demonstration.
+6. Show the two software prices and explain the separate physical-card charge. Invite the business to try it with one location first.
+
+An honest answer to “why pay monthly?” is: **the subscription pays for the dashboard, feedback management, reporting and ongoing software operation**. The NFC chip alone is a link carrier. The current public link keeps working after software expiry unless a card/location is disabled or you apply an owner lock; do not imply otherwise.
+
+### First-customer process
+
+Use a small assisted pilot with businesses you can personally help. Agree a real support contact and a clear scope before collecting money. After setup, check that the owner can sign in, find a new rating and manage their subscription unaided. Ask what was confusing and improve the setup instructions from those observations. Measure account setup completed, cards tested, feedback received, software activated and support time; do not present these as guaranteed conversion rates.
+
+Google's published policy prohibits discouraging negative reviews or selectively soliciting positive reviews. The currently requested rating-dependent path gives high ratings a more direct Google action; do not market it as Google-approved. An equally visible Google option for every rating is the lower-risk product direction. This review preserves your explicitly requested flow and records the decision rather than silently redesigning it. Sources: [Google policy](https://support.google.com/business/answer/7400114) and [Google review guidance](https://support.google.com/business/answer/3474122?hl=en).
+
+## 16. Finish the first real paid setup
+
+A successful build and automated tests are not a completed real customer purchase. Use one genuine, authorized purchase to complete this checklist; the person paying enters their own payment information and approves the charge.
+
+1. Sign up using the intended customer account on .com, receive the actual email and click its confirmation link.
+2. Verify the correct organization and trial, create a location/card and test the saved feedback.
+3. Open **Számlázás**, select the intended cadence and confirm the displayed amount before paying. Expected current amounts: 4,990 Ft monthly / 49,900 Ft annually.
+4. Complete the purchase yourself. A browser return URL alone is not proof of payment. In Stripe, verify the payment/subscription and the relevant webhook delivery to `https://velemenytap.com/api/webhooks/stripe`.
+5. Back in VéleményTap, verify the subscription state and dashboard access. If payment is pending or access has not updated, use **Frissítés a Stripe alapján** and inspect the webhook; do not pay again as a repair.
+6. Open the subscription-management portal from **Számlázás**. Verify that billing information and cancellation controls refer to the same subscription. Only cancel if that is the customer's intent; inspect the effective date first. Cancellation and a refund are different actions.
+7. Confirm your invoice/receipt procedure with your accountant and supply the documents your business requires. This software currently has no NAV invoice integration. This tutorial makes no determination of your tax obligations.
+8. Receive one authorized low-rating alert in the real recipient's mailbox and check its dashboard link. Also complete one actual .com password-reset email journey without sharing its secret link.
+9. When hardware is available, write and tap-test it on the intended phones before calling the whole package ready.
+
+Record a date and result for each check. Do not tick a production mailbox test based on a simulated email token, a delivery API acceptance, or an isolated-project test.
+
+## 17. Your daily owner routine
+
+**At each new order:** match the account to the order, prepare the correct card links, test them, confirm the alert recipient and record what was handed over. A customer's Google review destination can be edited in **Helyszínek** without rewriting the card because the card keeps its VéleményTap URL. Moving the card to a different location currently requires a new card record and rewriting its link.
+
+**When a customer needs help:** use `/admin` to find and lock cards. This owner panel does not impersonate the customer or edit all of their settings; for locations, account settings and billing, guide the customer in their own session. Never ask them to send you their password.
+
+**When a card is lost:** identify its business and exact card, enter the reason, apply the owner lock and open its URL to verify the inactive message. A replacement needs its own digital record/link if it should be independently controllable. Keep the old record for history.
+
+**When a customer cancels:** verify the actual subscription status/effective date in Stripe, follow the agreed cancellation/refund procedure, and explain what happens to dashboard access. The public card does not automatically lock. Apply a manual lock only in accordance with the service agreement and the customer's situation; do not treat cancellation as a technical failure.
+
+**Daily:** check failed Stripe webhooks, billing-reconciliation workflow runs, failed application requests and email-delivery failures. Address “charged but no access” before asking anyone to retry payment. For a service outage, distinguish the .hu shop from the .com software and the public card link.
+
+**Before changing domains:** preserve the .com domain and old `/r/` URLs already written to customer cards. Keep domain renewal and account recovery under your control. Do not cancel the domain or remove redirects as part of a storefront redesign.
+
+**Before upgrades:** keep Git history, apply reviewed migrations in the documented order and verify the deployed version. Confirm what database backup/restore option is actually enabled in Supabase and arrange a restore rehearsal in an isolated environment; do not assume a specific plan includes a backup feature you have never checked.
+
+## 18. Ready-to-copy customer handover
+
+Replace bracketed fields before sending. This review has not sent this message to anyone.
+
+> Szia [név]!
+>
+> Elkészült a VéleményTap beállításod a következő vállalkozáshoz: [vállalkozás / helyszín].
+>
+> Belépés: https://velemenytap.com/login — a saját, megerősített e-mail címeddel.
+>
+> Kártyáid: [kártyanevek és darabszám]. A kártyákat teszteltük: [dátum / pontosan mi lett tesztelve].
+>
+> A beérkező visszajelzéseket a Vélemények menüben találod. Az Elemzés mutatja a belső értékelések alakulását. A Beállításokban az értesítési cím: [cím; megerősítve / még megerősítendő].
+>
+> Előfizetésedet a Számlázás menüben tudod kezelni. A választott díj: [havi 4 990 Ft / évi 49 900 Ft]. A fizikai kártya külön vásárlás. [Próba lejárata vagy ellenőrzött előfizetési állapot.]
+>
+> A Google-értékelést a vendég külön, a Google oldalán írja meg. A saját irányítópulton a VéleményTapra beküldött visszajelzések láthatók.
+>
+> Segítség: [valós támogatási cím / elérhetőség]. Jelszót vagy bankkártyaadatot soha ne küldj üzenetben.
+
+### Final release note for this guide
+
+Updated 21 September 2026. The owner account has been provisioned separately; ordinary customer signups never receive platform-admin access. The review fixes the missing 4–5-star submission fallback without a Google link, stale inactive-form actions, notification failure handling and spreadsheet-formula handling in card exports. See `RELEASE_REVIEW_2026-09-21.md` for the tested scope and unresolved external checks.

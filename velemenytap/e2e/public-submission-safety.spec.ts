@@ -26,6 +26,32 @@ test.afterEach(async () => {
   await cleanupOrgWithMember(org.userId, org.orgId);
 });
 
+for (const rating of [4, 5]) {
+  test(`rating ${rating} can be saved without a Google destination`, async ({ page }) => {
+    await page.goto(`/r/${card.publicId}`);
+    await page.getByRole("radio", { name: new RegExp(`^${rating} csillag —`) }).click();
+    await page.getByRole("button", { name: "Vélemény küldése" }).click();
+    await expect(page.getByRole("heading", { name: "Köszönjük!" })).toBeVisible();
+    const result = await adminClient().from("feedback").select("rating").eq("nfc_card_id", card.cardId);
+    expect(result.error).toBeNull();
+    expect(result.data).toEqual([{ rating }]);
+    await expect(page.getByRole("link", { name: "Google-értékelés írása" })).toHaveCount(0);
+  });
+}
+
+test("a rejected stale form cannot restore its Google action by switching to five stars", async ({ page }) => {
+  const admin = adminClient();
+  expect((await admin.from("locations").update({ google_review_url: "https://g.page/r/e2e-test-review-link" }).eq("id", card.locationId)).error).toBeNull();
+  await page.goto(`/r/${card.publicId}`);
+  await page.getByRole("radio", { name: /^3 csillag —/ }).click();
+  expect((await admin.from("nfc_cards").update({ status: "inactive" }).eq("id", card.cardId)).error).toBeNull();
+  await page.getByRole("button", { name: "Vélemény küldése" }).click();
+  await expect(page.locator('p[role="alert"]')).toHaveText("Ez a link már nem aktív.");
+  await page.getByRole("radio", { name: /^5 csillag —/ }).click();
+  await expect(page.getByRole("link")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Vélemény küldése" })).toHaveCount(0);
+});
+
 test("finding #6: deactivating a card between page load and submission is caught atomically, not just at page load", async ({
   page,
 }) => {

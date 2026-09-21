@@ -88,26 +88,36 @@ export async function sendNegativeFeedbackAlert(params: {
     // A configured notification_email is an explicit override of the
     // default "email every owner/admin/manager" behavior -- it's how an
     // org routes alerts to a shared inbox instead of individual accounts.
-    const { data: org } = await admin
+    const { data: org, error: orgError } = await admin
       .from("organizations")
       .select("notification_email")
       .eq("id", params.organizationId)
       .single();
 
+    if (orgError || !org) {
+      console.error("Could not resolve notification recipients; alert not sent.");
+      return;
+    }
+
     let recipients: string[] = [];
     if (org?.notification_email) {
       recipients = [org.notification_email];
     } else {
-      const { data: members } = await admin
+      const { data: members, error: membersError } = await admin
         .from("organization_memberships")
         .select("user_id")
         .eq("organization_id", params.organizationId)
         .in("role", ALERT_ROLES);
 
+      if (membersError) {
+        console.error("Could not resolve notification memberships; alert not sent.");
+        return;
+      }
+
       if (members) {
         for (const member of members) {
           const { data } = await admin.auth.admin.getUserById(member.user_id);
-          if (data.user?.email) recipients.push(data.user.email);
+          if (data.user?.email && data.user.email_confirmed_at) recipients.push(data.user.email);
         }
       }
     }
@@ -124,7 +134,7 @@ export async function sendNegativeFeedbackAlert(params: {
     const fromAddress = process.env.RESEND_FROM_EMAIL ?? "onboarding@resend.dev";
 
     const { error: sendError } = await resend.emails.send({
-      from: `Velemenytap <${fromAddress}>`,
+      from: `VéleményTap <${fromAddress}>`,
       to: recipients,
       subject: `${stars} Új vélemény itt: ${params.locationName}`,
       html: `
@@ -162,12 +172,16 @@ export async function sendNegativeFeedbackAlert(params: {
     );
   } finally {
     if (logId !== null) {
-      const { error: finalizeError } = await admin.rpc("finalize_negative_alert_send", {
-        p_log_id: logId,
-        p_delivered: delivered,
-      });
-      if (finalizeError) {
-        console.error("Failed to finalize negative feedback alert log:", finalizeError);
+      try {
+        const { error: finalizeError } = await admin.rpc("finalize_negative_alert_send", {
+          p_log_id: logId,
+          p_delivered: delivered,
+        });
+        if (finalizeError) {
+          console.error("Failed to finalize negative feedback alert log:", finalizeError);
+        }
+      } catch {
+        console.error("Could not reach the database to finalize the negative feedback alert log.");
       }
     }
   }

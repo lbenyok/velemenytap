@@ -90,13 +90,13 @@ export default async function BillingPage({
         <Alert variant="destructive">
           <TriangleAlert />
           <AlertTitle>A fizetés nem fejeződött be.</AlertTitle>
-          <AlertDescription>Nem történt sikeres terhelés. Bármikor újra elindíthatod alább.</AlertDescription>
+          <AlertDescription>A Stripe még nem igazolta a fizetés befejezését. Ha már fizettél, várj, majd frissítsd az állapotot; ne indíts új fizetést csak emiatt.</AlertDescription>
         </Alert>
       ) : sp.checkout === "canceled" ? (
         <Alert variant="destructive">
           <TriangleAlert />
           <AlertTitle>A fizetés megszakadt.</AlertTitle>
-          <AlertDescription>Nem történt terhelés. Bármikor újra elindíthatod alább.</AlertDescription>
+          <AlertDescription>Visszatértél a fizetési oldalról. Ellenőrizd az előfizetés állapotát; a visszatérés önmagában nem igazolja, hogy történt-e terhelés.</AlertDescription>
         </Alert>
       ) : sp.error === "checkout_failed" ? (
         <Alert variant="destructive">

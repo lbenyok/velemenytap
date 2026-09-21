@@ -24,6 +24,9 @@ const BOM = "﻿";
 
 /** RFC 4180 quoting: wrap when the value could break the row, and double any quote. */
 function field(value: string): string {
+  // Card and location names are customer-controlled. Quoting alone does not
+  // stop spreadsheet applications from evaluating them as formulas.
+  if (/^\s*[=+@-]|^[\t\r\n]/.test(value)) value = `'${value}`;
   const needsQuoting = /["\r\n]/.test(value) || value.includes(DELIMITER);
   return needsQuoting ? `"${value.replace(/"/g, '""')}"` : value;
 }

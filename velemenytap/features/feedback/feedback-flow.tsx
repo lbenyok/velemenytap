@@ -149,7 +149,7 @@ export function FeedbackFlow({
                   ) : null}
                 </div>
               ) : null}
-              {retryIsPointless || rating >= 4 ? null : (
+              {retryIsPointless || (rating >= 4 && safeReviewUrl) ? null : (
                 <button
                   type="submit"
                   disabled={isPending}
@@ -158,7 +158,7 @@ export function FeedbackFlow({
                   {isPending ? "Küldés…" : "Vélemény küldése"}
                 </button>
               )}
-              {rating >= 4 ? (
+              {rating >= 4 && !(state.status === "error" && state.code === "inactive") ? (
                 safeReviewUrl ? (
                   <>
                     <p className="text-center text-sm text-[var(--pf-ink-muted)]">

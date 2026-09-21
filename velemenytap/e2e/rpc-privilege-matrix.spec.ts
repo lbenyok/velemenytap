@@ -26,6 +26,12 @@ type ExpectedGrant = {
 
 const EXPECTED: ExpectedGrant[] = [
   {
+    signature: "public.set_platform_card_lock(uuid, bigint, boolean, boolean, text)",
+    anon: false,
+    authenticated: false,
+    service_role: true,
+  },
+  {
     signature: "public.submit_feedback_atomic(uuid, smallint, text)",
     anon: false,
     authenticated: false,
